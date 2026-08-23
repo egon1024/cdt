@@ -1,0 +1,115 @@
+name: Version preview
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag, or SHA to read versions from
+        required: true
+        default: main
+      pr_number:
+        description: PR number (optional; updates the version preview comment when set)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: version-preview-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    name: Preview next release version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || inputs.ref }}
+
+      - name: Checkout trusted scripts
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.base.sha || 'main' }}
+          path: trusted
+
+      - name: Resolve PR number
+        id: pr_meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+          elif [[ -n "${{ inputs.pr_number }}" ]]; then
+            echo "number=${{ inputs.pr_number }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "number=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Load PR body (manual dispatch)
+        id: pr_body
+        if: github.event_name == 'workflow_dispatch' && inputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          body=$(gh pr view "${{ inputs.pr_number }}" --json body --jq .body)
+          {
+            echo "body<<EOF"
+            printf '%s\n' "$body"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Compute next version
+        id: version
+        env:
+          PR_BODY: ${{ github.event.pull_request.body || steps.pr_body.outputs.body || '' }}
+          DEFAULT_BUMP: minor
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ -f trusted/.github/actions/version-bump/version-bump.sh ]]; then
+            bash trusted/.github/actions/version-bump/version-bump.sh
+          elif [[ -f .github/actions/version-bump/version-bump.sh ]]; then
+            echo "::notice::Using merge-ref version-bump.sh (missing on trusted checkout)."
+            bash .github/actions/version-bump/version-bump.sh
+          else
+            echo "::error::Could not find version-bump.sh under trusted/ or .github/actions/version-bump/."
+            exit 1
+          fi
+
+      - name: Update PR comment
+        if: steps.pr_meta.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr_meta.outputs.number }}
+          VERSION_ERROR: ${{ steps.version.outputs.error }}
+          CURRENT_VERSION: ${{ steps.version.outputs.current_version }}
+          NEXT_VERSION: ${{ steps.version.outputs.next_version }}
+          BUMP_LEVEL: ${{ steps.version.outputs.bump_level }}
+          BUMP_SOURCE: ${{ steps.version.outputs.bump_source }}
+        run: |
+          set -euo pipefail
+          if [[ -f trusted/.github/scripts/pr-version-comment.sh ]]; then
+            bash trusted/.github/scripts/pr-version-comment.sh
+          elif [[ -f .github/scripts/pr-version-comment.sh ]]; then
+            echo "::notice::Using merge-ref pr-version-comment.sh (missing on trusted checkout)."
+            bash .github/scripts/pr-version-comment.sh
+          else
+            echo "::error::Could not find pr-version-comment.sh under trusted/ or .github/scripts/."
+            exit 1
+          fi
+
+      - name: Fail on version error
+        if: steps.version.outputs.error != ''
+        run: |
+          echo "::error::Version preview failed (${{ steps.version.outputs.error }})"
+          exit 1

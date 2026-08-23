@@ -17,6 +17,18 @@ make help    # list all targets
 
 CI runs `make test` on pull requests (aligned with DNSConduit).
 
+## Releases
+
+Versioning follows DNSConduit-style semver rules:
+
+- **Current version** is the highest semver among GitHub releases and git tags (or `0.0.0` before the first release).
+- **Default bump** on merge to `main` is **minor** (first release → `0.1.0`).
+- Override with a PR description line containing only `#major`, `#minor`, or `#patch` (case-insensitive). Only one directive is allowed.
+
+Pull requests get an automated **version preview** comment. On merge to `main`, the **Release** workflow bumps `Cargo.toml` / `Cargo.lock` and creates a GitHub release.
+
+Configure a `RELEASE_PUSH_TOKEN` repository secret (admin PAT) so the release workflow can merge the version-bump PR. Release artifacts and docs deploy are not wired yet.
+
 ## Planned (not yet implemented)
 
 - Documentation site generation and deployment (DNSConduit-style `docs-ci` / `docs-deploy`)

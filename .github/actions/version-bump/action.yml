@@ -1,0 +1,41 @@
+name: Version bump
+description: Compute next semver from latest GitHub release and PR description directives
+
+inputs:
+  pr_body:
+    description: Pull request description text for #major / #minor / #patch directives
+    required: false
+    default: ""
+  default_bump:
+    description: Bump level when no directive line is present
+    required: false
+    default: minor
+
+outputs:
+  current_version:
+    description: Latest release version (or 0.0.0)
+    value: ${{ steps.bump.outputs.current_version }}
+  next_version:
+    description: Version after applying the bump
+    value: ${{ steps.bump.outputs.next_version }}
+  bump_level:
+    description: major, minor, or patch
+    value: ${{ steps.bump.outputs.bump_level }}
+  bump_source:
+    description: explicit or implicit
+    value: ${{ steps.bump.outputs.bump_source }}
+  error:
+    description: Error code when validation fails (e.g. conflicting_directives)
+    value: ${{ steps.bump.outputs.error }}
+
+runs:
+  using: composite
+  steps:
+    - id: bump
+      shell: bash
+      run: bash "${{ github.action_path }}/version-bump.sh"
+      env:
+        PR_BODY: ${{ inputs.pr_body }}
+        DEFAULT_BUMP: ${{ inputs.default_bump }}
+        GH_TOKEN: ${{ github.token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
