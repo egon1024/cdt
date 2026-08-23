@@ -10,13 +10,12 @@ Cole's DNS Tools — a Rust workspace for DNS utilities.
 ## Development
 
 ```bash
-cargo build
-cargo test
-cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
+make test    # fmt-check, clippy, unit tests (same as CI)
+make build
+make help    # list all targets
 ```
 
-CI runs format, Clippy, and tests on pull requests (aligned with DNSConduit).
+CI runs `make test` on pull requests (aligned with DNSConduit).
 
 ## Planned (not yet implemented)
 
