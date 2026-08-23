@@ -1,0 +1,9 @@
+[package]
+name = "dns-core"
+description = "Shared DNS primitives for Cole's DNS Tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
