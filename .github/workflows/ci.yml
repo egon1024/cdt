@@ -25,9 +25,6 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@7d8158ef0919c85bbe8fc8ae0b490b63870dae82 # v2.8.0
-
       - name: Test
         run: make test
 
