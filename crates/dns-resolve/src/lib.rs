@@ -80,6 +80,8 @@ pub struct TraceConfig {
     pub cache: Option<Arc<dyn ResponseCache>>,
     pub exchange: Arc<dyn DnsExchange>,
     pub exchange_counter: Arc<AtomicUsize>,
+    /// Nameserver hostnames currently being resolved (detects cyclic NS lookups).
+    pub ns_resolution_active: HashSet<String>,
 }
 
 impl TraceConfig {
@@ -102,6 +104,7 @@ impl TraceConfig {
             cache: None,
             exchange: Arc::new(DefaultExchange),
             exchange_counter: Arc::new(AtomicUsize::new(0)),
+            ns_resolution_active: HashSet::new(),
         }
     }
 
@@ -264,10 +267,6 @@ pub(crate) fn filter_addresses(
             IpAddr::V6(_) => !ipv4_only,
         })
         .collect()
-}
-
-pub(crate) fn first_referral_ns(response: &dns_core::response::DnsResponse) -> Option<DomainName> {
-    response.ns_names().into_iter().next()
 }
 
 #[cfg(test)]

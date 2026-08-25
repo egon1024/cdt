@@ -9,7 +9,7 @@ use crate::root_hints::root_servers;
 use crate::{FinalAnswer, now_rfc3339};
 use crate::{
     ResolveError, Result, TraceConfig, TraceProgress, TraceResult, filter_addresses,
-    first_referral_ns, hop_from_query, query_server,
+    hop_from_query, query_server,
 };
 
 pub fn run(config: &TraceConfig, progress: &mut dyn TraceProgress) -> Result<TraceResult> {
@@ -63,16 +63,23 @@ pub fn run(config: &TraceConfig, progress: &mut dyn TraceProgress) -> Result<Tra
             });
         }
 
-        let ns_name = first_referral_ns(&query_result.response).ok_or_else(|| {
-            ResolveError::NoReachableNameserver {
+        let ns_names = query_result.response.ns_names();
+        if ns_names.is_empty() {
+            return Err(ResolveError::NoReachableNameserver {
                 zone: next_zone.to_string(),
-            }
-        })?;
+            });
+        }
 
-        progress.message(&format!("following NS {} for zone {}", ns_name, next_zone));
+        progress.message(&format!(
+            "following delegation to zone {} via {:?}",
+            next_zone,
+            ns_names
+                .iter()
+                .map(|name| name.to_string())
+                .collect::<Vec<_>>()
+        ));
 
-        servers = resolve_nameserver(
-            &ns_name,
+        servers = resolve_nameservers_from_referral(
             &query_result.response,
             &servers,
             config,
@@ -118,6 +125,42 @@ fn query_first_available(
     )
 }
 
+fn resolve_nameservers_from_referral(
+    referral: &DnsResponse,
+    current_servers: &[IpAddr],
+    config: &TraceConfig,
+    parent_zone: &DomainName,
+    progress: &mut dyn TraceProgress,
+) -> Result<Vec<IpAddr>> {
+    let ns_names = referral.ns_names();
+    let mut ordered: Vec<&DomainName> = ns_names.iter().collect();
+    ordered.sort_by_key(|ns| !referral.glue_for(ns).is_empty());
+
+    let mut last_error = None;
+    for ns_name in ordered {
+        match resolve_nameserver(
+            ns_name,
+            referral,
+            current_servers,
+            config,
+            parent_zone,
+            progress,
+        ) {
+            Ok(addresses) if !addresses.is_empty() => return Ok(addresses),
+            Ok(_) => {}
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    if let Some(error) = last_error {
+        return Err(error);
+    }
+
+    Err(ResolveError::NoReachableNameserver {
+        zone: parent_zone.to_string(),
+    })
+}
+
 fn resolve_nameserver(
     ns_name: &DomainName,
     referral: &DnsResponse,
@@ -126,6 +169,13 @@ fn resolve_nameserver(
     parent_zone: &DomainName,
     progress: &mut dyn TraceProgress,
 ) -> Result<Vec<IpAddr>> {
+    if config.ns_resolution_active.contains(ns_name.as_str()) {
+        return Err(ResolveError::NameserverResolution {
+            name: ns_name.to_string(),
+            reason: "nameserver resolution loop detected".into(),
+        });
+    }
+
     let mut addresses = filter_addresses(
         &referral.glue_for(ns_name),
         config.ipv4_only,
@@ -172,6 +222,7 @@ fn resolve_nameserver(
     let mut sub_config = config.clone();
     sub_config.qname = ns_name.clone();
     sub_config.qtype = RecordType::A;
+    sub_config.ns_resolution_active.insert(ns_name.to_string());
 
     let sub_trace = run(&sub_config, progress)?;
     if let Some(answer) = sub_trace.final_response {
@@ -229,6 +280,116 @@ fn final_answer_from_query(query: &dns_core::QueryResult) -> FinalAnswer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    use dns_core::EdnsMeta;
+    use dns_core::name::DomainName;
+    use dns_core::response::{DnsRecord, DnsResponse};
+    use hickory_proto::rr::RecordType;
+
+    struct SilentProgress;
+
+    impl crate::TraceProgress for SilentProgress {
+        fn hop(&mut self, _hop: &crate::TraceHop) {}
+        fn message(&mut self, _message: &str) {}
+    }
+
+    #[test]
+    fn nameserver_resolution_loop_is_detected() {
+        let referral = DnsResponse {
+            id: 1,
+            rcode: 0,
+            rcode_text: "NOERROR".into(),
+            authoritative: false,
+            truncated: false,
+            answers: vec![],
+            authorities: vec![DnsRecord {
+                name: DomainName::parse("example.com.").expect("zone"),
+                rtype: "NS".into(),
+                rclass: "IN".into(),
+                ttl: 3600,
+                rdata: "ns.loop.example.".into(),
+            }],
+            additionals: vec![],
+            edns: EdnsMeta::default(),
+        };
+        let parent_zone = DomainName::parse("com.").expect("zone");
+        let ns_name = DomainName::parse("ns.loop.example.").expect("ns");
+        let mut config = TraceConfig::new(
+            DomainName::parse("example.com.").expect("qname"),
+            RecordType::A,
+        );
+        config.ns_resolution_active.insert(ns_name.to_string());
+
+        let error = resolve_nameserver(
+            &ns_name,
+            &referral,
+            &[IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))],
+            &config,
+            &parent_zone,
+            &mut SilentProgress,
+        )
+        .expect_err("loop");
+
+        assert!(matches!(
+            error,
+            ResolveError::NameserverResolution { reason, .. }
+                if reason.contains("nameserver resolution loop")
+        ));
+    }
+
+    #[test]
+    fn prefers_nameserver_with_glue() {
+        let glued = DomainName::parse("ns1.example.com.").expect("glued");
+        let referral = DnsResponse {
+            id: 1,
+            rcode: 0,
+            rcode_text: "NOERROR".into(),
+            authoritative: false,
+            truncated: false,
+            answers: vec![],
+            authorities: vec![
+                DnsRecord {
+                    name: DomainName::parse("example.com.").expect("zone"),
+                    rtype: "NS".into(),
+                    rclass: "IN".into(),
+                    ttl: 3600,
+                    rdata: "ns2.example.com.".into(),
+                },
+                DnsRecord {
+                    name: DomainName::parse("example.com.").expect("zone"),
+                    rtype: "NS".into(),
+                    rclass: "IN".into(),
+                    ttl: 3600,
+                    rdata: "ns1.example.com.".into(),
+                },
+            ],
+            additionals: vec![DnsRecord {
+                name: glued.clone(),
+                rtype: "A".into(),
+                rclass: "IN".into(),
+                ttl: 3600,
+                rdata: "93.184.216.34".into(),
+            }],
+            edns: EdnsMeta::default(),
+        };
+        let parent_zone = DomainName::parse("com.").expect("zone");
+        let config = TraceConfig::new(
+            DomainName::parse("example.com.").expect("qname"),
+            RecordType::A,
+        );
+
+        let addresses = resolve_nameservers_from_referral(
+            &referral,
+            &[IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))],
+            &config,
+            &parent_zone,
+            &mut SilentProgress,
+        )
+        .expect("addresses");
+
+        assert_eq!(addresses, vec![IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))]);
+    }
 
     #[test]
     fn authoritative_when_flag_set() {
