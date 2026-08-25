@@ -29,31 +29,86 @@ impl SqliteCache {
         }
         let conn =
             Connection::open(path).map_err(|error| CacheError::Database(error.to_string()))?;
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS cache (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL,
-                received_at INTEGER NOT NULL,
-                ttl_seconds INTEGER NOT NULL
-            );",
-        )
-        .map_err(|error| CacheError::Database(error.to_string()))?;
+        init_schema(&conn)?;
+        let hits = load_counter(&conn, "hits")?;
+        let misses = load_counter(&conn, "misses")?;
         Ok(Self {
             conn: Mutex::new(conn),
-            hits: AtomicU64::new(0),
-            misses: AtomicU64::new(0),
+            hits: AtomicU64::new(hits),
+            misses: AtomicU64::new(misses),
         })
     }
 
     pub fn open_readonly(path: &Path) -> Result<Self> {
         let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|error| CacheError::Database(error.to_string()))?;
+        let hits = load_counter(&conn, "hits")?;
+        let misses = load_counter(&conn, "misses")?;
         Ok(Self {
             conn: Mutex::new(conn),
-            hits: AtomicU64::new(0),
-            misses: AtomicU64::new(0),
+            hits: AtomicU64::new(hits),
+            misses: AtomicU64::new(misses),
         })
     }
+
+    fn record_hit(&self, conn: Option<&Connection>) {
+        self.hits.fetch_add(1, Ordering::Relaxed);
+        if let Some(conn) = conn {
+            bump_counter(conn, "hits");
+        } else if let Ok(guard) = self.conn.lock() {
+            bump_counter(&guard, "hits");
+        }
+    }
+
+    fn record_miss(&self, conn: Option<&Connection>) {
+        self.misses.fetch_add(1, Ordering::Relaxed);
+        if let Some(conn) = conn {
+            bump_counter(conn, "misses");
+        } else if let Ok(guard) = self.conn.lock() {
+            bump_counter(&guard, "misses");
+        }
+    }
+}
+
+fn init_schema(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS cache (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            received_at INTEGER NOT NULL,
+            ttl_seconds INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS cache_meta (
+            key TEXT PRIMARY KEY,
+            value INTEGER NOT NULL
+        );",
+    )
+    .map_err(|error| CacheError::Database(error.to_string()))?;
+    Ok(())
+}
+
+fn load_counter(conn: &Connection, key: &str) -> Result<u64> {
+    conn.query_row(
+        "SELECT value FROM cache_meta WHERE key = ?1",
+        params![key],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|value| value.max(0) as u64)
+    .or_else(|error| {
+        if error == rusqlite::Error::QueryReturnedNoRows {
+            Ok(0)
+        } else {
+            Err(CacheError::Database(error.to_string()))
+        }
+    })
+}
+
+fn bump_counter(conn: &Connection, key: &str) {
+    let _ = conn.execute(
+        "INSERT INTO cache_meta (key, value) VALUES (?1, 1)
+         ON CONFLICT(key) DO UPDATE SET value = value + 1",
+        params![key],
+    );
 }
 
 impl ResponseCache for SqliteCache {
@@ -78,14 +133,14 @@ impl ResponseCache for SqliteCache {
                     .map_err(|error| CacheError::Serialization(error.to_string()))
                     .ok()?;
                 if entry.is_expired(now) {
-                    self.misses.fetch_add(1, Ordering::Relaxed);
+                    self.record_miss(Some(&guard));
                     return None;
                 }
-                self.hits.fetch_add(1, Ordering::Relaxed);
+                self.record_hit(Some(&guard));
                 Some(entry)
             }
             Err(_) => {
-                self.misses.fetch_add(1, Ordering::Relaxed);
+                self.record_miss(Some(&guard));
                 None
             }
         }
@@ -198,5 +253,34 @@ mod tests {
         cache.put(&key, entry.clone()).expect("put");
         let loaded = cache.get(&key).expect("get");
         assert_eq!(loaded.ttl_seconds, entry.ttl_seconds);
+    }
+
+    #[test]
+    fn hit_and_miss_counters_persist_across_reopen() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cache.sqlite");
+        let key = CacheKey {
+            server: IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+            port: 53,
+            qname: "example.com.".into(),
+            qtype: "A".into(),
+            transport: Transport::Udp,
+            dnssec: false,
+            request_nsid: true,
+        };
+        let entry = CachedEntry::from_query_result(sample_result(), now_unix(), 300);
+
+        let cache = SqliteCache::open(&path).expect("open");
+        assert!(cache.get(&key).is_none());
+        cache.put(&key, entry).expect("put");
+        assert!(cache.get(&key).is_some());
+        let stats = cache.stats();
+        assert_eq!(stats.misses, 1);
+        assert_eq!(stats.hits, 1);
+
+        let reopened = SqliteCache::open(&path).expect("reopen");
+        let stats = reopened.stats();
+        assert_eq!(stats.misses, 1);
+        assert_eq!(stats.hits, 1);
     }
 }

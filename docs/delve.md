@@ -124,7 +124,9 @@ These are separate on purpose:
 - **Sessions** store a full **snapshot** of the trace (`TraceResult`). `delve
   session show` reads only that stored data — no network, no cache.
 - **Response cache** speeds up **new live traces** by reusing recent DNS
-  responses within record TTL. Cache expiry does not affect stored sessions.
+  responses within record TTL. `delve cache stats` reports entry count, size,
+  and cumulative hit/miss counts (persisted in `cache.sqlite` across runs).
+  Cache expiry does not affect stored sessions.
 
 Each `delve trace` with `+save` creates a **new** session. Re-running a trace may
 use the cache for fewer queries, but it does not update an existing session.
