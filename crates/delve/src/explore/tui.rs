@@ -96,10 +96,8 @@ pub fn run_tui(tree: &ExploreTree) -> io::Result<()> {
                 }
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => break,
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        if selected + 1 < visible.len() {
-                            selected += 1;
-                        }
+                    KeyCode::Down | KeyCode::Char('j') if selected + 1 < visible.len() => {
+                        selected += 1;
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
                         selected = selected.saturating_sub(1);
