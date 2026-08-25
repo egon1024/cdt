@@ -1,0 +1,260 @@
+use std::collections::HashSet;
+use std::net::IpAddr;
+
+use dns_core::name::DomainName;
+use dns_core::response::DnsResponse;
+use hickory_proto::rr::RecordType;
+
+use crate::root_hints::root_servers;
+use crate::{FinalAnswer, now_rfc3339};
+use crate::{
+    ResolveError, Result, TraceConfig, TraceProgress, TraceResult, filter_addresses,
+    first_referral_ns, hop_from_query, query_server,
+};
+
+pub fn run(config: &TraceConfig, progress: &mut dyn TraceProgress) -> Result<TraceResult> {
+    let mut servers = config.start_servers.clone().unwrap_or_else(root_servers);
+    servers = filter_addresses(&servers, config.ipv4_only, config.ipv6_only);
+    if servers.is_empty() {
+        return Err(ResolveError::NoReachableNameserver { zone: ".".into() });
+    }
+
+    let mut current_zone = DomainName::parse(".").expect("root zone");
+    let mut visited_zones = HashSet::new();
+    let mut hops = Vec::new();
+
+    for depth in 0..config.max_depth {
+        let query_result = query_first_available(&servers, config, &config.qname, config.qtype)?;
+        let referral_ns = query_result.response.ns_names();
+        let glue = collect_glue(&query_result.response, &referral_ns);
+
+        let hop = hop_from_query(
+            &current_zone,
+            &query_result,
+            referral_ns.iter().map(ToString::to_string).collect(),
+            glue.iter().map(ToString::to_string).collect(),
+        );
+        progress.hop(&hop);
+        hops.push(hop);
+
+        if is_authoritative_answer(&query_result.response, &config.qname, config.qtype) {
+            return Ok(TraceResult {
+                qname: config.qname.to_string(),
+                qtype: config.qtype.to_string(),
+                started_at: now_rfc3339(),
+                hops,
+                final_response: Some(final_answer_from_query(&query_result)),
+            });
+        }
+
+        let Some(next_zone) = query_result.response.referral_zone(&config.qname) else {
+            return Ok(TraceResult {
+                qname: config.qname.to_string(),
+                qtype: config.qtype.to_string(),
+                started_at: now_rfc3339(),
+                hops,
+                final_response: Some(final_answer_from_query(&query_result)),
+            });
+        };
+
+        if !visited_zones.insert(next_zone.to_string()) {
+            return Err(ResolveError::DelegationLoop {
+                zone: next_zone.to_string(),
+            });
+        }
+
+        let ns_name = first_referral_ns(&query_result.response).ok_or_else(|| {
+            ResolveError::NoReachableNameserver {
+                zone: next_zone.to_string(),
+            }
+        })?;
+
+        progress.message(&format!("following NS {} for zone {}", ns_name, next_zone));
+
+        servers = resolve_nameserver(
+            &ns_name,
+            &query_result.response,
+            &servers,
+            config,
+            &current_zone,
+            progress,
+        )?;
+
+        if servers.is_empty() {
+            return Err(ResolveError::NoReachableNameserver {
+                zone: next_zone.to_string(),
+            });
+        }
+
+        current_zone = next_zone;
+
+        if depth + 1 == config.max_depth - 1 {
+            progress.message("approaching maximum delegation depth");
+        }
+    }
+
+    Err(ResolveError::MaxDepth {
+        max: config.max_depth,
+    })
+}
+
+fn query_first_available(
+    servers: &[IpAddr],
+    config: &TraceConfig,
+    qname: &DomainName,
+    qtype: RecordType,
+) -> Result<dns_core::QueryResult> {
+    let mut last_error = None;
+    for server in servers {
+        match query_server(*server, config, qname, qtype) {
+            Ok(result) => return Ok(result),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(
+        last_error.unwrap_or_else(|| ResolveError::NoReachableNameserver {
+            zone: qname.to_string(),
+        }),
+    )
+}
+
+fn resolve_nameserver(
+    ns_name: &DomainName,
+    referral: &DnsResponse,
+    current_servers: &[IpAddr],
+    config: &TraceConfig,
+    parent_zone: &DomainName,
+    progress: &mut dyn TraceProgress,
+) -> Result<Vec<IpAddr>> {
+    let mut addresses = filter_addresses(
+        &referral.glue_for(ns_name),
+        config.ipv4_only,
+        config.ipv6_only,
+    );
+
+    if !addresses.is_empty() {
+        progress.message(&format!("using glue for {}: {:?}", ns_name, addresses));
+        return Ok(addresses);
+    }
+
+    progress.message(&format!("resolving addresses for {}", ns_name));
+
+    for qtype in [RecordType::A, RecordType::AAAA] {
+        if let Ok(result) = query_first_available(
+            &filter_addresses(current_servers, config.ipv4_only, config.ipv6_only),
+            config,
+            ns_name,
+            qtype,
+        ) {
+            addresses.extend(
+                result
+                    .response
+                    .answers
+                    .iter()
+                    .filter(|record| record.rtype == "A" || record.rtype == "AAAA")
+                    .filter_map(|record| record.rdata.parse::<IpAddr>().ok()),
+            );
+        }
+    }
+
+    addresses = filter_addresses(&addresses, config.ipv4_only, config.ipv6_only);
+    if !addresses.is_empty() {
+        return Ok(addresses);
+    }
+
+    if ns_name.is_subdomain_of(parent_zone) {
+        return Err(ResolveError::NameserverResolution {
+            name: ns_name.to_string(),
+            reason: "missing glue for in-bailiwick nameserver".into(),
+        });
+    }
+
+    let sub_config = TraceConfig {
+        qname: ns_name.clone(),
+        qtype: RecordType::A,
+        port: config.port,
+        transport: config.transport,
+        timeout: config.timeout,
+        retries: config.retries,
+        dnssec: config.dnssec,
+        request_nsid: config.request_nsid,
+        ipv4_only: config.ipv4_only,
+        ipv6_only: config.ipv6_only,
+        max_depth: config.max_depth,
+        start_servers: config.start_servers.clone(),
+    };
+
+    let sub_trace = run(&sub_config, progress)?;
+    if let Some(answer) = sub_trace.final_response {
+        let parsed = answer
+            .records
+            .iter()
+            .filter_map(|record| record.split_whitespace().last())
+            .filter_map(|addr| addr.parse().ok())
+            .collect::<Vec<_>>();
+        addresses = filter_addresses(&parsed, config.ipv4_only, config.ipv6_only);
+        if !addresses.is_empty() {
+            return Ok(addresses);
+        }
+    }
+
+    Err(ResolveError::NameserverResolution {
+        name: ns_name.to_string(),
+        reason: "no A/AAAA records found".into(),
+    })
+}
+
+fn collect_glue(response: &DnsResponse, ns_names: &[DomainName]) -> Vec<IpAddr> {
+    ns_names
+        .iter()
+        .flat_map(|ns| response.glue_for(ns))
+        .collect()
+}
+
+fn is_authoritative_answer(response: &DnsResponse, qname: &DomainName, qtype: RecordType) -> bool {
+    if response.authoritative {
+        return true;
+    }
+
+    let qtype = qtype.to_string();
+    response.answers.iter().any(|record| {
+        record.name.as_str().eq_ignore_ascii_case(qname.as_str()) && record.rtype == qtype
+    })
+}
+
+fn final_answer_from_query(query: &dns_core::QueryResult) -> FinalAnswer {
+    FinalAnswer {
+        server: query.server.to_string(),
+        rtt_ms: query.rtt.as_millis() as u64,
+        rcode: query.response.rcode_text.clone(),
+        records: query
+            .response
+            .answers
+            .iter()
+            .map(|record| format!("{} {} {}", record.name, record.ttl, record.rdata))
+            .collect(),
+        nsid: query.response.edns.nsid().map(str::to_owned),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn authoritative_when_flag_set() {
+        let response = DnsResponse {
+            id: 1,
+            rcode: 0,
+            rcode_text: "NOERROR".into(),
+            authoritative: true,
+            truncated: false,
+            answers: vec![],
+            authorities: vec![],
+            additionals: vec![],
+            edns: dns_core::EdnsMeta::default(),
+        };
+        let qname = DomainName::parse("example.com.").expect("qname");
+        assert!(is_authoritative_answer(&response, &qname, RecordType::A));
+    }
+}

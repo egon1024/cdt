@@ -4,8 +4,22 @@ Cole's DNS Tools — a Rust workspace for DNS utilities.
 
 ## Structure
 
-- `crates/dns-core` — shared DNS primitives used across tools
-- `crates/*` — individual tool crates (added as tools are developed)
+- `crates/dns-core` — shared DNS primitives (wire format, EDNS/EDE/NSID)
+- `crates/dns-resolve` — iterative delegation tracing
+- `crates/delve` — `delve` CLI binary
+- `crates/*` — additional tool crates as they are developed
+
+## delve (phase 1)
+
+Trace delegation for a query name:
+
+```bash
+cargo run -p delve -- trace example.com
+cargo run -p delve -- trace example.com --events   # NDJSON on stdout
+cargo run -p delve -- trace example.com --tcp -4 --time 3
+```
+
+Flags follow dig conventions where practical (`--tcp`, `--time`, `--tries`, `-4`/`-6`, `--dnssec`, `--nonsid`). NSID is requested by default.
 
 ## Development
 
