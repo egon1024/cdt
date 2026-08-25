@@ -1,3 +1,6 @@
+use super::detail::{
+    final_detail_lines, hop_detail_lines, hop_summary_line, render_indented_block,
+};
 use super::tree::{ExploreNode, ExploreTree};
 
 pub fn render_outline(tree: &ExploreTree) -> String {
@@ -22,6 +25,7 @@ fn render_node(
 ) {
     let branch = if last { "└─ " } else { "├─ " };
     let child_prefix = format!("{}{}", prefix, if last { "   " } else { "│  " });
+    let detail_indent = format!("{child_prefix}   ");
 
     match node {
         ExploreNode::Delegation {
@@ -29,14 +33,10 @@ fn render_node(
             children,
         } => {
             let hop = tree.hop(*hop_index);
-            output.push_str(&format!(
-                "{prefix}{branch}[{}] {} → {}  {}  {}ms  {}\n",
-                hop.zone,
-                hop.qname,
-                hop.referral_ns.first().unwrap_or(&"—".into()),
-                hop.server,
-                hop.rtt_ms,
-                hop.rcode
+            output.push_str(&format!("{prefix}{branch}{}\n", hop_summary_line(hop)));
+            output.push_str(&render_indented_block(
+                &hop_detail_lines(hop),
+                &detail_indent,
             ));
             render_children(tree, children, &child_prefix, output);
         }
@@ -46,24 +46,21 @@ fn render_node(
         }
         ExploreNode::Hop { hop_index } => {
             let hop = tree.hop(*hop_index);
-            output.push_str(&format!(
-                "{prefix}{branch}[{}] {}  {}  {}ms  {}\n",
-                hop.zone, hop.qname, hop.server, hop.rtt_ms, hop.rcode
+            output.push_str(&format!("{prefix}{branch}{}\n", hop_summary_line(hop)));
+            output.push_str(&render_indented_block(
+                &hop_detail_lines(hop),
+                &detail_indent,
             ));
         }
         ExploreNode::Final => {
+            output.push_str(&format!("{prefix}{branch}final\n"));
             if let Some(answer) = tree.trace().final_response.as_ref() {
-                let records = if answer.records.is_empty() {
-                    "—".to_string()
-                } else {
-                    answer.records.join(", ")
-                };
-                output.push_str(&format!(
-                    "{prefix}{branch}final: {records} ({}) from {} in {}ms\n",
-                    answer.rcode, answer.server, answer.rtt_ms
+                output.push_str(&render_indented_block(
+                    &final_detail_lines(answer),
+                    &detail_indent,
                 ));
             } else {
-                output.push_str(&format!("{prefix}{branch}final: —\n"));
+                output.push_str(&format!("{detail_indent}—\n"));
             }
         }
     }
@@ -104,7 +101,7 @@ mod tests {
                 nsid: None,
                 ede_code: None,
                 ede_text: None,
-                referral_ns: vec!["a.gtld-servers.net.".into()],
+                referral_ns: vec!["a.gtld-servers.net.".into(), "b.gtld-servers.net.".into()],
                 glue: vec![],
             }],
             final_response: Some(FinalAnswer {
@@ -118,12 +115,13 @@ mod tests {
     }
 
     #[test]
-    fn outline_includes_query_and_final_answer() {
+    fn outline_uses_yaml_style_lists() {
         let tree = build_explore_tree(&sample_trace());
         let outline = render_outline(&tree);
         assert!(outline.starts_with("example.com. A\n"));
-        assert!(outline.contains("final: example.com. 300 93.184.216.34"));
-        assert!(outline.contains("[.]"));
-        assert!(outline.contains("198.41.0.4"));
+        assert!(outline.contains("referral NS:\n"));
+        assert!(outline.contains("  - a.gtld-servers.net."));
+        assert!(outline.contains("records:\n"));
+        assert!(outline.contains("  - example.com. 300 93.184.216.34"));
     }
 }

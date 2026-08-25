@@ -13,6 +13,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 
+use super::detail::{format_final_answer, format_hop_detail, hop_summary_line};
 use super::tree::{ExploreNode, ExploreTree};
 
 #[derive(Debug, Clone)]
@@ -234,7 +235,8 @@ fn append_visible_node(
                 .trace()
                 .final_response
                 .as_ref()
-                .map(|answer| format!("final: {}", answer.records.join(", ")))
+                .and_then(|answer| answer.records.first())
+                .map(|record| format!("final: {record}"))
                 .unwrap_or_else(|| "final".into());
             (label, NodeRef::Final)
         }
@@ -267,18 +269,11 @@ fn append_visible_node(
 }
 
 fn delegation_label(hop: &TraceHop) -> String {
-    let referral = hop.referral_ns.first().map(String::as_str).unwrap_or("—");
-    format!(
-        "[{}] {} → {}  {}  {}ms  {}",
-        hop.zone, hop.qname, referral, hop.server, hop.rtt_ms, hop.rcode
-    )
+    format!("{}  {}ms  {}", hop_summary_line(hop), hop.rtt_ms, hop.rcode)
 }
 
 fn hop_label(hop: &TraceHop) -> String {
-    format!(
-        "[{}] {}  {}  {}ms  {}",
-        hop.zone, hop.qname, hop.server, hop.rtt_ms, hop.rcode
-    )
+    delegation_label(hop)
 }
 
 fn detail_text(tree: &ExploreTree, selected: Option<&VisibleNode>) -> String {
@@ -298,46 +293,4 @@ fn detail_text(tree: &ExploreTree, selected: Option<&VisibleNode>) -> String {
             .map(format_final_answer)
             .unwrap_or_else(|| "No final answer recorded.".into()),
     }
-}
-
-fn format_hop_detail(hop: &TraceHop) -> String {
-    let mut lines = vec![
-        format!("zone: {}", hop.zone),
-        format!("query: {} {}", hop.qname, hop.qtype),
-        format!("server: {} ({})", hop.server, hop.transport),
-        format!("rtt: {}ms", hop.rtt_ms),
-        format!("rcode: {}", hop.rcode),
-    ];
-    if let Some(nsid) = &hop.nsid {
-        lines.push(format!("nsid: {nsid}"));
-    }
-    if let Some(code) = hop.ede_code {
-        let text = hop.ede_text.as_deref().unwrap_or("");
-        lines.push(format!("ede: {code}:{text}"));
-    }
-    if !hop.referral_ns.is_empty() {
-        lines.push(format!("referral NS: {}", hop.referral_ns.join(", ")));
-    }
-    if !hop.glue.is_empty() {
-        lines.push(format!("glue: {}", hop.glue.join(", ")));
-    }
-    lines.join("\n")
-}
-
-fn format_final_answer(answer: &dns_resolve::FinalAnswer) -> String {
-    let mut lines = vec![
-        format!("server: {}", answer.server),
-        format!("rtt: {}ms", answer.rtt_ms),
-        format!("rcode: {}", answer.rcode),
-    ];
-    if let Some(nsid) = &answer.nsid {
-        lines.push(format!("nsid: {nsid}"));
-    }
-    if !answer.records.is_empty() {
-        lines.push("records:".into());
-        for record in &answer.records {
-            lines.push(format!("  {record}"));
-        }
-    }
-    lines.join("\n")
 }

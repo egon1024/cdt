@@ -52,6 +52,7 @@ Options follow **dig** conventions (not GNU long flags):
 | `+cache` / `+nocache` | on | Use the global response cache for all queries |
 | `+nocache=QNAME` | — | Skip cache for that exact query name (repeatable); other queries still use cache |
 | `+save` / `+nosave` | on | Persist trace as a session |
+| `+fresh` | off | Always run a live trace; do not reuse a stored session |
 | `-t TYPE` or `-TYPE` | `A` | Query type |
 | `-4` / `-6` | both | Address family; mutually exclusive |
 | `@server` | root hints | Starting server (**IP literal** only today) |
@@ -64,6 +65,25 @@ Human progress is written to **stderr**; with `+events`, structured events go to
 ```bash
 delve trace example.com +events > trace.ndjson
 ```
+
+### Session reuse
+
+When `+save` is enabled (the default), `delve trace` checks for an existing stored
+session whose trace parameters match the current request (qname, qtype, `@server`,
+transport, timeout, tries, DNSSEC/NSID flags, address family, and cache options).
+If a match exists, delve **replays that stored snapshot** instead of issuing new
+DNS queries. The snapshot is kept until retention purge removes it — there is no
+time-based expiry for reuse.
+
+```text
+session: 01JXXXXXXXXXXXXXXXXXXXXXXXXXX (reused snapshot from 2026-08-25T12:34:56Z)
+```
+
+Use `+fresh` to force a live trace and save a new session. `+nosave` disables both
+saving and reuse.
+
+With `+events`, reuse replays stored hop events and emits a final `complete` event
+with `"reused": true`.
 
 ## Configuration
 
@@ -110,7 +130,14 @@ Manual removal: `delve session rm <id>` or `delve session purge`.
 ## Session explore
 
 `delve session explore <id>` walks a stored trace as a tree — delegation hops and
-nameserver-resolution branches — without network I/O.
+nameserver-resolution branches — without network I/O. Omit `<id>` to reopen the
+**last session** used (from a saved trace or a previous explore).
+
+```bash
+delve session explore              # last session (TUI or outline)
+delve session explore 01J...       # explicit id
+delve session explore +outline     # last session, outline mode
+```
 
 | Mode | When | Output |
 |------|------|--------|
@@ -132,6 +159,7 @@ delve session explore 01J... +events   # JSON tree on stdout
 | Response cache | `$XDG_CACHE_HOME/cdt/delve/cache.sqlite` |
 | Sessions (SQLite) | `$XDG_DATA_HOME/cdt/delve/sessions.sqlite` |
 | Sessions (NDJSON fallback) | `$XDG_DATA_HOME/cdt/delve/sessions/*.json` |
+| Last session pointer | `$XDG_STATE_HOME/cdt/delve/last-session` |
 
 On non-Linux platforms, the `directories` crate selects the equivalent config,
 cache, and data locations.

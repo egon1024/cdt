@@ -1,3 +1,4 @@
+mod detail;
 mod json;
 mod outline;
 mod tree;
@@ -138,7 +139,8 @@ mod tests {
         let tree = build_explore_tree(&document.result);
         let outline = render_outline(&tree);
         assert!(outline.contains("example.com. A"));
-        assert!(outline.contains("final: example.com. 300 93.184.216.34"));
+        assert!(outline.contains("records:\n"));
+        assert!(outline.contains("  - example.com. 300 93.184.216.34"));
 
         let json = render_tree_json(&tree, &document.id);
         assert!(json.contains("\"event\":\"explore_tree\""));
