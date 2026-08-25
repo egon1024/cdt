@@ -8,6 +8,8 @@ pub struct SessionDocument {
     pub version: u32,
     pub id: String,
     pub created_at: String,
+    #[serde(default)]
+    pub pinned: bool,
     pub result: TraceResult,
 }
 
@@ -17,6 +19,7 @@ impl SessionDocument {
             version: SESSION_FORMAT_VERSION,
             id,
             created_at: result.started_at.clone(),
+            pinned: false,
             result,
         }
     }
@@ -29,6 +32,7 @@ pub struct SessionSummary {
     pub qtype: String,
     pub created_at: String,
     pub hop_count: usize,
+    pub pinned: bool,
 }
 
 impl SessionSummary {
@@ -39,6 +43,7 @@ impl SessionSummary {
             qtype: document.result.qtype.clone(),
             created_at: document.created_at.clone(),
             hop_count: document.result.hops.len(),
+            pinned: document.pinned,
         }
     }
 }

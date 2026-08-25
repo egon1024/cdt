@@ -1,7 +1,9 @@
 mod cli;
+mod config;
 mod dig_options;
 mod paths;
 mod progress;
+mod retention;
 mod runtime;
 mod session;
 

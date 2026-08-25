@@ -1,6 +1,10 @@
 use std::path::{Path, PathBuf};
 
 use dns_resolve::TraceResult;
+use time::OffsetDateTime;
+
+use crate::config::SessionRetention;
+use crate::retention::{PurgeReport, is_expired};
 
 use super::document::{SessionDocument, SessionSummary};
 use super::id::new_session_id;
@@ -112,6 +116,62 @@ impl SessionStore for NdjsonSessionStore {
         }
         ids.sort();
         Ok(ids)
+    }
+
+    fn set_pinned(&mut self, id: &str, pinned: bool) -> Result<()> {
+        if let Some(reason) = &self.disabled_reason {
+            return Err(SessionError::Store(reason.clone()));
+        }
+        let mut document = self.get(id)?;
+        document.pinned = pinned;
+        let body = serde_json::to_string_pretty(&document)
+            .map_err(|error| SessionError::Serialization(error.to_string()))?;
+        std::fs::write(self.session_path(id), body)
+            .map_err(|error| SessionError::Store(error.to_string()))?;
+        Ok(())
+    }
+
+    fn purge_by_retention(
+        &mut self,
+        retention: SessionRetention,
+        dry_run: bool,
+    ) -> Result<PurgeReport> {
+        if let Some(reason) = &self.disabled_reason {
+            return Err(SessionError::Store(reason.clone()));
+        }
+        if retention == SessionRetention::Never {
+            return Ok(PurgeReport {
+                removed: 0,
+                skipped_unparseable: 0,
+            });
+        }
+
+        let now = OffsetDateTime::now_utc();
+        let ids = self.all_ids()?;
+        let mut removed = 0;
+        let mut skipped_unparseable = 0;
+
+        for id in ids {
+            let document = self.get(&id)?;
+            if document.pinned {
+                continue;
+            }
+            match is_expired(&document.created_at, retention, now) {
+                Some(true) => {
+                    if !dry_run {
+                        self.remove(&id)?;
+                    }
+                    removed += 1;
+                }
+                Some(false) => {}
+                None => skipped_unparseable += 1,
+            }
+        }
+
+        Ok(PurgeReport {
+            removed,
+            skipped_unparseable,
+        })
     }
 }
 

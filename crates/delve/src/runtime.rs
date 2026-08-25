@@ -3,7 +3,9 @@ use std::sync::{Arc, Mutex};
 use dns_cache::{ResponseCache, SqliteCache};
 use dns_resolve::TraceResult;
 
+use crate::config::DelveConfig;
 use crate::paths::DelvePaths;
+use crate::retention::retention_label;
 use crate::session::SessionStore;
 use crate::session::{
     OpenSessionStore, SessionDocument, SessionError, SessionSummary, open_session_store,
@@ -11,6 +13,7 @@ use crate::session::{
 
 pub struct Runtime {
     pub paths: DelvePaths,
+    pub config: DelveConfig,
     pub cache: Option<Arc<dyn ResponseCache>>,
     sessions: Mutex<OpenSessionStore>,
     pub warnings: Vec<String>,
@@ -22,10 +25,24 @@ impl Runtime {
     }
 
     pub fn open(paths: DelvePaths) -> Self {
-        let mut warnings = Vec::new();
-        let (sessions, session_warning) = open_session_store(&paths);
-        if let Some(warning) = session_warning {
+        let (config, config_warnings) = DelveConfig::load(&paths);
+        let mut warnings = config_warnings;
+        let session_report = open_session_store(&paths, config.session_retention);
+        if let Some(warning) = session_report.fallback_warning {
             warnings.push(warning);
+        }
+        if session_report.purge_report.removed > 0 {
+            warnings.push(format!(
+                "purged {} sessions older than {}",
+                session_report.purge_report.removed,
+                retention_label(config.session_retention),
+            ));
+        }
+        if session_report.purge_report.skipped_unparseable > 0 {
+            warnings.push(format!(
+                "warning: skipped {} sessions with unparseable timestamps during retention purge",
+                session_report.purge_report.skipped_unparseable
+            ));
         }
 
         let cache = match paths.ensure_cache_dir() {
@@ -52,8 +69,9 @@ impl Runtime {
 
         Self {
             paths,
+            config,
             cache,
-            sessions: Mutex::new(sessions),
+            sessions: Mutex::new(session_report.store),
             warnings,
         }
     }
@@ -79,6 +97,30 @@ impl Runtime {
     pub fn remove_session(&self, id: &str) -> Result<(), SessionError> {
         self.sessions.lock().expect("session lock").remove(id)
     }
+
+    pub fn pin_session(&self, id: &str) -> Result<(), SessionError> {
+        self.sessions
+            .lock()
+            .expect("session lock")
+            .set_pinned(id, true)
+    }
+
+    pub fn unpin_session(&self, id: &str) -> Result<(), SessionError> {
+        self.sessions
+            .lock()
+            .expect("session lock")
+            .set_pinned(id, false)
+    }
+
+    pub fn purge_sessions(
+        &self,
+        dry_run: bool,
+    ) -> Result<crate::retention::PurgeReport, SessionError> {
+        self.sessions
+            .lock()
+            .expect("session lock")
+            .purge_by_retention(self.config.session_retention, dry_run)
+    }
 }
 
 #[cfg(test)]
@@ -94,8 +136,10 @@ mod degradation_tests {
         std::fs::create_dir_all(&paths.data_dir).expect("data dir");
         let sessions_db = paths.data_dir.join("sessions.sqlite");
         std::fs::write(&sessions_db, "not sqlite").expect("write");
-        let (mut store, warning) = crate::session::open_session_store(&paths);
-        assert!(warning.is_some());
+        let report =
+            crate::session::open_session_store(&paths, crate::config::SessionRetention::Never);
+        assert!(report.fallback_warning.is_some());
+        let mut store = report.store;
         let id = store
             .save(&TraceResult {
                 qname: "example.com.".into(),

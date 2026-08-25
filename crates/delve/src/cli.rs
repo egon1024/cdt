@@ -53,6 +53,12 @@ pub enum SessionSubcommand {
     Show(SessionShowArgs),
     /// Remove a stored session.
     Rm(SessionRmArgs),
+    /// Pin a session so retention purge skips it.
+    Pin(SessionIdArgs),
+    /// Unpin a session so retention purge may remove it.
+    Unpin(SessionIdArgs),
+    /// Purge sessions older than configured retention.
+    Purge(SessionPurgeArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -70,6 +76,18 @@ pub struct SessionShowArgs {
 #[derive(Debug, Parser)]
 pub struct SessionRmArgs {
     pub id: String,
+}
+
+#[derive(Debug, Parser)]
+pub struct SessionIdArgs {
+    pub id: String,
+}
+
+#[derive(Debug, Parser)]
+pub struct SessionPurgeArgs {
+    /// Report what would be removed without deleting.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -209,8 +227,9 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
         SessionSubcommand::List => {
             let summaries = runtime.list_sessions()?;
             for summary in summaries {
+                let marker = if summary.pinned { "* " } else { "  " };
                 println!(
-                    "{}  {} {}  {} hops  {}",
+                    "{marker}{}  {} {}  {} hops  {}",
                     summary.id, summary.qname, summary.qtype, summary.hop_count, summary.created_at
                 );
             }
@@ -224,6 +243,23 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
         }
         SessionSubcommand::Rm(args) => {
             runtime.remove_session(&args.id)?;
+            Ok(())
+        }
+        SessionSubcommand::Pin(args) => {
+            runtime.pin_session(&args.id)?;
+            Ok(())
+        }
+        SessionSubcommand::Unpin(args) => {
+            runtime.unpin_session(&args.id)?;
+            Ok(())
+        }
+        SessionSubcommand::Purge(args) => {
+            let report = runtime.purge_sessions(args.dry_run)?;
+            if args.dry_run {
+                println!("would remove {} sessions", report.removed);
+            } else {
+                println!("removed {} sessions", report.removed);
+            }
             Ok(())
         }
     }
@@ -285,6 +321,9 @@ fn print_session(document: &SessionDocument, events: bool) {
     }
 
     println!("session: {}", document.id);
+    if document.pinned {
+        println!("pinned: yes");
+    }
     println!("started: {}", document.created_at);
     println!("query: {} {}", document.result.qname, document.result.qtype);
     for hop in &document.result.hops {
