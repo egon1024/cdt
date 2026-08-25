@@ -1,15 +1,17 @@
 [package]
-name = "dns-core"
-description = "Shared DNS primitives for Cole's DNS Tools"
+name = "dns-resolve"
+description = "Iterative DNS resolution and delegation tracing for delve"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+dns-core = { path = "../dns-core" }
 hickory-proto.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+time.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
