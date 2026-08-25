@@ -176,6 +176,9 @@ fn run_parsed_trace(options: TraceOptions, runtime: &Runtime) -> Result<(), CliE
     config.ipv4_only = options.ipv4_only;
     config.ipv6_only = options.ipv6_only;
     config.use_cache = options.use_cache;
+    for raw in &options.cache_skip_qnames {
+        config.cache_skip_qnames.insert(DomainName::parse(raw)?);
+    }
     config.cache = runtime.cache.clone();
 
     if let Some(server) = options.server.as_deref() {

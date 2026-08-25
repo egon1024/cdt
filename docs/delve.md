@@ -48,7 +48,8 @@ Options follow **dig** conventions (not GNU long flags):
 | `+dnssec` / `+nodnssec` | off | Sets the DO bit |
 | `+nsid` / `+nonsid` | **on** | delve requests NSID by default |
 | `+events` | off | NDJSON event stream on stdout |
-| `+cache` / `+nocache` | on | Use the global response cache |
+| `+cache` / `+nocache` | on | Use the global response cache for all queries |
+| `+nocache=QNAME` | — | Skip cache for that exact query name (repeatable); other queries still use cache |
 | `+save` / `+nosave` | on | Persist trace as a session |
 | `-t TYPE` or `-TYPE` | `A` | Query type |
 | `-4` / `-6` | both | Address family; mutually exclusive |

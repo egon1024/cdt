@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -75,6 +76,7 @@ pub struct TraceConfig {
     pub max_depth: usize,
     pub start_servers: Option<Vec<IpAddr>>,
     pub use_cache: bool,
+    pub cache_skip_qnames: HashSet<DomainName>,
     pub cache: Option<Arc<dyn ResponseCache>>,
     pub exchange: Arc<dyn DnsExchange>,
     pub exchange_counter: Arc<AtomicUsize>,
@@ -96,6 +98,7 @@ impl TraceConfig {
             max_depth: 32,
             start_servers: None,
             use_cache: true,
+            cache_skip_qnames: HashSet::new(),
             cache: None,
             exchange: Arc::new(DefaultExchange),
             exchange_counter: Arc::new(AtomicUsize::new(0)),
@@ -175,7 +178,7 @@ pub(crate) fn query_server(
         request_nsid: config.request_nsid,
     };
 
-    if config.use_cache {
+    if cache_enabled_for(config, qname) {
         if let Some(cache) = &config.cache {
             if let Some(entry) = cache.get(&key) {
                 return Ok(entry.result);
@@ -189,7 +192,7 @@ pub(crate) fn query_server(
         .exchange(server, config.port, &options)
         .map_err(ResolveError::from)?;
 
-    if config.use_cache {
+    if cache_enabled_for(config, qname) {
         if let Some(cache) = &config.cache {
             let ttl = ttl_from_result(&result);
             let entry = CachedEntry::from_query_result(
@@ -202,6 +205,18 @@ pub(crate) fn query_server(
     }
 
     Ok(result)
+}
+
+pub(crate) fn cache_enabled_for(config: &TraceConfig, qname: &DomainName) -> bool {
+    if !config.use_cache {
+        return false;
+    }
+    for skip in &config.cache_skip_qnames {
+        if qname.as_str().eq_ignore_ascii_case(skip.as_str()) {
+            return false;
+        }
+    }
+    true
 }
 
 pub(crate) fn hop_from_query(
@@ -333,5 +348,29 @@ mod cache_tests {
         query_server(server, &config, &config.qname.clone(), RecordType::A).expect("second");
 
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn nocache_qname_skips_only_matching_queries() {
+        let qname = DomainName::parse("example.com.").expect("qname");
+        let ns_name = DomainName::parse("ns.example.com.").expect("ns");
+        let mut config = TraceConfig::new(qname, RecordType::A);
+        let cache = config.with_memory_cache();
+        config
+            .cache_skip_qnames
+            .insert(DomainName::parse("ns.example.com.").expect("skip"));
+        let calls = Arc::new(AtomicUsize::new(0));
+        config.exchange = Arc::new(CountingExchange {
+            calls: calls.clone(),
+        });
+
+        let server = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
+        query_server(server, &config, &config.qname, RecordType::A).expect("first main");
+        query_server(server, &config, &config.qname, RecordType::A).expect("second main");
+        query_server(server, &config, &ns_name, RecordType::A).expect("first ns");
+        query_server(server, &config, &ns_name, RecordType::A).expect("second ns");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(cache.stats().hits, 1);
     }
 }

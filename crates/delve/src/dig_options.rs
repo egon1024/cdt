@@ -15,6 +15,7 @@ pub struct TraceOptions {
     pub dnssec: bool,
     pub request_nsid: bool,
     pub use_cache: bool,
+    pub cache_skip_qnames: Vec<String>,
     pub save_session: bool,
     pub events: bool,
 }
@@ -33,6 +34,7 @@ impl Default for TraceOptions {
             dnssec: false,
             request_nsid: true,
             use_cache: true,
+            cache_skip_qnames: Vec::new(),
             save_session: true,
             events: false,
         }
@@ -146,7 +148,17 @@ fn apply_query_option(options: &mut TraceOptions, arg: &str) -> Result<(), Parse
         "nsid" => options.request_nsid = !negate,
         "nonsid" => options.request_nsid = false,
         "events" => options.events = !negate,
-        "cache" => options.use_cache = !negate,
+        "cache" => {
+            if negate {
+                if let Some(raw) = value {
+                    options.cache_skip_qnames.push(raw.to_string());
+                } else {
+                    options.use_cache = false;
+                }
+            } else {
+                options.use_cache = true;
+            }
+        }
         "save" => options.save_session = !negate,
         other => return Err(ParseError::UnknownOption(format!("+{other}"))),
     }
@@ -232,6 +244,18 @@ mod tests {
         assert_eq!(options.qtype, "NS");
         assert!(!options.request_nsid);
         assert!(options.events);
+    }
+
+    #[test]
+    fn supports_nocache_for_specific_qname() {
+        let options =
+            parse_trace_args(&args(&["example.com", "+nocache=ns.example.com"])).expect("parse");
+
+        assert!(options.use_cache);
+        assert_eq!(
+            options.cache_skip_qnames,
+            vec!["ns.example.com".to_string()]
+        );
     }
 
     #[test]
