@@ -10,26 +10,31 @@ can respect, even if I don't agree with it. I am not currently planning to
 reevaluate how cdt is developed, and I will not engage in arguments about that
 decision.
 
-## Structure
+## Utilities
 
-- `cdt-manifest.toml` — bundle and utility version manifest (source of truth for releases)
-- `crates/cdt` — `cdt` bundle meta utility (`cdt version`, `cdt list`)
-- `crates/dns-core` — shared DNS primitives (wire format, EDNS/EDE/NSID)
-- `crates/dns-resolve` — iterative delegation tracing
-- `crates/delve` — `delve` CLI binary
-- `crates/*` — additional tool crates as they are developed
+User-facing tools ship in the CDT bundle. Each utility has a short guide in
+`docs/`:
 
-## delve (phase 1)
-
-Trace delegation for a query name:
+| Utility | Binary | Documentation |
+|---------|--------|-----------------|
+| Bundle meta | `cdt` | [docs/cdt.md](docs/cdt.md) |
+| Delegation tracer | `delve` | [docs/delve.md](docs/delve.md) |
 
 ```bash
 cargo run -p delve -- trace example.com
-cargo run -p delve -- trace example.com +events          # NDJSON on stdout
-cargo run -p delve -- trace example.com +tcp -4 +timeout=3 -t NS @1.1.1.1
+cargo run -p cdt -- version
 ```
 
-Query options follow dig conventions: `+tcp`, `+timeout=` (also `+time=`), `+tries=`, `+dnssec`, `-t TYPE`, `-4`/`-6`, `@server`. NSID is requested by default; use `+nonsid` to disable.
+## Workspace layout
+
+- `cdt-manifest.toml` — bundle and utility version manifest (source of truth for releases)
+- `docs/` — per-utility documentation (Markdown)
+- `crates/cdt` — `cdt` bundle meta utility
+- `crates/delve` — `delve` CLI binary
+- `crates/dns-core` — shared DNS primitives (wire format, EDNS/EDE/NSID)
+- `crates/dns-resolve` — iterative delegation tracing
+- `crates/dns-cache` — TTL-aware response cache (used by delve)
+- `crates/*` — additional tool crates as they are developed
 
 ## Development
 
@@ -73,7 +78,7 @@ Configure a `RELEASE_PUSH_TOKEN` repository secret (admin PAT) so the release wo
 
 ## Planned (not yet implemented)
 
-- Documentation site generation and deployment
+- Documentation site generation and deployment (utility guides live in `docs/` for now)
 - Release packages and distribution assets
 
 ## License
