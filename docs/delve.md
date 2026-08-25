@@ -141,7 +141,7 @@ delve session explore +outline     # last session, outline mode
 
 | Mode | When | Output |
 |------|------|--------|
-| **TUI** (default) | Interactive terminal | Full-screen tree + detail pane; `j`/`k` move, Enter expand/collapse, `q` quit |
+| **TUI** (default) | Interactive terminal | Full-screen tree + detail pane; `j`/`k` move tree, `Tab` focus detail, `j`/`k` scroll detail, `q` quit |
 | **Outline** | `+outline`, or stdout not a tty | One-shot indented tree on stdout |
 | **Tree JSON** | `+events` | Structured tree document on stdout |
 

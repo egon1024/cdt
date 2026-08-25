@@ -33,6 +33,12 @@ enum NodeRef {
     Final,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pane {
+    Tree,
+    Detail,
+}
+
 pub fn run_tui(tree: &ExploreTree) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -42,6 +48,8 @@ pub fn run_tui(tree: &ExploreTree) -> io::Result<()> {
 
     let mut expanded_paths: Vec<Vec<usize>> = default_expanded_paths(tree);
     let mut selected = 0;
+    let mut focused = Pane::Tree;
+    let mut detail_scroll = 0u16;
     let mut result = Ok(());
 
     loop {
@@ -66,27 +74,37 @@ pub fn run_tui(tree: &ExploreTree) -> io::Result<()> {
                     } else {
                         "  "
                     };
-                    let style = if index == selected {
-                        Style::default().add_modifier(Modifier::REVERSED)
-                    } else {
-                        Style::default()
-                    };
+                    let mut style = Style::default();
+                    if focused == Pane::Tree && index == selected {
+                        style = style.add_modifier(Modifier::REVERSED);
+                    }
                     ListItem::new(Line::from(format!("{indent}{marker}{}", node.label)))
                         .style(style)
                 })
                 .collect();
 
+            let tree_title = if focused == Pane::Tree {
+                format!("{} {}  [tree]", tree.qname, tree.qtype)
+            } else {
+                format!("{} {}  [tree — Tab]", tree.qname, tree.qtype)
+            };
             let tree_widget = List::new(tree_items).block(
                 Block::default()
-                    .title(format!("{} {}", tree.qname, tree.qtype))
+                    .title(tree_title)
                     .borders(Borders::ALL),
             );
             frame.render_widget(tree_widget, chunks[0]);
 
             let detail = detail_text(tree, visible.get(selected));
+            let detail_title = if focused == Pane::Detail {
+                "Details  [focused — j/k scroll]".to_string()
+            } else {
+                "Details  [Tab to focus]".to_string()
+            };
             let detail_widget = Paragraph::new(detail)
-                .block(Block::default().title("Details").borders(Borders::ALL))
-                .wrap(Wrap { trim: false });
+                .block(Block::default().title(detail_title).borders(Borders::ALL))
+                .wrap(Wrap { trim: false })
+                .scroll((detail_scroll, 0));
             frame.render_widget(detail_widget, chunks[1]);
         })?;
 
@@ -97,29 +115,58 @@ pub fn run_tui(tree: &ExploreTree) -> io::Result<()> {
                 }
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => break,
-                    KeyCode::Down | KeyCode::Char('j') if selected + 1 < visible.len() => {
-                        selected += 1;
+                    KeyCode::Tab => {
+                        focused = match focused {
+                            Pane::Tree => Pane::Detail,
+                            Pane::Detail => Pane::Tree,
+                        };
                     }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        selected = selected.saturating_sub(1);
-                    }
-                    KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
-                        if let Some(node) = visible.get(selected)
-                            && node.expandable
-                        {
-                            toggle_path(&mut expanded_paths, &node.node);
-                        }
-                    }
-                    KeyCode::Left | KeyCode::Char('h') => {
-                        if let Some(node) = visible.get(selected)
-                            && node.expandable
-                            && node.expanded
-                        {
-                            toggle_path(&mut expanded_paths, &node.node);
-                        }
-                    }
-                    KeyCode::Char('?') => {}
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
+                    KeyCode::Char('?') => {}
+                    _ if focused == Pane::Tree => match key.code {
+                        KeyCode::Down | KeyCode::Char('j') if selected + 1 < visible.len() => {
+                            selected += 1;
+                            detail_scroll = 0;
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            selected = selected.saturating_sub(1);
+                            detail_scroll = 0;
+                        }
+                        KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
+                            if let Some(node) = visible.get(selected)
+                                && node.expandable
+                            {
+                                toggle_path(&mut expanded_paths, &node.node);
+                            }
+                        }
+                        KeyCode::Left | KeyCode::Char('h') => {
+                            if let Some(node) = visible.get(selected)
+                                && node.expandable
+                                && node.expanded
+                            {
+                                toggle_path(&mut expanded_paths, &node.node);
+                            }
+                        }
+                        _ => {}
+                    },
+                    _ if focused == Pane::Detail => match key.code {
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            detail_scroll = detail_scroll.saturating_add(1);
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            detail_scroll = detail_scroll.saturating_sub(1);
+                        }
+                        KeyCode::PageDown | KeyCode::Char(' ') => {
+                            detail_scroll = detail_scroll.saturating_add(10);
+                        }
+                        KeyCode::PageUp => {
+                            detail_scroll = detail_scroll.saturating_sub(10);
+                        }
+                        KeyCode::Home => {
+                            detail_scroll = 0;
+                        }
+                        _ => {}
+                    },
                     _ => {}
                 }
             }
