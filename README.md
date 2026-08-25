@@ -20,6 +20,8 @@ User-facing tools ship in the CDT bundle. Each utility has a short guide in
 | Bundle meta | `cdt` | [docs/cdt.md](docs/cdt.md) |
 | Delegation tracer | `delve` | [docs/delve.md](docs/delve.md) |
 
+Development phases and status: [docs/roadmap.md](docs/roadmap.md).
+
 ```bash
 cargo run -p delve -- trace example.com
 cargo run -p cdt -- version

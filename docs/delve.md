@@ -30,6 +30,7 @@ session: 01JXXXXXXXXXXXXXXXXXXXXXXXXXX
 | `delve session unpin <id>` | Allow retention purge again |
 | `delve session purge` | Apply retention policy now |
 | `delve session purge --dry-run` | Report what would be removed |
+| `delve session explore <id>` | **(Phase 3)** Interactive tree explorer (TUI) |
 | `delve cache stats` | Response cache statistics |
 | `delve cache purge` | Remove expired cache entries |
 | `delve cache purge --all` | Clear the entire response cache |
@@ -143,4 +144,6 @@ Stored sessions use a versioned JSON document (`version: 1`) containing the same
 ## See also
 
 - [cdt](cdt.md) — bundle version and utility list
+- [Roadmap](roadmap.md) — Phase 1–3 status
+- [Session explore design](specs/session-explore-design.md) — Phase 3 TUI + outline spec
 - [Repository README](../README.md) — development, CI, releases
