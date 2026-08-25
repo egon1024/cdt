@@ -67,6 +67,16 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Collect changed files
+        id: changes
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          {
+            git diff --name-only "${base}...HEAD" || true
+          } > changed-files.txt
+          echo "count=$(wc -l < changed-files.txt | tr -d ' ')" >> "$GITHUB_OUTPUT"
+
       - name: Compute next version
         id: version
         env:
@@ -76,6 +86,7 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
+          export CHANGED_FILES="$(cat changed-files.txt)"
           if [[ -f trusted/.github/actions/version-bump/version-bump.sh ]]; then
             bash trusted/.github/actions/version-bump/version-bump.sh
           elif [[ -f .github/actions/version-bump/version-bump.sh ]]; then
@@ -92,6 +103,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.pr_meta.outputs.number }}
           VERSION_ERROR: ${{ steps.version.outputs.error }}
+          CURRENT_BUNDLE_VERSION: ${{ steps.version.outputs.current_bundle_version }}
+          NEXT_BUNDLE_VERSION: ${{ steps.version.outputs.next_bundle_version }}
+          BUNDLE_BUMP_LEVEL: ${{ steps.version.outputs.bump_level }}
+          BUNDLE_BUMP_SOURCE: ${{ steps.version.outputs.bump_source }}
+          COMPONENT_VERSIONS: ${{ steps.version.outputs.component_versions }}
           CURRENT_VERSION: ${{ steps.version.outputs.current_version }}
           NEXT_VERSION: ${{ steps.version.outputs.next_version }}
           BUMP_LEVEL: ${{ steps.version.outputs.bump_level }}

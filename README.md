@@ -4,6 +4,8 @@ Cole's DNS Tools — a Rust workspace for DNS utilities.
 
 ## Structure
 
+- `cdt-manifest.toml` — bundle and utility version manifest (source of truth for releases)
+- `crates/cdt` — `cdt` bundle meta utility (`cdt version`, `cdt list`)
 - `crates/dns-core` — shared DNS primitives (wire format, EDNS/EDE/NSID)
 - `crates/dns-resolve` — iterative delegation tracing
 - `crates/delve` — `delve` CLI binary
@@ -29,21 +31,38 @@ make build
 make help    # list all targets
 ```
 
-CI runs `make test` on pull requests (aligned with DNSConduit).
+CI runs `make test` on pull requests.
 
 ## Releases
 
-Versioning follows DNSConduit-style semver rules:
+CDT ships as a **bundle** (`cdt`) containing independently versioned utilities. The manifest in `cdt-manifest.toml` is the source of truth; release automation syncs versions into each crate.
 
-- **Current version** is the highest semver among GitHub releases and git tags (or `0.0.0` before the first release).
-- **Default bump** on merge to `main` is **minor** (first release → `0.1.0`).
-- Override with a PR description line containing only `#major`, `#minor`, or `#patch` (case-insensitive). Only one directive is allowed.
+```bash
+make version                 # show manifest + cdt version output
+cargo run -p cdt -- version  # bundle and utility versions
+delve --version              # delve utility version only
+```
 
-Pull requests get an automated **version preview** comment. On merge to `main`, the **Release** workflow bumps `Cargo.toml` / `Cargo.lock` and creates a GitHub release.
+### Versioning rules
 
-Configure a `RELEASE_PUSH_TOKEN` repository secret (admin PAT) so the release workflow can merge the version-bump PR. Release artifacts and docs deploy are not wired yet.
+| What | Version | Tag |
+|------|---------|-----|
+| Bundle | `cdt` in `cdt-manifest.toml` | `cdt-v0.1.0` |
+| Utilities | per-component in manifest (e.g. `delve 0.1.0`) | listed in release notes |
+| Internal libs | `workspace.package.version` (tracks bundle) | — |
+
+**Bundle bump** on merge to `main` defaults to **minor** (first release → `0.1.0`).
+
+**PR directives:**
+
+- Bundle: `#cdt:minor` or shorthand `#minor` (only one bundle level per PR)
+- Utility: `#delve:patch`, `#delve:minor`, etc.
+- Utilities with changes under `crates/<utility>/` receive an automatic **patch** bump unless overridden
+
+Pull requests get an automated **version preview** comment. On merge to `main`, the **Release** workflow bumps `cdt-manifest.toml`, crate `Cargo.toml` files, and creates a GitHub release tagged `cdt-vX.Y.Z`.
+
+Configure a `RELEASE_PUSH_TOKEN` repository secret (admin PAT) so the release workflow can merge the version-bump PR. Release artifacts are not wired yet.
 
 ## Planned (not yet implemented)
 
-- Documentation site generation and deployment (DNSConduit-style `docs-ci` / `docs-deploy`)
-- Release packages and distribution assets (DNSConduit-style `packaging/` and release workflows)
+- Release packages and distribution assets

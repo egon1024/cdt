@@ -1,8 +1,11 @@
-# Compute the next release version on merge to main, bump Cargo workspace version,
-# and create a GitHub Release. Release artifacts and docs deploy are not wired yet.
+# Compute the next CDT bundle version on merge to main, bump cdt-manifest.toml and
+# component crate versions, and create a GitHub Release tagged cdt-vX.Y.Z.
 #
-# First release: no tags/releases → current 0.0.0 + default minor bump → 0.1.0.
-# PR bump directives: a line containing only #major, #minor, or #patch (case-insensitive).
+# First release: bundle 0.0.0 + default minor bump → 0.1.0.
+# PR directives:
+#   - Bundle: #cdt:minor or shorthand #minor (default: minor)
+#   - Utility: #delve:patch, #delve:minor, etc.
+# Utilities with changes under crates/<utility>/ auto-receive a patch bump.
 
 name: Release
 
@@ -13,8 +16,9 @@ on:
     inputs:
       release_version:
         description: >-
-          Publish this version (e.g. 0.1.0). Use when main already has the Cargo bump
-          but the GitHub release failed. Leave empty to compute from tags and PR bump rules.
+          Publish this bundle version (e.g. 0.1.0). Use when main already has the
+          version bump but the GitHub release failed. Leave empty to compute from tags
+          and PR bump rules.
         required: false
         type: string
 
@@ -48,6 +52,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: bash .github/scripts/resolve-pr-body.sh "${{ github.event.head_commit.message }}"
 
+      - name: Collect changed files
+        id: changes
+        run: |
+          set -euo pipefail
+          git diff --name-only HEAD~1 HEAD > changed-files.txt || true
+          {
+            echo "files<<EOF"
+            cat changed-files.txt
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Use manual release version
         if: github.event_name == 'workflow_dispatch' && inputs.release_version != ''
         id: manual_version
@@ -56,28 +71,38 @@ jobs:
         run: |
           set -euo pipefail
           ver="${RELEASE_VERSION#v}"
+          ver="${ver#cdt-v}"
           if [[ ! "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::release_version must be MAJOR.MINOR.PATCH (got: ${RELEASE_VERSION})"
             exit 1
           fi
-          echo "next_version=${ver}" >>"$GITHUB_OUTPUT"
+          echo "next_bundle_version=${ver}" >>"$GITHUB_OUTPUT"
 
       - name: Compute next version
         id: version
-        if: steps.manual_version.outputs.next_version == ''
+        if: steps.manual_version.outputs.next_bundle_version == ''
         uses: ./.github/actions/version-bump
         with:
           pr_body: ${{ steps.pr.outputs.body || '' }}
           default_bump: minor
+          changed_files: ${{ steps.changes.outputs.files }}
 
       - name: Select release version
         id: release_version
         run: |
           set -euo pipefail
-          if [[ -n "${{ steps.manual_version.outputs.next_version }}" ]]; then
-            echo "next_version=${{ steps.manual_version.outputs.next_version }}" >>"$GITHUB_OUTPUT"
+          if [[ -n "${{ steps.manual_version.outputs.next_bundle_version }}" ]]; then
+            echo "next_bundle_version=${{ steps.manual_version.outputs.next_bundle_version }}" >>"$GITHUB_OUTPUT"
+            components="$(python3 - <<'PY'
+import json, tomllib, pathlib
+manifest = tomllib.loads(pathlib.Path("cdt-manifest.toml").read_bytes())
+print(json.dumps({c["name"]: c["version"] for c in manifest["components"]}, separators=(",", ":")))
+PY
+)"
+            echo "component_versions=${components}" >>"$GITHUB_OUTPUT"
           else
-            echo "next_version=${{ steps.version.outputs.next_version }}" >>"$GITHUB_OUTPUT"
+            echo "next_bundle_version=${{ steps.version.outputs.next_bundle_version }}" >>"$GITHUB_OUTPUT"
+            echo "component_versions=${{ steps.version.outputs.component_versions }}" >>"$GITHUB_OUTPUT"
           fi
 
       - name: Validate version bump
@@ -90,12 +115,13 @@ jobs:
         id: exists
         env:
           GH_TOKEN: ${{ github.token }}
-          NEXT_VERSION: ${{ steps.release_version.outputs.next_version }}
+          NEXT_VERSION: ${{ steps.release_version.outputs.next_bundle_version }}
         run: |
           set -euo pipefail
-          if gh release view "$NEXT_VERSION" >/dev/null 2>&1; then
+          tag="cdt-v${NEXT_VERSION}"
+          if gh release view "$tag" >/dev/null 2>&1; then
             echo "skip=true" >>"$GITHUB_OUTPUT"
-            echo "Release ${NEXT_VERSION} already exists; skipping."
+            echo "Release ${tag} already exists; skipping."
           else
             echo "skip=false" >>"$GITHUB_OUTPUT"
           fi
@@ -104,17 +130,18 @@ jobs:
         if: steps.exists.outputs.skip != 'true'
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Bump Cargo.toml workspace version and resync Cargo.lock
+      - name: Bump manifest and crate versions
         if: steps.exists.outputs.skip != 'true'
         env:
-          NEXT_VERSION: ${{ steps.release_version.outputs.next_version }}
-        run: bash .github/scripts/bump-cargo-versions.sh
+          BUNDLE_VERSION: ${{ steps.release_version.outputs.next_bundle_version }}
+          COMPONENT_VERSIONS: ${{ steps.release_version.outputs.component_versions }}
+        run: bash .github/scripts/bump-cdt-versions.sh
 
       - name: Commit release preparation
         if: steps.exists.outputs.skip != 'true'
         id: commit
         env:
-          NEXT_VERSION: ${{ steps.release_version.outputs.next_version }}
+          NEXT_VERSION: ${{ steps.release_version.outputs.next_bundle_version }}
           GH_TOKEN: ${{ secrets.RELEASE_PUSH_TOKEN }}
         run: |
           set -euo pipefail
@@ -123,7 +150,7 @@ jobs:
             exit 1
           fi
 
-          git add Cargo.toml Cargo.lock
+          git add cdt-manifest.toml Cargo.toml Cargo.lock crates/
           if git diff --cached --quiet; then
             echo "committed=false" >>"$GITHUB_OUTPUT"
             echo "Release preparation already on ${RELEASE_BRANCH} for ${NEXT_VERSION}; skipping commit."
@@ -133,7 +160,7 @@ jobs:
           release_branch="chore/release-${NEXT_VERSION}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "chore: release ${NEXT_VERSION}"
+          git commit -m "chore: release cdt ${NEXT_VERSION}"
           gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/heads/${release_branch}" 2>/dev/null || true
           git push --force-with-lease \
             "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
@@ -142,8 +169,8 @@ jobs:
           pr_number="$(gh pr list --head "${release_branch}" --base "${RELEASE_BRANCH}" --state open --json number --jq '.[0].number // empty')"
           if [[ -z "${pr_number}" ]]; then
             gh pr create --base "${RELEASE_BRANCH}" --head "${release_branch}" \
-              --title "chore: release ${NEXT_VERSION}" \
-              --body "Automated workspace version bump for ${NEXT_VERSION}."
+              --title "chore: release cdt ${NEXT_VERSION}" \
+              --body "Automated CDT bundle version bump for ${NEXT_VERSION}."
             pr_number="$(gh pr view "${release_branch}" --json number --jq .number)"
           fi
           gh pr merge "${pr_number}" --rebase --admin --delete-branch
@@ -152,58 +179,63 @@ jobs:
       - name: Verify release preparation on release branch
         if: steps.exists.outputs.skip != 'true'
         env:
-          NEXT_VERSION: ${{ steps.release_version.outputs.next_version }}
+          NEXT_VERSION: ${{ steps.release_version.outputs.next_bundle_version }}
         run: |
           set -euo pipefail
           git fetch origin "${RELEASE_BRANCH}"
-          cargo_ver="$(git show "origin/${RELEASE_BRANCH}:Cargo.toml" | awk '
-            /^\[workspace\.package\]/ { in_pkg=1; next }
-            /^\[/ { in_pkg=0 }
-            in_pkg && /^version = / && ver == "" {
+          manifest_ver="$(git show "origin/${RELEASE_BRANCH}:cdt-manifest.toml" | awk '
+            /^\[bundle\]/ { in_bundle=1; next }
+            /^\[/ { in_bundle=0 }
+            in_bundle && /^version = / {
               val=$3
               gsub(/"/, "", val)
-              ver=val
+              print val
+              exit
             }
-            END { print ver }
           ')"
-          if [[ "${cargo_ver}" != "${NEXT_VERSION}" ]]; then
-            echo "::error::Cargo.toml on ${RELEASE_BRANCH} is ${cargo_ver:-unknown}; expected ${NEXT_VERSION}"
+          if [[ "${manifest_ver}" != "${NEXT_VERSION}" ]]; then
+            echo "::error::cdt-manifest.toml on ${RELEASE_BRANCH} is ${manifest_ver:-unknown}; expected ${NEXT_VERSION}"
             exit 1
           fi
-          lock_ver="$(git show "origin/${RELEASE_BRANCH}:Cargo.lock" | awk '
-            /^name = "dns-core"$/ { want=1; next }
-            want && /^version = / && ver == "" {
-              val=$3
-              gsub(/"/, "", val)
-              ver=val
-            }
-            END { print ver }
-          ')"
-          if [[ "${lock_ver}" != "${NEXT_VERSION}" ]]; then
-            echo "::error::Cargo.lock on ${RELEASE_BRANCH} pins dns-core ${lock_ver:-unknown}; expected ${NEXT_VERSION}"
+          tag="cdt-v${NEXT_VERSION}"
+          if git rev-parse "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "::error::Tag ${tag} already exists locally; refusing to create release"
             exit 1
           fi
-          if git rev-parse "refs/tags/${NEXT_VERSION}" >/dev/null 2>&1; then
-            echo "::error::Tag ${NEXT_VERSION} already exists locally; refusing to create release"
-            exit 1
-          fi
-          echo "Verified Cargo.toml and Cargo.lock ${NEXT_VERSION} on origin/${RELEASE_BRANCH}."
+          echo "Verified cdt-manifest.toml ${NEXT_VERSION} on origin/${RELEASE_BRANCH}."
 
       - name: Create GitHub Release
         if: steps.exists.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          NEXT_VERSION: ${{ steps.release_version.outputs.next_version }}
+          NEXT_VERSION: ${{ steps.release_version.outputs.next_bundle_version }}
+          COMPONENT_VERSIONS: ${{ steps.release_version.outputs.component_versions }}
         run: |
           set -euo pipefail
           git fetch origin "${RELEASE_BRANCH}"
-          if gh release view "$NEXT_VERSION" >/dev/null 2>&1; then
-            echo "::error::Release ${NEXT_VERSION} already exists"
+          tag="cdt-v${NEXT_VERSION}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::error::Release ${tag} already exists"
             exit 1
           fi
-          gh release create "$NEXT_VERSION" \
-            --target "${RELEASE_BRANCH}" \
-            --title "$NEXT_VERSION" \
-            --generate-notes
 
-          # Future: dispatch docs-deploy and build-release-artifacts workflows here.
+          notes_file="$(mktemp)"
+          {
+            echo "## CDT bundle ${NEXT_VERSION}"
+            echo
+            echo "### Utilities"
+            python3 - <<'PY' "${COMPONENT_VERSIONS}"
+import json, sys
+versions = json.loads(sys.argv[1] or "{}")
+for name in sorted(versions):
+    print(f"- **{name}**: `{versions[name]}`")
+PY
+          } >"$notes_file"
+
+          gh release create "$tag" \
+            --target "${RELEASE_BRANCH}" \
+            --title "cdt ${NEXT_VERSION}" \
+            --notes-file "$notes_file"
+          rm -f "$notes_file"
+
+          # Future: attach release binaries and dispatch packaging workflows here.

@@ -1,18 +1,18 @@
 [package]
-name = "delve"
-description = "DNS delegation-path tracer"
+name = "cdt"
+description = "Cole's DNS Tools — bundle meta utility"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+build = "build.rs"
 
 [[bin]]
-name = "delve"
+name = "cdt"
 path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
-dns-core = { path = "../dns-core" }
-dns-resolve = { path = "../dns-resolve" }
+serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
+toml = "0.8"
