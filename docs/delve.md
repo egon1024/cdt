@@ -30,7 +30,7 @@ session: 01JXXXXXXXXXXXXXXXXXXXXXXXXXX
 | `delve session unpin <id>` | Allow retention purge again |
 | `delve session purge` | Apply retention policy now |
 | `delve session purge --dry-run` | Report what would be removed |
-| `delve session explore <id>` | **(Phase 3)** Interactive tree explorer (TUI) |
+| `delve session explore <id>` | Interactive tree explorer (TUI) or static outline |
 | `delve cache stats` | Response cache statistics |
 | `delve cache purge` | Remove expired cache entries |
 | `delve cache purge --all` | Clear the entire response cache |
@@ -107,6 +107,23 @@ show a `*` prefix in `delve session list`.
 
 Manual removal: `delve session rm <id>` or `delve session purge`.
 
+## Session explore
+
+`delve session explore <id>` walks a stored trace as a tree — delegation hops and
+nameserver-resolution branches — without network I/O.
+
+| Mode | When | Output |
+|------|------|--------|
+| **TUI** (default) | Interactive terminal | Full-screen tree + detail pane; `j`/`k` move, Enter expand/collapse, `q` quit |
+| **Outline** | `+outline`, or stdout not a tty | One-shot indented tree on stdout |
+| **Tree JSON** | `+events` | Structured tree document on stdout |
+
+```bash
+delve session explore 01J...           # TUI when attached to a terminal
+delve session explore 01J... +outline  # print tree once and exit
+delve session explore 01J... +events   # JSON tree on stdout
+```
+
 ## Data locations
 
 | Data | Path |
@@ -144,6 +161,3 @@ Stored sessions use a versioned JSON document (`version: 1`) containing the same
 ## See also
 
 - [cdt](cdt.md) — bundle version and utility list
-- [Roadmap](roadmap.md) — Phase 1–3 status
-- [Session explore design](specs/session-explore-design.md) — Phase 3 TUI + outline spec
-- [Repository README](../README.md) — development, CI, releases

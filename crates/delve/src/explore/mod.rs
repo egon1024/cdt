@@ -1,0 +1,147 @@
+mod json;
+mod outline;
+mod tree;
+mod tui;
+
+pub use json::render_tree_json;
+pub use outline::render_outline;
+pub use tree::build_explore_tree;
+pub use tui::run_tui;
+
+use crate::dig_options::ParseError;
+use crate::session::SessionDocument;
+use std::io::IsTerminal;
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ExploreOptions {
+    pub outline: bool,
+    pub events: bool,
+}
+
+pub fn parse_explore_args(args: &[String]) -> Result<ExploreOptions, ParseError> {
+    let mut options = ExploreOptions::default();
+    for arg in args {
+        match arg.as_str() {
+            "+outline" => options.outline = true,
+            "+nooutline" => options.outline = false,
+            "+events" => options.events = true,
+            "+noevents" => options.events = false,
+            other if other.starts_with('+') => {
+                return Err(ParseError::UnknownOption(other.to_string()));
+            }
+            other => return Err(ParseError::Unexpected(other.to_string())),
+        }
+    }
+    Ok(options)
+}
+
+pub fn run_explore(
+    document: &SessionDocument,
+    options: ExploreOptions,
+) -> Result<(), ExploreError> {
+    let tree = build_explore_tree(&document.result);
+
+    if options.events {
+        println!("{}", render_tree_json(&tree, &document.id));
+        return Ok(());
+    }
+
+    let use_outline = options.outline || !std::io::stdout().is_terminal();
+    if use_outline {
+        if !options.outline && !std::io::stdout().is_terminal() {
+            eprintln!("delve: stdout is not a terminal; using +outline mode");
+        }
+        print!("{}", render_outline(&tree));
+        return Ok(());
+    }
+
+    run_tui(&tree).map_err(ExploreError::Tui)
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ExploreError {
+    #[error(transparent)]
+    Tui(#[from] std::io::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dns_resolve::{FinalAnswer, TraceHop, TraceResult};
+
+    #[test]
+    fn parses_explore_flags() {
+        let options = parse_explore_args(&["+outline".into(), "+events".into()]).expect("parse");
+        assert!(options.outline);
+        assert!(options.events);
+    }
+
+    #[test]
+    fn run_explore_outline_writes_tree() {
+        let document = SessionDocument {
+            version: 1,
+            id: "01JTESTSESSION000000000000".into(),
+            created_at: "2026-08-25T12:00:00Z".into(),
+            pinned: false,
+            result: TraceResult {
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                started_at: "2026-08-25T12:00:00Z".into(),
+                hops: vec![
+                    TraceHop {
+                        zone: ".".into(),
+                        server: "198.41.0.4".into(),
+                        qname: "example.com.".into(),
+                        qtype: "A".into(),
+                        transport: "udp".into(),
+                        rtt_ms: 11,
+                        rcode: "NOERROR".into(),
+                        nsid: None,
+                        ede_code: None,
+                        ede_text: None,
+                        referral_ns: vec!["a.gtld-servers.net.".into()],
+                        glue: vec![],
+                    },
+                    TraceHop {
+                        zone: "com.".into(),
+                        server: "192.41.162.30".into(),
+                        qname: "example.com.".into(),
+                        qtype: "A".into(),
+                        transport: "udp".into(),
+                        rtt_ms: 8,
+                        rcode: "NOERROR".into(),
+                        nsid: None,
+                        ede_code: None,
+                        ede_text: None,
+                        referral_ns: vec![],
+                        glue: vec![],
+                    },
+                ],
+                final_response: Some(FinalAnswer {
+                    server: "93.184.216.34".into(),
+                    rtt_ms: 8,
+                    rcode: "NOERROR".into(),
+                    records: vec!["example.com. 300 93.184.216.34".into()],
+                    nsid: None,
+                }),
+            },
+        };
+
+        let tree = build_explore_tree(&document.result);
+        let outline = render_outline(&tree);
+        assert!(outline.contains("example.com. A"));
+        assert!(outline.contains("final: example.com. 300 93.184.216.34"));
+
+        let json = render_tree_json(&tree, &document.id);
+        assert!(json.contains("\"event\":\"explore_tree\""));
+
+        run_explore(
+            &document,
+            ExploreOptions {
+                outline: true,
+                events: false,
+            },
+        )
+        .expect("outline explore");
+    }
+}

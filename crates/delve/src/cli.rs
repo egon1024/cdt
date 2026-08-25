@@ -6,6 +6,7 @@ use dns_resolve::{TraceConfig, run_trace};
 use thiserror::Error;
 
 use crate::dig_options::{ParseError, TraceOptions, parse_trace_args};
+use crate::explore::{ExploreError, parse_explore_args, run_explore};
 use crate::hop_display::print_hop_human;
 use crate::progress::StderrProgress;
 use crate::runtime::Runtime;
@@ -60,6 +61,20 @@ pub enum SessionSubcommand {
     Unpin(SessionIdArgs),
     /// Purge sessions older than configured retention.
     Purge(SessionPurgeArgs),
+    /// Explore a stored session as a navigable tree (TUI or outline).
+    Explore(SessionExploreArgs),
+}
+
+#[derive(Debug, Parser)]
+pub struct SessionExploreArgs {
+    pub id: String,
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        num_args = 0..,
+        value_name = "ARG"
+    )]
+    pub args: Vec<String>,
 }
 
 #[derive(Debug, Parser)]
@@ -140,6 +155,9 @@ pub enum CliError {
 
     #[error("response cache is not available")]
     CacheUnavailable,
+
+    #[error(transparent)]
+    Explore(#[from] ExploreError),
 }
 
 impl Cli {
@@ -264,6 +282,12 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
             } else {
                 println!("removed {} sessions", report.removed);
             }
+            Ok(())
+        }
+        SessionSubcommand::Explore(args) => {
+            let options = parse_explore_args(&args.args)?;
+            let document = runtime.get_session(&args.id)?;
+            run_explore(&document, options)?;
             Ok(())
         }
     }
