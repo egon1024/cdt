@@ -1,0 +1,18 @@
+[package]
+name = "cdt"
+description = "Cole's DNS Tools — bundle meta utility"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[[bin]]
+name = "cdt"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml = "0.8"
