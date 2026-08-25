@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::sync::Mutex;
 
+use crate::trace_request::TraceRequest;
 use dns_resolve::TraceResult;
 use rusqlite::{Connection, params};
 use time::OffsetDateTime;
@@ -47,9 +48,9 @@ impl SqliteSessionStore {
 }
 
 impl SessionStore for SqliteSessionStore {
-    fn save(&mut self, result: &TraceResult) -> Result<String> {
+    fn save(&mut self, result: &TraceResult, request: &TraceRequest) -> Result<String> {
         let id = new_session_id();
-        let document = SessionDocument::new(id.clone(), result.clone());
+        let document = SessionDocument::new(id.clone(), request.clone(), result.clone());
         let body = serde_json::to_string(&document)
             .map_err(|error| SessionError::Serialization(error.to_string()))?;
         let summary = SessionSummary::from_document(&document);
@@ -218,13 +219,20 @@ mod tests {
         }
     }
 
+    fn sample_request() -> TraceRequest {
+        TraceRequest::from_options(&crate::dig_options::TraceOptions {
+            qname: "example.com".into(),
+            ..Default::default()
+        })
+    }
+
     #[test]
     fn round_trip_session() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("sessions.sqlite");
         let mut store = SqliteSessionStore::open(&path).expect("open");
         let id = store
-            .save(&sample_result("2026-08-25T00:00:00Z"))
+            .save(&sample_result("2026-08-25T00:00:00Z"), &sample_request())
             .expect("save");
         let loaded = store.get(&id).expect("get");
         assert_eq!(loaded.result.qname, "example.com.");
@@ -237,10 +245,10 @@ mod tests {
         let path = dir.path().join("sessions.sqlite");
         let mut store = SqliteSessionStore::open(&path).expect("open");
         let old_id = store
-            .save(&sample_result("2020-01-01T00:00:00Z"))
+            .save(&sample_result("2020-01-01T00:00:00Z"), &sample_request())
             .expect("old");
         let pinned_id = store
-            .save(&sample_result("2020-01-02T00:00:00Z"))
+            .save(&sample_result("2020-01-02T00:00:00Z"), &sample_request())
             .expect("pinned");
         store.set_pinned(&pinned_id, true).expect("pin");
         let report = store

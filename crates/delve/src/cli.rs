@@ -9,8 +9,10 @@ use crate::dig_options::{ParseError, TraceOptions, parse_trace_args};
 use crate::explore::{ExploreError, parse_explore_args, run_explore};
 use crate::hop_display::print_hop_human;
 use crate::progress::StderrProgress;
+use crate::replay::{print_final_answer, print_reused_session_notice, replay_session};
 use crate::runtime::Runtime;
 use crate::session::SessionDocument;
+use crate::trace_request::TraceRequest;
 
 #[derive(Debug, Parser)]
 #[command(name = "delve", version, about = "DNS delegation-path tracer")]
@@ -67,7 +69,8 @@ pub enum SessionSubcommand {
 
 #[derive(Debug, Parser)]
 pub struct SessionExploreArgs {
-    pub id: String,
+    /// Session id or prefix. When omitted, reopens the last used session.
+    pub id: Option<String>,
     #[arg(
         trailing_var_arg = true,
         allow_hyphen_values = true,
@@ -178,6 +181,17 @@ fn run_trace_command(args: TraceArgs) -> Result<(), CliError> {
 }
 
 fn run_parsed_trace(options: TraceOptions, runtime: &Runtime) -> Result<(), CliError> {
+    let request = TraceRequest::from_options(&options);
+
+    if options.save_session && !options.fresh {
+        if let Some(document) = runtime.find_matching_session(&request)? {
+            replay_session(&document, options.events);
+            print_reused_session_notice(&document);
+            runtime.remember_session(&document.id)?;
+            return Ok(());
+        }
+    }
+
     let qname = DomainName::parse(&options.qname)?;
     let qtype = parse_record_type(&options.qtype)
         .map_err(|_| CliError::QueryType(options.qtype.clone()))?;
@@ -210,7 +224,8 @@ fn run_parsed_trace(options: TraceOptions, runtime: &Runtime) -> Result<(), CliE
     let result = run_trace(&config, &mut progress)?;
 
     if options.save_session {
-        let session_id = runtime.save_session(&result)?;
+        let session_id = runtime.save_session(&result, &request)?;
+        runtime.remember_session(&session_id)?;
         eprintln!("session: {session_id}");
     }
 
@@ -225,18 +240,7 @@ fn run_parsed_trace(options: TraceOptions, runtime: &Runtime) -> Result<(), CliE
         );
     } else {
         eprintln!();
-        if let Some(answer) = &result.final_response {
-            eprintln!(
-                "final answer from {} in {}ms ({})",
-                answer.server, answer.rtt_ms, answer.rcode
-            );
-            for record in &answer.records {
-                eprintln!("  {record}");
-            }
-            if let Some(nsid) = &answer.nsid {
-                eprintln!("  NSID: {nsid}");
-            }
-        }
+        print_final_answer(&result);
     }
 
     Ok(())
@@ -285,8 +289,9 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
             Ok(())
         }
         SessionSubcommand::Explore(args) => {
-            let options = parse_explore_args(&args.args)?;
-            let document = runtime.get_session(&args.id)?;
+            let (session_id, flag_args) = resolve_explore_target(args.id, args.args, &runtime)?;
+            let options = parse_explore_args(&flag_args)?;
+            let document = runtime.touch_session(&session_id)?;
             run_explore(&document, options)?;
             Ok(())
         }
@@ -317,6 +322,22 @@ fn run_cache_command(command: CacheCommand) -> Result<(), CliError> {
             Ok(())
         }
     }
+}
+
+fn resolve_explore_target(
+    id: Option<String>,
+    mut args: Vec<String>,
+    runtime: &Runtime,
+) -> Result<(String, Vec<String>), CliError> {
+    if let Some(id) = id {
+        if id.starts_with('+') {
+            args.insert(0, id);
+        } else {
+            return Ok((id, args));
+        }
+    }
+    let last = runtime.last_session_id()?;
+    Ok((last, args))
 }
 
 fn parse_events_only(args: &[String]) -> Result<bool, ParseError> {

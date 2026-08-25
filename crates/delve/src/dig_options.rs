@@ -18,6 +18,7 @@ pub struct TraceOptions {
     pub cache_skip_qnames: Vec<String>,
     pub save_session: bool,
     pub events: bool,
+    pub fresh: bool,
 }
 
 impl Default for TraceOptions {
@@ -37,6 +38,7 @@ impl Default for TraceOptions {
             cache_skip_qnames: Vec::new(),
             save_session: true,
             events: false,
+            fresh: false,
         }
     }
 }
@@ -160,6 +162,7 @@ fn apply_query_option(options: &mut TraceOptions, arg: &str) -> Result<(), Parse
             }
         }
         "save" => options.save_session = !negate,
+        "fresh" => options.fresh = !negate,
         other => return Err(ParseError::UnknownOption(format!("+{other}"))),
     }
 
@@ -265,5 +268,11 @@ mod tests {
 
         assert!(!options.use_tcp);
         assert!(!options.dnssec);
+    }
+
+    #[test]
+    fn supports_fresh_flag() {
+        let options = parse_trace_args(&args(&["example.com", "+fresh"])).expect("parse");
+        assert!(options.fresh);
     }
 }

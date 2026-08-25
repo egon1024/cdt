@@ -3,6 +3,7 @@ use thiserror::Error;
 
 use crate::config::SessionRetention;
 use crate::retention::PurgeReport;
+use crate::trace_request::TraceRequest;
 
 use super::document::{SessionDocument, SessionSummary};
 use super::id::{is_ambiguous_prefix, resolve_prefix};
@@ -25,10 +26,13 @@ pub enum SessionError {
 
     #[error("session serialization error: {0}")]
     Serialization(String),
+
+    #[error("no last session; run a trace or specify a session id")]
+    NoLastSession,
 }
 
 pub trait SessionStore: Send {
-    fn save(&mut self, result: &TraceResult) -> Result<String>;
+    fn save(&mut self, result: &TraceResult, request: &TraceRequest) -> Result<String>;
     fn get(&self, id: &str) -> Result<SessionDocument>;
     fn list(&self) -> Result<Vec<SessionSummary>>;
     fn remove(&mut self, id: &str) -> Result<()>;
@@ -46,8 +50,8 @@ pub struct OpenSessionStore {
 }
 
 impl SessionStore for OpenSessionStore {
-    fn save(&mut self, result: &TraceResult) -> Result<String> {
-        self.inner.save(result)
+    fn save(&mut self, result: &TraceResult, request: &TraceRequest) -> Result<String> {
+        self.inner.save(result, request)
     }
 
     fn get(&self, id: &str) -> Result<SessionDocument> {

@@ -5,6 +5,7 @@ use time::OffsetDateTime;
 
 use crate::config::SessionRetention;
 use crate::retention::{PurgeReport, is_expired};
+use crate::trace_request::TraceRequest;
 
 use super::document::{SessionDocument, SessionSummary};
 use super::id::new_session_id;
@@ -37,12 +38,12 @@ impl NdjsonSessionStore {
 }
 
 impl SessionStore for NdjsonSessionStore {
-    fn save(&mut self, result: &TraceResult) -> Result<String> {
+    fn save(&mut self, result: &TraceResult, request: &TraceRequest) -> Result<String> {
         if let Some(reason) = &self.disabled_reason {
             return Err(SessionError::Store(reason.clone()));
         }
         let id = new_session_id();
-        let document = SessionDocument::new(id.clone(), result.clone());
+        let document = SessionDocument::new(id.clone(), request.clone(), result.clone());
         let body = serde_json::to_string_pretty(&document)
             .map_err(|error| SessionError::Serialization(error.to_string()))?;
         let path = self.session_path(&id);
@@ -190,11 +191,20 @@ mod tests {
         }
     }
 
+    fn sample_request() -> TraceRequest {
+        TraceRequest::from_options(&crate::dig_options::TraceOptions {
+            qname: "example.com".into(),
+            ..Default::default()
+        })
+    }
+
     #[test]
     fn round_trip_ndjson_session() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut store = NdjsonSessionStore::open(dir.path()).expect("open");
-        let id = store.save(&sample_result()).expect("save");
+        let id = store
+            .save(&sample_result(), &sample_request())
+            .expect("save");
         let loaded = store.get(&id).expect("get");
         assert_eq!(loaded.result.qname, "example.com.");
     }

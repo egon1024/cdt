@@ -30,7 +30,7 @@ session: 01JXXXXXXXXXXXXXXXXXXXXXXXXXX
 | `delve session unpin <id>` | Allow retention purge again |
 | `delve session purge` | Apply retention policy now |
 | `delve session purge --dry-run` | Report what would be removed |
-| `delve session explore <id>` | Interactive tree explorer (TUI) or static outline |
+| `delve session explore [id]` | Interactive tree explorer (TUI) or static outline; omit id to reopen the last session |
 | `delve cache stats` | Response cache statistics |
 | `delve cache purge` | Remove expired cache entries |
 | `delve cache purge --all` | Clear the entire response cache |

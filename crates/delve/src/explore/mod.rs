@@ -90,6 +90,7 @@ mod tests {
             id: "01JTESTSESSION000000000000".into(),
             created_at: "2026-08-25T12:00:00Z".into(),
             pinned: false,
+            request: None,
             result: TraceResult {
                 qname: "example.com.".into(),
                 qtype: "A".into(),
