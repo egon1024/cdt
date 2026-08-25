@@ -1,0 +1,4 @@
+{
+  "name": "cdt",
+  "install": "cargo fetch --locked && cargo build --workspace --all-targets"
+}
