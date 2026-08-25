@@ -25,11 +25,11 @@ Trace delegation for a query name:
 
 ```bash
 cargo run -p delve -- trace example.com
-cargo run -p delve -- trace example.com --events   # NDJSON on stdout
-cargo run -p delve -- trace example.com --tcp -4 --time 3
+cargo run -p delve -- trace example.com +events          # NDJSON on stdout
+cargo run -p delve -- trace example.com +tcp -4 +timeout=3 -t NS @1.1.1.1
 ```
 
-Flags follow dig conventions where practical (`--tcp`, `--time`, `--tries`, `-4`/`-6`, `--dnssec`, `--nonsid`). NSID is requested by default.
+Query options follow dig conventions: `+tcp`, `+timeout=` (also `+time=`), `+tries=`, `+dnssec`, `-t TYPE`, `-4`/`-6`, `@server`. NSID is requested by default; use `+nonsid` to disable.
 
 ## Development
 
@@ -43,11 +43,7 @@ CI runs `make test` on pull requests.
 
 ## Releases
 
-<<<<<<< HEAD
-Versioning uses semver driven by GitHub releases and git tags:
-=======
 CDT ships as a **bundle** (`cdt`) containing independently versioned utilities. The manifest in `cdt-manifest.toml` is the source of truth; release automation syncs versions into each crate.
->>>>>>> a03944b (feat: add CDT bundle versioning with per-utility versions)
 
 ```bash
 make version                 # show manifest + cdt version output
@@ -77,7 +73,6 @@ Configure a `RELEASE_PUSH_TOKEN` repository secret (admin PAT) so the release wo
 
 ## Planned (not yet implemented)
 
-<<<<<<< HEAD
 - Documentation site generation and deployment
 - Release packages and distribution assets
 
@@ -85,6 +80,3 @@ Configure a `RELEASE_PUSH_TOKEN` repository secret (admin PAT) so the release wo
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the
 full text.
-=======
-- Release packages and distribution assets
->>>>>>> a03944b (feat: add CDT bundle versioning with per-utility versions)

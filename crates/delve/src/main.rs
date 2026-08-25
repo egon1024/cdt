@@ -1,4 +1,5 @@
 mod cli;
+mod dig_options;
 mod progress;
 
 use std::process::ExitCode;
