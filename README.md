@@ -23,11 +23,11 @@ make build
 make help    # list all targets
 ```
 
-CI runs `make test` on pull requests (aligned with DNSConduit).
+CI runs `make test` on pull requests.
 
 ## Releases
 
-Versioning follows DNSConduit-style semver rules:
+Versioning uses semver driven by GitHub releases and git tags:
 
 - **Current version** is the highest semver among GitHub releases and git tags (or `0.0.0` before the first release).
 - **Default bump** on merge to `main` is **minor** (first release → `0.1.0`).
@@ -39,8 +39,8 @@ Configure a `RELEASE_PUSH_TOKEN` repository secret (admin PAT) so the release wo
 
 ## Planned (not yet implemented)
 
-- Documentation site generation and deployment (DNSConduit-style `docs-ci` / `docs-deploy`)
-- Release packages and distribution assets (DNSConduit-style `packaging/` and release workflows)
+- Documentation site generation and deployment
+- Release packages and distribution assets
 
 ## License
 

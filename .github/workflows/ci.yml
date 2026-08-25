@@ -28,5 +28,4 @@ jobs:
       - name: Test
         run: make test
 
-      # Future: docs build/validation (see DNSConduit docs-ci.yml) and release
-      # artifacts (see DNSConduit build-release-artifacts.yml / release.yml).
+      # Future: docs build/validation and release artifact packaging.
