@@ -169,20 +169,9 @@ fn resolve_nameserver(
         });
     }
 
-    let sub_config = TraceConfig {
-        qname: ns_name.clone(),
-        qtype: RecordType::A,
-        port: config.port,
-        transport: config.transport,
-        timeout: config.timeout,
-        retries: config.retries,
-        dnssec: config.dnssec,
-        request_nsid: config.request_nsid,
-        ipv4_only: config.ipv4_only,
-        ipv6_only: config.ipv6_only,
-        max_depth: config.max_depth,
-        start_servers: config.start_servers.clone(),
-    };
+    let mut sub_config = config.clone();
+    sub_config.qname = ns_name.clone();
+    sub_config.qtype = RecordType::A;
 
     let sub_trace = run(&sub_config, progress)?;
     if let Some(answer) = sub_trace.final_response {

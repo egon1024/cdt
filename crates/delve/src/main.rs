@@ -1,6 +1,9 @@
 mod cli;
 mod dig_options;
+mod paths;
 mod progress;
+mod runtime;
+mod session;
 
 use std::process::ExitCode;
 

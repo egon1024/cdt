@@ -8,10 +8,12 @@ rust-version.workspace = true
 
 [dependencies]
 dns-core = { path = "../dns-core" }
+dns-cache = { path = "../dns-cache" }
 hickory-proto.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 time.workspace = true
 
 [dev-dependencies]
+dns-cache = { path = "../dns-cache" }
 serde_json.workspace = true

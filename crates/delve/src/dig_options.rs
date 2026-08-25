@@ -14,6 +14,8 @@ pub struct TraceOptions {
     pub retries: u8,
     pub dnssec: bool,
     pub request_nsid: bool,
+    pub use_cache: bool,
+    pub save_session: bool,
     pub events: bool,
 }
 
@@ -30,6 +32,8 @@ impl Default for TraceOptions {
             retries: 2,
             dnssec: false,
             request_nsid: true,
+            use_cache: true,
+            save_session: true,
             events: false,
         }
     }
@@ -142,6 +146,8 @@ fn apply_query_option(options: &mut TraceOptions, arg: &str) -> Result<(), Parse
         "nsid" => options.request_nsid = !negate,
         "nonsid" => options.request_nsid = false,
         "events" => options.events = !negate,
+        "cache" => options.use_cache = !negate,
+        "save" => options.save_session = !negate,
         other => return Err(ParseError::UnknownOption(format!("+{other}"))),
     }
 
