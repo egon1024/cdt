@@ -2,6 +2,14 @@
 
 Cole's DNS Tools — a Rust workspace for DNS utilities.
 
+## AI-assisted development
+
+This project was built with extensive assistance from AI tools. Some operators
+and contributors prefer software written without that involvement — a view I
+can respect, even if I don't agree with it. I am not currently planning to
+reevaluate how cdt is developed, and I will not engage in arguments about that
+decision.
+
 ## Structure
 
 - `crates/dns-core` — shared DNS primitives used across tools
@@ -33,3 +41,8 @@ Configure a `RELEASE_PUSH_TOKEN` repository secret (admin PAT) so the release wo
 
 - Documentation site generation and deployment (DNSConduit-style `docs-ci` / `docs-deploy`)
 - Release packages and distribution assets (DNSConduit-style `packaging/` and release workflows)
+
+## License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the
+full text.
