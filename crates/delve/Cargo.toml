@@ -1,0 +1,28 @@
+[package]
+name = "delve"
+description = "DNS delegation-path tracer"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "delve"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+directories.workspace = true
+dns-cache = { path = "../dns-cache" }
+dns-core = { path = "../dns-core" }
+dns-resolve = { path = "../dns-resolve" }
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+time.workspace = true
+ulid.workspace = true
+
+[dev-dependencies]
+tempfile = "3.14"

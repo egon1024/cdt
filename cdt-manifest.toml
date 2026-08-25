@@ -1,0 +1,13 @@
+# CDT bundle manifest — source of truth for release versions.
+# Release automation updates this file and syncs versions into crate Cargo.toml files.
+
+[bundle]
+name = "cdt"
+version = "0.1.0"
+
+[[components]]
+name = "delve"
+crate = "delve"
+binary = "delve"
+version = "0.1.0"
+description = "DNS delegation-path tracer"

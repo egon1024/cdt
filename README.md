@@ -10,10 +10,33 @@ can respect, even if I don't agree with it. I am not currently planning to
 reevaluate how cdt is developed, and I will not engage in arguments about that
 decision.
 
-## Structure
+## Utilities
 
-- `crates/dns-core` — shared DNS primitives used across tools
-- `crates/*` — individual tool crates (added as tools are developed)
+User-facing tools ship in the CDT bundle. Each utility has a short guide in
+`docs/`:
+
+| Utility | Binary | Documentation |
+|---------|--------|-----------------|
+| Bundle meta | `cdt` | [docs/cdt.md](docs/cdt.md) |
+| Delegation tracer | `delve` | [docs/delve.md](docs/delve.md) |
+
+Development phases and status: [docs/roadmap.md](docs/roadmap.md).
+
+```bash
+cargo run -p delve -- trace example.com
+cargo run -p cdt -- version
+```
+
+## Workspace layout
+
+- `cdt-manifest.toml` — bundle and utility version manifest (source of truth for releases)
+- `docs/` — per-utility documentation (Markdown)
+- `crates/cdt` — `cdt` bundle meta utility
+- `crates/delve` — `delve` CLI binary
+- `crates/dns-core` — shared DNS primitives (wire format, EDNS/EDE/NSID)
+- `crates/dns-resolve` — iterative delegation tracing
+- `crates/dns-cache` — TTL-aware response cache (used by delve)
+- `crates/*` — additional tool crates as they are developed
 
 ## Development
 
@@ -27,19 +50,37 @@ CI runs `make test` on pull requests.
 
 ## Releases
 
-Versioning uses semver driven by GitHub releases and git tags:
+CDT ships as a **bundle** (`cdt`) containing independently versioned utilities. The manifest in `cdt-manifest.toml` is the source of truth; release automation syncs versions into each crate.
 
-- **Current version** is the highest semver among GitHub releases and git tags (or `0.0.0` before the first release).
-- **Default bump** on merge to `main` is **minor** (first release → `0.1.0`).
-- Override with a PR description line containing only `#major`, `#minor`, or `#patch` (case-insensitive). Only one directive is allowed.
+```bash
+make version                 # show manifest + cdt version output
+cargo run -p cdt -- version  # bundle and utility versions
+delve --version              # delve utility version only
+```
 
-Pull requests get an automated **version preview** comment. On merge to `main`, the **Release** workflow bumps `Cargo.toml` / `Cargo.lock` and creates a GitHub release.
+### Versioning rules
 
-Configure a `RELEASE_PUSH_TOKEN` repository secret (admin PAT) so the release workflow can merge the version-bump PR. Release artifacts and docs deploy are not wired yet.
+| What | Version | Tag |
+|------|---------|-----|
+| Bundle | `cdt` in `cdt-manifest.toml` | `cdt-v0.1.0` |
+| Utilities | per-component in manifest (e.g. `delve 0.1.0`) | listed in release notes |
+| Internal libs | `workspace.package.version` (tracks bundle) | — |
+
+**Bundle bump** on merge to `main` defaults to **minor** (first release → `0.1.0`).
+
+**PR directives:**
+
+- Bundle: `#cdt:minor` or shorthand `#minor` (only one bundle level per PR)
+- Utility: `#delve:patch`, `#delve:minor`, etc.
+- Utilities with changes under `crates/<utility>/` receive an automatic **patch** bump unless overridden
+
+Pull requests get an automated **version preview** comment. On merge to `main`, the **Release** workflow bumps `cdt-manifest.toml`, crate `Cargo.toml` files, and creates a GitHub release tagged `cdt-vX.Y.Z`.
+
+Configure a `RELEASE_PUSH_TOKEN` repository secret (admin PAT) so the release workflow can merge the version-bump PR. Release artifacts are not wired yet.
 
 ## Planned (not yet implemented)
 
-- Documentation site generation and deployment
+- Documentation site generation and deployment (utility guides live in `docs/` for now)
 - Release packages and distribution assets
 
 ## License

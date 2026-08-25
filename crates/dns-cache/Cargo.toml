@@ -1,15 +1,19 @@
 [package]
-name = "dns-core"
-description = "Shared DNS primitives for Cole's DNS Tools"
+name = "dns-cache"
+description = "DNS response cache with TTL-aware SQLite storage"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-hickory-proto.workspace = true
+dns-core = { path = "../dns-core" }
+rusqlite.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
+time.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+tempfile = "3.14"

@@ -12,7 +12,7 @@
 CARGO ?= cargo
 CLIPPY_FLAGS := --workspace --all-targets -- -D warnings
 
-.PHONY: help test fmt fmt-check clippy unit build check
+.PHONY: help test fmt fmt-check clippy unit build check version
 
 help:
 	@echo "cdt Makefile targets:"
@@ -23,6 +23,7 @@ help:
 	@echo "  make unit       Run cargo test --workspace"
 	@echo "  make build      Build all workspace crates"
 	@echo "  make check      Run cargo check --workspace --all-targets"
+	@echo "  make version    Show CDT bundle manifest"
 
 test: fmt-check clippy unit
 
@@ -43,3 +44,7 @@ build:
 
 check:
 	$(CARGO) check --workspace --all-targets
+
+version:
+	@python3 .github/scripts/cdt-versions.py show
+	@$(CARGO) run -q -p cdt -- version
