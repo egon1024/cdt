@@ -3,29 +3,42 @@ description: Compute next semver from latest GitHub release and PR description d
 
 inputs:
   pr_body:
-    description: Pull request description text for #major / #minor / #patch directives
+    description: Pull request description text for bundle and component semver directives
     required: false
     default: ""
   default_bump:
-    description: Bump level when no directive line is present
+    description: Bundle bump level when no directive line is present
     required: false
     default: minor
+  changed_files:
+    description: Newline-separated paths changed in the PR (for component auto-bumps)
+    required: false
+    default: ""
 
 outputs:
   current_version:
-    description: Latest release version (or 0.0.0)
+    description: Current bundle version (alias for current_bundle_version)
     value: ${{ steps.bump.outputs.current_version }}
   next_version:
-    description: Version after applying the bump
+    description: Next bundle version (alias for next_bundle_version)
     value: ${{ steps.bump.outputs.next_version }}
+  current_bundle_version:
+    description: Current CDT bundle version
+    value: ${{ steps.bump.outputs.current_bundle_version }}
+  next_bundle_version:
+    description: Next CDT bundle version after applying the bump
+    value: ${{ steps.bump.outputs.next_bundle_version }}
+  component_versions:
+    description: JSON map of utility name to version after merge
+    value: ${{ steps.bump.outputs.component_versions }}
   bump_level:
-    description: major, minor, or patch
+    description: Bundle bump level — major, minor, or patch
     value: ${{ steps.bump.outputs.bump_level }}
   bump_source:
     description: explicit or implicit
     value: ${{ steps.bump.outputs.bump_source }}
   error:
-    description: Error code when validation fails (e.g. conflicting_directives)
+    description: Error code when validation fails
     value: ${{ steps.bump.outputs.error }}
 
 runs:
@@ -37,5 +50,6 @@ runs:
       env:
         PR_BODY: ${{ inputs.pr_body }}
         DEFAULT_BUMP: ${{ inputs.default_bump }}
+        CHANGED_FILES: ${{ inputs.changed_files }}
         GH_TOKEN: ${{ github.token }}
         GITHUB_REPOSITORY: ${{ github.repository }}
