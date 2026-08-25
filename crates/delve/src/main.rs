@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 mod dig_options;
+mod hop_display;
 mod paths;
 mod progress;
 mod retention;

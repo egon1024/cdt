@@ -6,6 +6,7 @@ use dns_resolve::{TraceConfig, run_trace};
 use thiserror::Error;
 
 use crate::dig_options::{ParseError, TraceOptions, parse_trace_args};
+use crate::hop_display::print_hop_human;
 use crate::progress::StderrProgress;
 use crate::runtime::Runtime;
 use crate::session::SessionDocument;
@@ -327,10 +328,7 @@ fn print_session(document: &SessionDocument, events: bool) {
     println!("started: {}", document.created_at);
     println!("query: {} {}", document.result.qname, document.result.qtype);
     for hop in &document.result.hops {
-        eprintln!(
-            "[{}] {} {} {} via {} in {}ms ({})",
-            hop.zone, hop.qname, hop.qtype, hop.server, hop.transport, hop.rtt_ms, hop.rcode
-        );
+        print_hop_human(hop);
     }
     if let Some(answer) = &document.result.final_response {
         eprintln!(
