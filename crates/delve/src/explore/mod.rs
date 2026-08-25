@@ -10,7 +10,7 @@ pub use tui::run_tui;
 
 use crate::dig_options::ParseError;
 use crate::session::SessionDocument;
-use std::io::IsTerminal;
+use std::io::{self, IsTerminal, Write};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ExploreOptions {
@@ -46,12 +46,19 @@ pub fn run_explore(
         return Ok(());
     }
 
-    let use_outline = options.outline || !std::io::stdout().is_terminal();
+    let use_outline = options.outline || !io::stdout().is_terminal();
     if use_outline {
-        if !options.outline && !std::io::stdout().is_terminal() {
-            eprintln!("delve: stdout is not a terminal; using +outline mode");
+        let outline = render_outline(&tree);
+        let mut stdout = io::stdout().lock();
+        stdout
+            .write_all(outline.as_bytes())
+            .map_err(ExploreError::Tui)?;
+        stdout.flush().map_err(ExploreError::Tui)?;
+        if !options.outline && !io::stdout().is_terminal() {
+            eprintln!(
+                "delve: stdout is not a terminal; wrote outline to stdout (redirect stdout to capture, e.g. > outline.txt)"
+            );
         }
-        print!("{}", render_outline(&tree));
         return Ok(());
     }
 
