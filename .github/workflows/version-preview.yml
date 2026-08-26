@@ -87,11 +87,11 @@ jobs:
         run: |
           set -euo pipefail
           export CHANGED_FILES="$(cat changed-files.txt)"
-          if [[ -f trusted/.github/actions/version-bump/version-bump.sh ]]; then
-            bash trusted/.github/actions/version-bump/version-bump.sh
-          elif [[ -f .github/actions/version-bump/version-bump.sh ]]; then
-            echo "::notice::Using merge-ref version-bump.sh (missing on trusted checkout)."
+          if [[ -f .github/actions/version-bump/version-bump.sh ]]; then
             bash .github/actions/version-bump/version-bump.sh
+          elif [[ -f trusted/.github/actions/version-bump/version-bump.sh ]]; then
+            echo "::notice::Using trusted version-bump.sh"
+            bash trusted/.github/actions/version-bump/version-bump.sh
           else
             echo "::error::Could not find version-bump.sh under trusted/ or .github/actions/version-bump/."
             exit 1
