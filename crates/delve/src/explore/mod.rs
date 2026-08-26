@@ -125,7 +125,7 @@ mod tests {
         let tree = build_explore_tree(&document.result);
         let outline = render_outline(&tree, ui_symbols());
         assert!(outline.contains("example.com. A"));
-        assert!(outline.contains("11ms"));
+        assert!(outline.contains("query response time: 11ms"));
         assert!(outline.contains("records:\n"));
         assert!(outline.contains("  - example.com. 300 93.184.216.34"));
 

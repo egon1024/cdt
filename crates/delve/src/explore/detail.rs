@@ -12,8 +12,7 @@ pub fn final_summary_line(
 ) -> String {
     match answer {
         Some(answer) => format!(
-            "{qname} {qtype}  {}ms  {}  {}",
-            answer.rtt_ms,
+            "{qname} {qtype}  {}  {}",
             answer.rcode,
             cache_source_symbol(answer.from_cache, symbols)
         ),
@@ -23,11 +22,10 @@ pub fn final_summary_line(
 
 pub fn hop_summary_line(hop: &TraceHop, symbols: UiSymbols) -> String {
     format!(
-        "[{}] {} {}  {}ms  {}  {}",
+        "[{}] {} {}  {}  {}",
         hop.zone,
         hop.qname,
         hop.qtype,
-        hop.rtt_ms,
         hop.rcode,
         cache_source_symbol(hop.from_cache, symbols)
     )
@@ -40,16 +38,15 @@ pub fn format_server_endpoint(server: &str, server_name: Option<&str>) -> String
     }
 }
 
-pub fn format_server_line(
-    server: &str,
-    server_name: Option<&str>,
-    transport: &str,
-    rtt_ms: u64,
-) -> String {
+pub fn format_server_line(server: &str, server_name: Option<&str>, transport: &str) -> String {
     format!(
-        "server: {} ({transport}) in {rtt_ms}ms",
+        "server: {} ({transport})",
         format_server_endpoint(server, server_name)
     )
+}
+
+pub fn format_query_response_time_line(rtt_ms: u64) -> String {
+    format!("query response time: {rtt_ms}ms")
 }
 
 pub fn effective_server_name(server: &str, server_name: Option<&str>) -> Option<String> {
@@ -95,12 +92,8 @@ pub(crate) fn legacy_hop_detail_lines(hop: &TraceHop, symbols: UiSymbols) -> Vec
     let mut lines = vec![
         format!("zone: {}", hop.zone),
         format!("query: {} {}", hop.qname, hop.qtype),
-        format_server_line(
-            &hop.server,
-            hop.server_name.as_deref(),
-            &hop.transport,
-            hop.rtt_ms,
-        ),
+        format_server_line(&hop.server, hop.server_name.as_deref(), &hop.transport),
+        format_query_response_time_line(hop.rtt_ms),
         format!("rcode: {}", hop.rcode),
         format!("source: {}", cache_source_symbol(hop.from_cache, symbols)),
     ];
@@ -126,8 +119,8 @@ pub(crate) fn legacy_final_detail_lines(answer: &FinalAnswer, symbols: UiSymbols
             } else {
                 answer.transport.as_str()
             },
-            answer.rtt_ms,
         ),
+        format_query_response_time_line(answer.rtt_ms),
         format!("rcode: {}", answer.rcode),
         format!(
             "source: {}",
@@ -182,7 +175,15 @@ mod tests {
 
     #[test]
     fn server_line_includes_fqdn_when_known() {
-        let line = format_server_line("198.41.0.4", Some("a.root-servers.net."), "udp", 11);
+        let line = format_server_line("198.41.0.4", Some("a.root-servers.net."), "udp");
         assert!(line.contains("a.root-servers.net. (198.41.0.4)"));
+    }
+
+    #[test]
+    fn query_response_time_line_uses_expected_label() {
+        assert_eq!(
+            format_query_response_time_line(11),
+            "query response time: 11ms"
+        );
     }
 }

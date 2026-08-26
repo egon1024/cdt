@@ -2,7 +2,10 @@ use dns_core::response::DnsRecord;
 use dns_resolve::{FinalAnswer, StoredDnsMessage, TraceHop};
 use ratatui::text::{Line, Span};
 
-use super::detail::{format_server_endpoint, legacy_final_detail_lines, legacy_hop_detail_lines};
+use super::detail::{
+    format_query_response_time_line, format_server_endpoint, legacy_final_detail_lines,
+    legacy_hop_detail_lines,
+};
 use super::flags::{format_flags_plain, format_flags_spans};
 use super::terminal::{UiSymbols, cache_source_symbol};
 use super::theme::Theme;
@@ -117,11 +120,11 @@ impl<'a> DigView<'a> {
             lines.push(format!("zone: {}", self.zone));
         }
         lines.push(format!(
-            "server: {} ({}) in {}ms",
+            "server: {} ({})",
             format_server_endpoint(self.server, self.server_name),
             self.transport,
-            self.rtt_ms
         ));
+        lines.push(format_query_response_time_line(self.rtt_ms));
         lines.push(format!("status: {}", self.rcode));
         lines.push(format!(
             "source: {}",
@@ -154,6 +157,9 @@ impl<'a> DigView<'a> {
             Line::from(vec![
                 Span::styled("server: ", theme.label()),
                 Span::raw(format!("{server} ({}) ", self.transport)),
+            ]),
+            Line::from(vec![
+                Span::styled("query response time: ", theme.label()),
                 Span::styled(format!("{}ms", self.rtt_ms), theme.meta()),
             ]),
             Line::from(vec![
@@ -410,6 +416,7 @@ mod tests {
         assert!(text.contains(";; AUTHORITY SECTION:"));
         assert!(text.contains("a.gtld-servers.net."));
         assert!(text.contains("server: a.root-servers.net. (198.41.0.4)"));
+        assert!(text.contains("query response time: 11ms"));
     }
 
     #[test]
