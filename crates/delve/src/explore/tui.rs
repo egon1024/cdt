@@ -12,6 +12,7 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::block::BorderType;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::dig_view::{final_detail_styled, hop_detail_styled};
 use super::terminal::{cache_source_legend, cache_source_symbol};
@@ -73,6 +74,7 @@ pub fn run_tui(tree: &ExploreTree) -> io::Result<()> {
     let mut selected = 0;
     let mut focused = Pane::Tree;
     let mut detail_scroll = 0u16;
+    let mut tree_scroll_x = 0u16;
     let mut show_help = false;
     let mut theme = Theme::from_env();
     let mut result = Ok(());
@@ -89,36 +91,59 @@ pub fn run_tui(tree: &ExploreTree) -> io::Result<()> {
                 .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
                 .split(frame.area());
 
-            let tree_items: Vec<ListItem> = visible
-                .iter()
-                .enumerate()
-                .map(|(index, node)| {
-                    let indent = "  ".repeat(node.depth);
-                    let marker = if node.expandable {
-                        if node.expanded {
-                            theme.symbols.tree_expand
-                        } else {
-                            theme.symbols.tree_collapse
-                        }
+            let tree_viewport_width = chunks[0].width.saturating_sub(2);
+            let mut max_line_width = 0usize;
+            let mut tree_rows = Vec::with_capacity(visible.len());
+
+            for (index, node) in visible.iter().enumerate() {
+                let indent = "  ".repeat(node.depth);
+                let marker = if node.expandable {
+                    if node.expanded {
+                        theme.symbols.tree_expand
                     } else {
-                        "  "
-                    };
-                    let line = tree_line(tree, node, &indent, marker, &theme);
-                    let line = if focused == Pane::Tree && index == selected {
-                        apply_tree_selection(line, &theme)
-                    } else {
-                        line
-                    };
-                    ListItem::new(line)
-                })
+                        theme.symbols.tree_collapse
+                    }
+                } else {
+                    "  "
+                };
+                let line = tree_line(tree, node, &indent, marker, &theme);
+                max_line_width = max_line_width.max(line_display_width(&line));
+                let line = if focused == Pane::Tree && index == selected {
+                    apply_tree_selection(line, &theme)
+                } else {
+                    line
+                };
+                tree_rows.push((index, scroll_line(line, tree_scroll_x)));
+            }
+
+            let max_tree_scroll = max_line_width
+                .saturating_sub(tree_viewport_width as usize)
+                .min(u16::MAX as usize) as u16;
+            if tree_scroll_x > max_tree_scroll {
+                tree_scroll_x = max_tree_scroll;
+            }
+
+            let tree_items: Vec<ListItem> = tree_rows
+                .into_iter()
+                .map(|(_, line)| ListItem::new(line))
                 .collect();
 
             let color_hint = if theme.color_enabled { "on" } else { "off" };
+            let scroll_hint = if tree_scroll_x > 0 {
+                format!("  x:{tree_scroll_x}")
+            } else if max_tree_scroll > 0 {
+                "  [←→ scroll]".to_string()
+            } else {
+                String::new()
+            };
             let tree_title = if focused == Pane::Tree {
-                format!("{} {}  [tree]  color:{color_hint}", tree.qname, tree.qtype)
+                format!(
+                    "{} {}  [tree]  color:{color_hint}{scroll_hint}",
+                    tree.qname, tree.qtype
+                )
             } else {
                 format!(
-                    "{} {}  [Tab / Shift-Tab]  color:{color_hint}",
+                    "{} {}  [Tab / Shift-Tab]  color:{color_hint}{scroll_hint}",
                     tree.qname, tree.qtype
                 )
             };
@@ -169,7 +194,7 @@ pub fn run_tui(tree: &ExploreTree) -> io::Result<()> {
                 }
                 if show_help {
                     match key.code {
-                        KeyCode::Char('h') | KeyCode::Esc => show_help = false,
+                        KeyCode::Char('?') | KeyCode::Esc => show_help = false,
                         KeyCode::Char('q') => break,
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             break;
@@ -181,7 +206,7 @@ pub fn run_tui(tree: &ExploreTree) -> io::Result<()> {
                 }
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => break,
-                    KeyCode::Char('h') => show_help = true,
+                    KeyCode::Char('?') => show_help = true,
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
                     KeyCode::Char('c') => theme.toggle_color(),
                     KeyCode::Tab => focused = focused.cycle_forward(),
@@ -195,17 +220,15 @@ pub fn run_tui(tree: &ExploreTree) -> io::Result<()> {
                             selected = selected.saturating_sub(1);
                             detail_scroll = 0;
                         }
-                        KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
-                            if let Some(node) = visible.get(selected)
-                                && node.expandable
-                            {
-                                toggle_path(&mut expanded_paths, &node.node);
-                            }
+                        KeyCode::Left | KeyCode::Char('h') => {
+                            tree_scroll_x = tree_scroll_x.saturating_sub(1);
                         }
-                        KeyCode::Left => {
+                        KeyCode::Right | KeyCode::Char('l') => {
+                            tree_scroll_x = tree_scroll_x.saturating_add(1);
+                        }
+                        KeyCode::Enter | KeyCode::Char(' ') => {
                             if let Some(node) = visible.get(selected)
                                 && node.expandable
-                                && node.expanded
                             {
                                 toggle_path(&mut expanded_paths, &node.node);
                             }
@@ -253,6 +276,59 @@ fn apply_tree_selection(mut line: Line<'static>, theme: &Theme) -> Line<'static>
         span.style = style;
     }
     line
+}
+
+/// Shift a line left by `offset` terminal columns, preserving span styles.
+fn scroll_line(mut line: Line<'static>, offset: u16) -> Line<'static> {
+    if offset == 0 {
+        return line;
+    }
+
+    let mut skip = offset as usize;
+    let mut spans = Vec::new();
+    for span in line.spans {
+        if skip == 0 {
+            spans.push(span);
+            continue;
+        }
+        let (rest, consumed) = skip_prefix_by_width(span.content.as_ref(), skip);
+        skip = skip.saturating_sub(consumed);
+        if !rest.is_empty() {
+            spans.push(Span {
+                style: span.style,
+                content: rest.into(),
+            });
+        }
+    }
+
+    line.spans = spans;
+    line
+}
+
+fn skip_prefix_by_width(text: &str, skip: usize) -> (String, usize) {
+    if skip == 0 {
+        return (text.to_string(), 0);
+    }
+
+    let mut consumed = 0;
+    let mut start_byte = 0;
+    for ch in text.chars() {
+        let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if consumed + width > skip {
+            break;
+        }
+        consumed += width;
+        start_byte += ch.len_utf8();
+    }
+
+    (text[start_byte..].to_string(), consumed)
+}
+
+fn line_display_width(line: &Line<'_>) -> usize {
+    line.spans
+        .iter()
+        .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+        .sum()
 }
 
 fn tree_line(
@@ -394,8 +470,8 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     vec![
         help_section("General", theme),
-        help_binding("h", "Show this help", theme),
-        help_binding("Esc, h", "Close help", theme),
+        help_binding("?", "Show this help", theme),
+        help_binding("Esc, ?", "Close help", theme),
         help_binding("q, Esc", "Quit", theme),
         help_binding("Ctrl+C", "Quit", theme),
         help_binding("c", "Toggle colors (respects NO_COLOR)", theme),
@@ -405,8 +481,9 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
         help_section("Tree pane", theme),
         help_binding("j, ↓", "Move selection down", theme),
         help_binding("k, ↑", "Move selection up", theme),
-        help_binding("Enter, l, →", "Expand node", theme),
-        help_binding("←", "Collapse node", theme),
+        help_binding("Space, Enter", "Toggle expand/collapse", theme),
+        help_binding("←, h", "Scroll line left", theme),
+        help_binding("→, l", "Scroll line right", theme),
         Line::from(""),
         help_section("Hop symbols", theme),
         help_symbol_legend(
@@ -569,7 +646,7 @@ mod pane_tests {
     use ratatui::style::{Color, Modifier};
     use ratatui::text::{Line, Span};
 
-    use super::{Pane, apply_tree_selection, help_lines};
+    use super::{Pane, apply_tree_selection, help_lines, line_display_width, scroll_line};
     use crate::explore::terminal::UNICODE;
     use crate::explore::theme::Theme;
 
@@ -594,6 +671,21 @@ mod pane_tests {
             assert_eq!(span.style.bg, Some(Color::Blue));
             assert!(span.style.add_modifier.contains(Modifier::BOLD));
         }
+    }
+
+    #[test]
+    fn scroll_line_shifts_content_left_by_display_width() {
+        let line = Line::from(vec![Span::raw("abc "), Span::raw("def")]);
+        assert_eq!(line_display_width(&line), 7);
+        let scrolled = scroll_line(line, 4);
+        assert_eq!(
+            scrolled
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>(),
+            "def"
+        );
     }
 
     #[test]
@@ -622,9 +714,10 @@ mod pane_tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(text.contains("h              Show this help"));
+        assert!(text.contains("?              Show this help"));
         assert!(text.contains("Shift-Tab      Previous pane"));
-        assert!(text.contains("←              Collapse node"));
+        assert!(text.contains("Toggle expand/collapse"));
+        assert!(text.contains("Scroll line left"));
         assert!(text.contains("Toggle colors"));
         assert!(text.contains("response from cache"));
     }
