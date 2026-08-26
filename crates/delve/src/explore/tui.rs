@@ -8,10 +8,10 @@ use crossterm::terminal::{
 use dns_resolve::TraceHop;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 
 use super::detail::{format_final_answer, format_hop_detail, hop_summary_line};
 use super::tree::{ExploreNode, ExploreTree};
@@ -72,6 +72,7 @@ pub fn run_tui(tree: &ExploreTree) -> io::Result<()> {
     let mut selected = 0;
     let mut focused = Pane::Tree;
     let mut detail_scroll = 0u16;
+    let mut show_help = false;
     let mut result = Ok(());
 
     loop {
@@ -125,6 +126,10 @@ pub fn run_tui(tree: &ExploreTree) -> io::Result<()> {
                 .wrap(Wrap { trim: false })
                 .scroll((detail_scroll, 0));
             frame.render_widget(detail_widget, chunks[1]);
+
+            if show_help {
+                render_help_overlay(frame);
+            }
         })?;
 
         if event::poll(std::time::Duration::from_millis(100))? {
@@ -132,12 +137,23 @@ pub fn run_tui(tree: &ExploreTree) -> io::Result<()> {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
+                if show_help {
+                    match key.code {
+                        KeyCode::Char('h') | KeyCode::Esc => show_help = false,
+                        KeyCode::Char('q') => break,
+                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            break;
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => break,
+                    KeyCode::Char('h') => show_help = true,
                     KeyCode::Tab => focused = focused.cycle_forward(),
                     KeyCode::BackTab => focused = focused.cycle_backward(),
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
-                    KeyCode::Char('?') => {}
                     _ if focused == Pane::Tree => match key.code {
                         KeyCode::Down | KeyCode::Char('j') if selected + 1 < visible.len() => {
                             selected += 1;
@@ -154,7 +170,7 @@ pub fn run_tui(tree: &ExploreTree) -> io::Result<()> {
                                 toggle_path(&mut expanded_paths, &node.node);
                             }
                         }
-                        KeyCode::Left | KeyCode::Char('h') => {
+                        KeyCode::Left => {
                             if let Some(node) = visible.get(selected)
                                 && node.expandable
                                 && node.expanded
@@ -194,6 +210,75 @@ pub fn run_tui(tree: &ExploreTree) -> io::Result<()> {
     }
     terminal.show_cursor()?;
     result
+}
+
+fn render_help_overlay(frame: &mut ratatui::Frame<'_>) {
+    let area = centered_rect(60, 70, frame.area());
+    frame.render_widget(Clear, area);
+
+    let help_text = Paragraph::new(help_lines())
+        .block(
+            Block::default()
+                .title("Keyboard shortcuts")
+                .title_alignment(Alignment::Center)
+                .borders(Borders::ALL),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(help_text, area);
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
+}
+
+fn help_lines() -> Vec<Line<'static>> {
+    vec![
+        Line::from(Span::styled(
+            "General",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from("  h            Show this help"),
+        Line::from("  Esc, h       Close help"),
+        Line::from("  q, Esc       Quit"),
+        Line::from("  Ctrl+C       Quit"),
+        Line::from("  Tab          Next pane"),
+        Line::from("  Shift-Tab    Previous pane"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Tree pane",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from("  j, ↓         Move selection down"),
+        Line::from("  k, ↑         Move selection up"),
+        Line::from("  Enter, l, →  Expand node"),
+        Line::from("  ←            Collapse node"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Details pane",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from("  j, ↓         Scroll down"),
+        Line::from("  k, ↑         Scroll up"),
+        Line::from("  Space, PgDn  Page down"),
+        Line::from("  PgUp         Page up"),
+        Line::from("  Home         Scroll to top"),
+    ]
 }
 
 fn default_expanded_paths(tree: &ExploreTree) -> Vec<Vec<usize>> {
@@ -359,7 +444,7 @@ fn detail_text(tree: &ExploreTree, selected: Option<&VisibleNode>) -> String {
 
 #[cfg(test)]
 mod pane_tests {
-    use super::Pane;
+    use super::{Pane, help_lines};
 
     #[test]
     fn tab_cycles_forward_through_panes() {
@@ -371,5 +456,24 @@ mod pane_tests {
     fn shift_tab_cycles_backward_through_panes() {
         assert_eq!(Pane::Tree.cycle_backward(), Pane::Detail);
         assert_eq!(Pane::Detail.cycle_backward(), Pane::Tree);
+    }
+
+    #[test]
+    fn help_overlay_lists_expected_bindings() {
+        let text: String = help_lines()
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(text.contains("h            Show this help"));
+        assert!(text.contains("Shift-Tab    Previous pane"));
+        assert!(text.contains("←            Collapse node"));
+        assert!(text.contains("Home         Scroll to top"));
     }
 }
