@@ -9,11 +9,13 @@ use dns_resolve::TraceHop;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use ratatui::widgets::block::BorderType;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 
-use super::detail::{format_final_answer, format_hop_detail, hop_summary_line};
+use super::detail::hop_summary_line;
+use super::dig_view::{final_detail_styled, hop_detail_styled};
+use super::theme::Theme;
 use super::tree::{ExploreNode, ExploreTree};
 
 #[derive(Debug, Clone)]
@@ -73,6 +75,7 @@ pub fn run_tui(tree: &ExploreTree) -> io::Result<()> {
     let mut focused = Pane::Tree;
     let mut detail_scroll = 0u16;
     let mut show_help = false;
+    let mut theme = Theme::from_env();
     let mut result = Ok(());
 
     loop {
@@ -97,38 +100,60 @@ pub fn run_tui(tree: &ExploreTree) -> io::Result<()> {
                     } else {
                         "  "
                     };
-                    let mut style = Style::default();
+                    let mut line = tree_line(tree, node, &indent, marker, &theme);
                     if focused == Pane::Tree && index == selected {
-                        style = style.add_modifier(Modifier::REVERSED);
+                        line = line.style(theme.tree_selected());
                     }
-                    ListItem::new(Line::from(format!("{indent}{marker}{}", node.label)))
-                        .style(style)
+                    ListItem::new(line)
                 })
                 .collect();
 
+            let color_hint = if theme.color_enabled { "on" } else { "off" };
             let tree_title = if focused == Pane::Tree {
-                format!("{} {}  [tree]", tree.qname, tree.qtype)
+                format!("{} {}  [tree]  color:{color_hint}", tree.qname, tree.qtype)
             } else {
-                format!("{} {}  [tree — Tab / Shift-Tab]", tree.qname, tree.qtype)
+                format!(
+                    "{} {}  [Tab / Shift-Tab]  color:{color_hint}",
+                    tree.qname, tree.qtype
+                )
             };
-            let tree_widget = List::new(tree_items)
-                .block(Block::default().title(tree_title).borders(Borders::ALL));
+            let tree_widget = List::new(tree_items).block(
+                Block::default()
+                    .title(tree_title)
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(if focused == Pane::Tree {
+                        theme.border_focused()
+                    } else {
+                        theme.border_unfocused()
+                    }),
+            );
             frame.render_widget(tree_widget, chunks[0]);
 
-            let detail = detail_text(tree, visible.get(selected));
+            let detail_lines = detail_content(tree, visible.get(selected), &theme);
             let detail_title = if focused == Pane::Detail {
                 "Details  [focused — j/k scroll]".to_string()
             } else {
                 "Details  [Tab / Shift-Tab]".to_string()
             };
-            let detail_widget = Paragraph::new(detail)
-                .block(Block::default().title(detail_title).borders(Borders::ALL))
+            let detail_widget = Paragraph::new(detail_lines)
+                .block(
+                    Block::default()
+                        .title(detail_title)
+                        .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
+                        .border_style(if focused == Pane::Detail {
+                            theme.border_focused()
+                        } else {
+                            theme.border_unfocused()
+                        }),
+                )
                 .wrap(Wrap { trim: false })
                 .scroll((detail_scroll, 0));
             frame.render_widget(detail_widget, chunks[1]);
 
             if show_help {
-                render_help_overlay(frame);
+                render_help_overlay(frame, &theme);
             }
         })?;
 
@@ -144,6 +169,7 @@ pub fn run_tui(tree: &ExploreTree) -> io::Result<()> {
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             break;
                         }
+                        KeyCode::Char('c') => theme.toggle_color(),
                         _ => {}
                     }
                     continue;
@@ -151,9 +177,10 @@ pub fn run_tui(tree: &ExploreTree) -> io::Result<()> {
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => break,
                     KeyCode::Char('h') => show_help = true,
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
+                    KeyCode::Char('c') => theme.toggle_color(),
                     KeyCode::Tab => focused = focused.cycle_forward(),
                     KeyCode::BackTab => focused = focused.cycle_backward(),
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
                     _ if focused == Pane::Tree => match key.code {
                         KeyCode::Down | KeyCode::Char('j') if selected + 1 < visible.len() => {
                             selected += 1;
@@ -212,16 +239,90 @@ pub fn run_tui(tree: &ExploreTree) -> io::Result<()> {
     result
 }
 
-fn render_help_overlay(frame: &mut ratatui::Frame<'_>) {
-    let area = centered_rect(60, 70, frame.area());
+fn tree_line(
+    tree: &ExploreTree,
+    node: &VisibleNode,
+    indent: &str,
+    marker: &str,
+    theme: &Theme,
+) -> Line<'static> {
+    match &node.node {
+        NodeRef::Delegation { hop_index, .. } | NodeRef::Hop { hop_index } => {
+            let hop = tree.hop(*hop_index);
+            hop_tree_line(indent, marker, hop, theme)
+        }
+        NodeRef::Resolve { target, .. } => Line::from(vec![
+            Span::raw(format!("{indent}{marker}")),
+            Span::styled("resolve ", theme.accent()),
+            Span::raw(target.clone()),
+        ]),
+        NodeRef::Final => Line::from(vec![
+            Span::raw(format!("{indent}{marker}")),
+            Span::styled(node.label.clone(), theme.accent_bold()),
+        ]),
+    }
+}
+
+fn hop_tree_line(indent: &str, marker: &str, hop: &TraceHop, theme: &Theme) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(format!("{indent}{marker}")),
+        Span::styled(format!("[{}] ", hop.zone), theme.zone()),
+        Span::raw(format!("{} {}  ", hop.qname, hop.qtype)),
+        Span::styled(format!("{}ms  ", hop.rtt_ms), theme.meta()),
+        Span::styled(hop.rcode.clone(), theme.rcode(&hop.rcode)),
+    ])
+}
+
+fn detail_content(
+    tree: &ExploreTree,
+    selected: Option<&VisibleNode>,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let Some(selected) = selected else {
+        return vec![Line::from(Span::styled(
+            "Select a node to inspect hop details.",
+            theme.meta(),
+        ))];
+    };
+
+    match &selected.node {
+        NodeRef::Delegation { hop_index, .. } | NodeRef::Hop { hop_index } => {
+            hop_detail_styled(tree.hop(*hop_index), theme)
+        }
+        NodeRef::Resolve { target, .. } => vec![
+            Line::from(Span::styled("Nameserver resolution", theme.section())),
+            Line::from(vec![
+                Span::styled("target: ", theme.label()),
+                Span::raw(target.clone()),
+            ]),
+        ],
+        NodeRef::Final => tree
+            .trace()
+            .final_response
+            .as_ref()
+            .map(|answer| final_detail_styled(answer, theme))
+            .unwrap_or_else(|| {
+                vec![Line::from(Span::styled(
+                    "No final answer recorded.",
+                    theme.meta(),
+                ))]
+            }),
+    }
+}
+
+fn render_help_overlay(frame: &mut ratatui::Frame<'_>, theme: &Theme) {
+    let area = centered_rect(62, 72, frame.area());
     frame.render_widget(Clear, area);
 
-    let help_text = Paragraph::new(help_lines())
+    let help_text = Paragraph::new(help_lines(theme))
         .block(
             Block::default()
                 .title("Keyboard shortcuts")
                 .title_alignment(Alignment::Center)
-                .borders(Borders::ALL),
+                .title_style(theme.accent_bold())
+                .borders(Borders::ALL)
+                .border_type(BorderType::Double)
+                .border_style(theme.border_focused()),
         )
         .wrap(Wrap { trim: false });
     frame.render_widget(help_text, area);
@@ -247,38 +348,42 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
-fn help_lines() -> Vec<Line<'static>> {
+fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     vec![
-        Line::from(Span::styled(
-            "General",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from("  h            Show this help"),
-        Line::from("  Esc, h       Close help"),
-        Line::from("  q, Esc       Quit"),
-        Line::from("  Ctrl+C       Quit"),
-        Line::from("  Tab          Next pane"),
-        Line::from("  Shift-Tab    Previous pane"),
+        help_section("General", theme),
+        help_binding("h", "Show this help", theme),
+        help_binding("Esc, h", "Close help", theme),
+        help_binding("q, Esc", "Quit", theme),
+        help_binding("Ctrl+C", "Quit", theme),
+        help_binding("c", "Toggle colors (respects NO_COLOR)", theme),
+        help_binding("Tab", "Next pane", theme),
+        help_binding("Shift-Tab", "Previous pane", theme),
         Line::from(""),
-        Line::from(Span::styled(
-            "Tree pane",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from("  j, ↓         Move selection down"),
-        Line::from("  k, ↑         Move selection up"),
-        Line::from("  Enter, l, →  Expand node"),
-        Line::from("  ←            Collapse node"),
+        help_section("Tree pane", theme),
+        help_binding("j, ↓", "Move selection down", theme),
+        help_binding("k, ↑", "Move selection up", theme),
+        help_binding("Enter, l, →", "Expand node", theme),
+        help_binding("←", "Collapse node", theme),
         Line::from(""),
-        Line::from(Span::styled(
-            "Details pane",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from("  j, ↓         Scroll down"),
-        Line::from("  k, ↑         Scroll up"),
-        Line::from("  Space, PgDn  Page down"),
-        Line::from("  PgUp         Page up"),
-        Line::from("  Home         Scroll to top"),
+        help_section("Details pane", theme),
+        help_binding("j, ↓", "Scroll down", theme),
+        help_binding("k, ↑", "Scroll up", theme),
+        help_binding("Space, PgDn", "Page down", theme),
+        help_binding("PgUp", "Page up", theme),
+        help_binding("Home", "Scroll to top", theme),
     ]
+}
+
+fn help_section(title: &str, theme: &Theme) -> Line<'static> {
+    Line::from(Span::styled(title.to_string(), theme.help_heading()))
+}
+
+fn help_binding(keys: &str, description: &str, theme: &Theme) -> Line<'static> {
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled(format!("{keys:<14}"), theme.help_key()),
+        Span::raw(format!(" {description}")),
+    ])
 }
 
 fn default_expanded_paths(tree: &ExploreTree) -> Vec<Vec<usize>> {
@@ -423,28 +528,10 @@ fn hop_label(hop: &TraceHop) -> String {
     delegation_label(hop)
 }
 
-fn detail_text(tree: &ExploreTree, selected: Option<&VisibleNode>) -> String {
-    let Some(selected) = selected else {
-        return "Select a node to inspect hop details.".into();
-    };
-
-    match &selected.node {
-        NodeRef::Delegation { hop_index, .. } | NodeRef::Hop { hop_index } => {
-            format_hop_detail(tree.hop(*hop_index))
-        }
-        NodeRef::Resolve { target, .. } => format!("Nameserver resolution for {target}"),
-        NodeRef::Final => tree
-            .trace()
-            .final_response
-            .as_ref()
-            .map(format_final_answer)
-            .unwrap_or_else(|| "No final answer recorded.".into()),
-    }
-}
-
 #[cfg(test)]
 mod pane_tests {
     use super::{Pane, help_lines};
+    use crate::explore::theme::Theme;
 
     #[test]
     fn tab_cycles_forward_through_panes() {
@@ -460,7 +547,8 @@ mod pane_tests {
 
     #[test]
     fn help_overlay_lists_expected_bindings() {
-        let text: String = help_lines()
+        let theme = Theme::from_env();
+        let text: String = help_lines(&theme)
             .into_iter()
             .map(|line| {
                 line.spans
@@ -471,9 +559,9 @@ mod pane_tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(text.contains("h            Show this help"));
-        assert!(text.contains("Shift-Tab    Previous pane"));
-        assert!(text.contains("←            Collapse node"));
-        assert!(text.contains("Home         Scroll to top"));
+        assert!(text.contains("h              Show this help"));
+        assert!(text.contains("Shift-Tab      Previous pane"));
+        assert!(text.contains("←              Collapse node"));
+        assert!(text.contains("Toggle colors"));
     }
 }

@@ -131,6 +131,7 @@ mod tests {
             ede_text: None,
             referral_ns: vec!["ns.example.com.".into()],
             glue: vec![],
+            response: Default::default(),
         }
     }
 
@@ -146,6 +147,10 @@ mod tests {
                 rcode: "NOERROR".into(),
                 records: vec!["example.com. 300 93.184.216.34".into()],
                 nsid: None,
+                qname: String::new(),
+                qtype: String::new(),
+                transport: String::new(),
+                response: Default::default(),
             }),
         }
     }

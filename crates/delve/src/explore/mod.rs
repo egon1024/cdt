@@ -1,6 +1,8 @@
 mod detail;
+mod dig_view;
 mod json;
 mod outline;
+mod theme;
 mod tree;
 mod tui;
 
@@ -110,6 +112,7 @@ mod tests {
                         ede_text: None,
                         referral_ns: vec!["a.gtld-servers.net.".into()],
                         glue: vec![],
+                        response: Default::default(),
                     },
                     TraceHop {
                         zone: "com.".into(),
@@ -124,6 +127,7 @@ mod tests {
                         ede_text: None,
                         referral_ns: vec![],
                         glue: vec![],
+                        response: Default::default(),
                     },
                 ],
                 final_response: Some(FinalAnswer {
@@ -132,6 +136,10 @@ mod tests {
                     rcode: "NOERROR".into(),
                     records: vec!["example.com. 300 93.184.216.34".into()],
                     nsid: None,
+                    qname: String::new(),
+                    qtype: String::new(),
+                    transport: String::new(),
+                    response: Default::default(),
                 }),
             },
         };

@@ -1,0 +1,120 @@
+use ratatui::style::{Color, Modifier, Style};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Theme {
+    pub color_enabled: bool,
+}
+
+impl Theme {
+    pub fn from_env() -> Self {
+        Self {
+            color_enabled: std::env::var("NO_COLOR").is_err(),
+        }
+    }
+
+    pub fn toggle_color(&mut self) {
+        self.color_enabled = !self.color_enabled;
+    }
+
+    pub fn accent(&self) -> Style {
+        if self.color_enabled {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default()
+        }
+    }
+
+    pub fn accent_bold(&self) -> Style {
+        self.accent().add_modifier(Modifier::BOLD)
+    }
+
+    pub fn section(&self) -> Style {
+        if self.color_enabled {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().add_modifier(Modifier::BOLD)
+        }
+    }
+
+    pub fn label(&self) -> Style {
+        if self.color_enabled {
+            Style::default().fg(Color::Blue)
+        } else {
+            Style::default()
+        }
+    }
+
+    pub fn meta(&self) -> Style {
+        if self.color_enabled {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default()
+        }
+    }
+
+    pub fn record_type(&self) -> Style {
+        if self.color_enabled {
+            Style::default().fg(Color::Magenta)
+        } else {
+            Style::default()
+        }
+    }
+
+    pub fn rcode(&self, rcode: &str) -> Style {
+        if !self.color_enabled {
+            return Style::default();
+        }
+        match rcode {
+            "NOERROR" => Style::default().fg(Color::Green),
+            "NXDOMAIN" | "SERVFAIL" | "REFUSED" | "FORMERR" | "NOTIMP" => {
+                Style::default().fg(Color::Red)
+            }
+            _ => Style::default().fg(Color::Yellow),
+        }
+    }
+
+    pub fn zone(&self) -> Style {
+        if self.color_enabled {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().add_modifier(Modifier::BOLD)
+        }
+    }
+
+    pub fn tree_selected(&self) -> Style {
+        if self.color_enabled {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().add_modifier(Modifier::REVERSED)
+        }
+    }
+
+    pub fn border_focused(&self) -> Style {
+        if self.color_enabled {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default()
+        }
+    }
+
+    pub fn border_unfocused(&self) -> Style {
+        if self.color_enabled {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default()
+        }
+    }
+
+    pub fn help_heading(&self) -> Style {
+        self.accent_bold()
+    }
+
+    pub fn help_key(&self) -> Style {
+        self.label().add_modifier(Modifier::BOLD)
+    }
+}

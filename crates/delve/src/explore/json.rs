@@ -66,6 +66,7 @@ mod tests {
                 ede_text: None,
                 referral_ns: vec![],
                 glue: vec![],
+                response: Default::default(),
             }],
             final_response: None,
         };

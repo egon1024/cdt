@@ -103,6 +103,7 @@ mod tests {
                 ede_text: None,
                 referral_ns: vec!["a.gtld-servers.net.".into(), "b.gtld-servers.net.".into()],
                 glue: vec![],
+                response: Default::default(),
             }],
             final_response: Some(FinalAnswer {
                 server: "93.184.216.34".into(),
@@ -110,6 +111,10 @@ mod tests {
                 rcode: "NOERROR".into(),
                 records: vec!["example.com. 300 93.184.216.34".into()],
                 nsid: None,
+                qname: String::new(),
+                qtype: String::new(),
+                transport: String::new(),
+                response: Default::default(),
             }),
         }
     }

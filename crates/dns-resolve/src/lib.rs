@@ -7,7 +7,7 @@ use std::time::Duration;
 use dns_cache::{CacheKey, CachedEntry, ResponseCache, now_unix, shared_cache, ttl_from_result};
 use dns_core::name::DomainName;
 use dns_core::query::QueryOptions;
-use dns_core::response::{QueryResult, Transport};
+use dns_core::response::{DnsRecord, DnsResponse, QueryResult, Transport};
 use dns_core::transport::exchange;
 use hickory_proto::rr::RecordType;
 use serde::{Deserialize, Serialize};
@@ -115,6 +115,38 @@ impl TraceConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct StoredDnsMessage {
+    pub id: u16,
+    pub authoritative: bool,
+    pub truncated: bool,
+    pub answers: Vec<DnsRecord>,
+    pub authorities: Vec<DnsRecord>,
+    pub additionals: Vec<DnsRecord>,
+}
+
+impl StoredDnsMessage {
+    pub fn from_response(response: &DnsResponse) -> Self {
+        Self {
+            id: response.id,
+            authoritative: response.authoritative,
+            truncated: response.truncated,
+            answers: response.answers.clone(),
+            authorities: response.authorities.clone(),
+            additionals: response.additionals.clone(),
+        }
+    }
+
+    pub fn is_stored(&self) -> bool {
+        self.id != 0
+            || self.authoritative
+            || self.truncated
+            || !self.answers.is_empty()
+            || !self.authorities.is_empty()
+            || !self.additionals.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TraceHop {
     pub zone: String,
@@ -129,6 +161,8 @@ pub struct TraceHop {
     pub ede_text: Option<String>,
     pub referral_ns: Vec<String>,
     pub glue: Vec<String>,
+    #[serde(default)]
+    pub response: StoredDnsMessage,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -147,6 +181,14 @@ pub struct FinalAnswer {
     pub rcode: String,
     pub records: Vec<String>,
     pub nsid: Option<String>,
+    #[serde(default)]
+    pub qname: String,
+    #[serde(default)]
+    pub qtype: String,
+    #[serde(default)]
+    pub transport: String,
+    #[serde(default)]
+    pub response: StoredDnsMessage,
 }
 
 pub trait TraceProgress: Send {
@@ -245,6 +287,7 @@ pub(crate) fn hop_from_query(
             .and_then(|ede| ede.extra_text.clone()),
         referral_ns,
         glue,
+        response: StoredDnsMessage::from_response(&query.response),
     }
 }
 

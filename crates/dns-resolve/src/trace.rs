@@ -6,7 +6,7 @@ use dns_core::response::DnsResponse;
 use hickory_proto::rr::RecordType;
 
 use crate::root_hints::root_servers;
-use crate::{FinalAnswer, now_rfc3339};
+use crate::{FinalAnswer, StoredDnsMessage, now_rfc3339};
 use crate::{
     ResolveError, Result, TraceConfig, TraceProgress, TraceResult, filter_addresses,
     hop_from_query, query_server,
@@ -274,6 +274,10 @@ fn final_answer_from_query(query: &dns_core::QueryResult) -> FinalAnswer {
             .map(|record| format!("{} {} {}", record.name, record.ttl, record.rdata))
             .collect(),
         nsid: query.response.edns.nsid().map(str::to_owned),
+        qname: query.qname.to_string(),
+        qtype: query.qtype.clone(),
+        transport: query.transport.to_string(),
+        response: StoredDnsMessage::from_response(&query.response),
     }
 }
 
