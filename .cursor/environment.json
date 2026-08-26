@@ -1,4 +1,4 @@
 {
   "name": "cdt",
-  "install": "cargo fetch --locked && cargo build --workspace --all-targets"
+  "install": "npm config set prefix \"$HOME/.local\" && export PATH=\"$HOME/.local/bin:$PATH\" && npm install -g @fission-ai/openspec@latest && cargo fetch --locked && cargo build --workspace --all-targets"
 }
