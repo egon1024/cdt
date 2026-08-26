@@ -7,7 +7,7 @@ DEFAULT_BUMP="${DEFAULT_BUMP:-minor}"
 CHANGED_FILES="${CHANGED_FILES:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
 python3 "${ROOT_DIR}/.github/scripts/cdt-versions.py" preview \
   --pr-body "$PR_BODY" \
