@@ -121,6 +121,7 @@ mod tests {
         TraceHop {
             zone: zone.into(),
             server: server.into(),
+            server_name: None,
             qname: qname.into(),
             qtype: "A".into(),
             transport: "udp".into(),
@@ -143,6 +144,7 @@ mod tests {
             hops,
             final_response: Some(FinalAnswer {
                 server: "93.184.216.34".into(),
+                server_name: None,
                 rtt_ms: 5,
                 rcode: "NOERROR".into(),
                 records: vec!["example.com. 300 93.184.216.34".into()],

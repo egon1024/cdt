@@ -56,6 +56,7 @@ mod tests {
             hops: vec![TraceHop {
                 zone: ".".into(),
                 server: "1.1.1.1".into(),
+                server_name: None,
                 qname: "example.com.".into(),
                 qtype: "A".into(),
                 transport: "udp".into(),

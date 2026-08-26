@@ -151,6 +151,8 @@ delve session explore 01J... +outline  # print tree once and exit
 delve session explore 01J... +events   # JSON tree on stdout
 ```
 
+New traces store full DNS response sections (header flags, question, answer, authority, additional) for each hop. The explore detail pane renders these in a **dig-style** layout. Older saved sessions without section data fall back to the compact YAML-style summary.
+
 ## Data locations
 
 | Data | Path |

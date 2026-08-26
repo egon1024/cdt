@@ -147,10 +147,34 @@ impl StoredDnsMessage {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ServerTarget {
+    pub address: IpAddr,
+    pub name: Option<String>,
+}
+
+impl ServerTarget {
+    pub fn from_address(address: IpAddr) -> Self {
+        Self {
+            address,
+            name: None,
+        }
+    }
+
+    pub fn with_name(address: IpAddr, name: impl Into<String>) -> Self {
+        Self {
+            address,
+            name: Some(name.into()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TraceHop {
     pub zone: String,
     pub server: String,
+    #[serde(default)]
+    pub server_name: Option<String>,
     pub qname: String,
     pub qtype: String,
     pub transport: String,
@@ -177,6 +201,8 @@ pub struct TraceResult {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FinalAnswer {
     pub server: String,
+    #[serde(default)]
+    pub server_name: Option<String>,
     pub rtt_ms: u64,
     pub rcode: String,
     pub records: Vec<String>,
@@ -267,12 +293,14 @@ pub(crate) fn cache_enabled_for(config: &TraceConfig, qname: &DomainName) -> boo
 pub(crate) fn hop_from_query(
     zone: &DomainName,
     query: &QueryResult,
+    server_name: Option<String>,
     referral_ns: Vec<String>,
     glue: Vec<String>,
 ) -> TraceHop {
     TraceHop {
         zone: zone.to_string(),
         server: query.server.to_string(),
+        server_name,
         qname: query.qname.to_string(),
         qtype: query.qtype.clone(),
         transport: query.transport.to_string(),

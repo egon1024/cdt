@@ -102,6 +102,7 @@ mod tests {
                     TraceHop {
                         zone: ".".into(),
                         server: "198.41.0.4".into(),
+                        server_name: None,
                         qname: "example.com.".into(),
                         qtype: "A".into(),
                         transport: "udp".into(),
@@ -117,6 +118,7 @@ mod tests {
                     TraceHop {
                         zone: "com.".into(),
                         server: "192.41.162.30".into(),
+                        server_name: None,
                         qname: "example.com.".into(),
                         qtype: "A".into(),
                         transport: "udp".into(),
@@ -132,6 +134,7 @@ mod tests {
                 ],
                 final_response: Some(FinalAnswer {
                     server: "93.184.216.34".into(),
+                    server_name: None,
                     rtt_ms: 8,
                     rcode: "NOERROR".into(),
                     records: vec!["example.com. 300 93.184.216.34".into()],

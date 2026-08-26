@@ -2,13 +2,14 @@ use dns_core::response::DnsRecord;
 use dns_resolve::{FinalAnswer, StoredDnsMessage, TraceHop};
 use ratatui::text::{Line, Span};
 
-use super::detail::{legacy_final_detail_lines, legacy_hop_detail_lines};
+use super::detail::{format_server_endpoint, legacy_final_detail_lines, legacy_hop_detail_lines};
 use super::theme::Theme;
 
 struct DigView<'a> {
     qname: &'a str,
     qtype: &'a str,
     server: &'a str,
+    server_name: Option<&'a str>,
     transport: &'a str,
     rtt_ms: u64,
     rcode: &'a str,
@@ -17,6 +18,7 @@ struct DigView<'a> {
     ede_text: Option<&'a str>,
     zone: &'a str,
     message: &'a StoredDnsMessage,
+    is_final: bool,
 }
 
 impl<'a> DigView<'a> {
@@ -25,6 +27,7 @@ impl<'a> DigView<'a> {
             qname: &hop.qname,
             qtype: &hop.qtype,
             server: &hop.server,
+            server_name: hop.server_name.as_deref(),
             transport: &hop.transport,
             rtt_ms: hop.rtt_ms,
             rcode: &hop.rcode,
@@ -33,6 +36,7 @@ impl<'a> DigView<'a> {
             ede_text: hop.ede_text.as_deref(),
             zone: &hop.zone,
             message: &hop.response,
+            is_final: false,
         }
     }
 
@@ -51,6 +55,7 @@ impl<'a> DigView<'a> {
             qname,
             qtype,
             server: &answer.server,
+            server_name: answer.server_name.as_deref(),
             transport: if answer.transport.is_empty() {
                 "udp"
             } else {
@@ -61,8 +66,9 @@ impl<'a> DigView<'a> {
             nsid: answer.nsid.as_deref(),
             ede_code: None,
             ede_text: None,
-            zone: "final",
+            zone: qname,
             message: &answer.response,
+            is_final: true,
         }
     }
 
@@ -97,10 +103,16 @@ impl<'a> DigView<'a> {
     }
 
     fn push_meta_plain(&self, lines: &mut Vec<String>) {
-        lines.push(format!("zone: {}", self.zone));
+        if self.is_final {
+            lines.push(format!("query: {} {}", self.qname, self.qtype));
+        } else {
+            lines.push(format!("zone: {}", self.zone));
+        }
         lines.push(format!(
             "server: {} ({}) in {}ms",
-            self.server, self.transport, self.rtt_ms
+            format_server_endpoint(self.server, self.server_name),
+            self.transport,
+            self.rtt_ms
         ));
         lines.push(format!("status: {}", self.rcode));
         if let Some(nsid) = self.nsid {
@@ -113,14 +125,23 @@ impl<'a> DigView<'a> {
     }
 
     fn meta_styled(&self, theme: &Theme) -> Vec<Line<'static>> {
-        let mut lines = vec![
+        let server = format_server_endpoint(self.server, self.server_name);
+        let context_line = if self.is_final {
+            Line::from(vec![
+                Span::styled("query: ", theme.label()),
+                Span::styled(format!("{} {}", self.qname, self.qtype), theme.zone()),
+            ])
+        } else {
             Line::from(vec![
                 Span::styled("zone: ", theme.label()),
                 Span::styled(self.zone.to_string(), theme.zone()),
-            ]),
+            ])
+        };
+        let mut lines = vec![
+            context_line,
             Line::from(vec![
                 Span::styled("server: ", theme.label()),
-                Span::raw(format!("{} ({}) ", self.server, self.transport)),
+                Span::raw(format!("{server} ({}) ", self.transport)),
                 Span::styled(format!("{}ms", self.rtt_ms), theme.meta()),
             ]),
             Line::from(vec![
@@ -347,6 +368,7 @@ mod tests {
         TraceHop {
             zone: ".".into(),
             server: "198.41.0.4".into(),
+            server_name: Some("a.root-servers.net.".into()),
             qname: "example.com.".into(),
             qtype: "A".into(),
             transport: "udp".into(),
@@ -371,6 +393,7 @@ mod tests {
         assert!(text.contains("IN  A"));
         assert!(text.contains(";; AUTHORITY SECTION:"));
         assert!(text.contains("a.gtld-servers.net."));
+        assert!(text.contains("server: a.root-servers.net. (198.41.0.4)"));
     }
 
     #[test]

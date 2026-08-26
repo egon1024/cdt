@@ -5,16 +5,25 @@ use dns_core::name::DomainName;
 use dns_core::response::DnsResponse;
 use hickory_proto::rr::RecordType;
 
-use crate::root_hints::root_servers;
-use crate::{FinalAnswer, StoredDnsMessage, now_rfc3339};
+use crate::root_hints::{root_server_names, root_servers};
+use crate::{FinalAnswer, ServerTarget, StoredDnsMessage, now_rfc3339};
 use crate::{
     ResolveError, Result, TraceConfig, TraceProgress, TraceResult, filter_addresses,
     hop_from_query, query_server,
 };
 
 pub fn run(config: &TraceConfig, progress: &mut dyn TraceProgress) -> Result<TraceResult> {
-    let mut servers = config.start_servers.clone().unwrap_or_else(root_servers);
-    servers = filter_addresses(&servers, config.ipv4_only, config.ipv6_only);
+    let mut servers = config
+        .start_servers
+        .clone()
+        .map(|addresses| {
+            addresses
+                .into_iter()
+                .map(ServerTarget::from_address)
+                .collect()
+        })
+        .unwrap_or_else(default_root_targets);
+    servers = filter_targets(&servers, config.ipv4_only, config.ipv6_only);
     if servers.is_empty() {
         return Err(ResolveError::NoReachableNameserver { zone: ".".into() });
     }
@@ -24,13 +33,15 @@ pub fn run(config: &TraceConfig, progress: &mut dyn TraceProgress) -> Result<Tra
     let mut hops = Vec::new();
 
     for depth in 0..config.max_depth {
-        let query_result = query_first_available(&servers, config, &config.qname, config.qtype)?;
+        let (query_result, server_name) =
+            query_first_available(&servers, config, &config.qname, config.qtype)?;
         let referral_ns = query_result.response.ns_names();
         let glue = collect_glue(&query_result.response, &referral_ns);
 
         let hop = hop_from_query(
             &current_zone,
             &query_result,
+            server_name.clone(),
             referral_ns.iter().map(ToString::to_string).collect(),
             glue.iter().map(ToString::to_string).collect(),
         );
@@ -43,7 +54,7 @@ pub fn run(config: &TraceConfig, progress: &mut dyn TraceProgress) -> Result<Tra
                 qtype: config.qtype.to_string(),
                 started_at: now_rfc3339(),
                 hops,
-                final_response: Some(final_answer_from_query(&query_result)),
+                final_response: Some(final_answer_from_query(&query_result, server_name)),
             });
         }
 
@@ -53,7 +64,7 @@ pub fn run(config: &TraceConfig, progress: &mut dyn TraceProgress) -> Result<Tra
                 qtype: config.qtype.to_string(),
                 started_at: now_rfc3339(),
                 hops,
-                final_response: Some(final_answer_from_query(&query_result)),
+                final_response: Some(final_answer_from_query(&query_result, server_name)),
             });
         };
 
@@ -105,16 +116,43 @@ pub fn run(config: &TraceConfig, progress: &mut dyn TraceProgress) -> Result<Tra
     })
 }
 
+fn default_root_targets() -> Vec<ServerTarget> {
+    root_servers()
+        .into_iter()
+        .zip(root_server_names())
+        .map(|(address, name)| ServerTarget::with_name(address, name))
+        .collect()
+}
+
+fn filter_targets(targets: &[ServerTarget], ipv4_only: bool, ipv6_only: bool) -> Vec<ServerTarget> {
+    filter_addresses(
+        &targets
+            .iter()
+            .map(|target| target.address)
+            .collect::<Vec<_>>(),
+        ipv4_only,
+        ipv6_only,
+    )
+    .into_iter()
+    .filter_map(|address| {
+        targets
+            .iter()
+            .find(|target| target.address == address)
+            .cloned()
+    })
+    .collect()
+}
+
 fn query_first_available(
-    servers: &[IpAddr],
+    servers: &[ServerTarget],
     config: &TraceConfig,
     qname: &DomainName,
     qtype: RecordType,
-) -> Result<dns_core::QueryResult> {
+) -> Result<(dns_core::QueryResult, Option<String>)> {
     let mut last_error = None;
     for server in servers {
-        match query_server(*server, config, qname, qtype) {
-            Ok(result) => return Ok(result),
+        match query_server(server.address, config, qname, qtype) {
+            Ok(result) => return Ok((result, server.name.clone())),
             Err(error) => last_error = Some(error),
         }
     }
@@ -127,11 +165,11 @@ fn query_first_available(
 
 fn resolve_nameservers_from_referral(
     referral: &DnsResponse,
-    current_servers: &[IpAddr],
+    current_servers: &[ServerTarget],
     config: &TraceConfig,
     parent_zone: &DomainName,
     progress: &mut dyn TraceProgress,
-) -> Result<Vec<IpAddr>> {
+) -> Result<Vec<ServerTarget>> {
     let ns_names = referral.ns_names();
     let mut ordered: Vec<&DomainName> = ns_names.iter().collect();
     ordered.sort_by_key(|ns| !referral.glue_for(ns).is_empty());
@@ -146,7 +184,7 @@ fn resolve_nameservers_from_referral(
             parent_zone,
             progress,
         ) {
-            Ok(addresses) if !addresses.is_empty() => return Ok(addresses),
+            Ok(targets) if !targets.is_empty() => return Ok(targets),
             Ok(_) => {}
             Err(error) => last_error = Some(error),
         }
@@ -164,11 +202,11 @@ fn resolve_nameservers_from_referral(
 fn resolve_nameserver(
     ns_name: &DomainName,
     referral: &DnsResponse,
-    current_servers: &[IpAddr],
+    current_servers: &[ServerTarget],
     config: &TraceConfig,
     parent_zone: &DomainName,
     progress: &mut dyn TraceProgress,
-) -> Result<Vec<IpAddr>> {
+) -> Result<Vec<ServerTarget>> {
     if config.ns_resolution_active.contains(ns_name.as_str()) {
         return Err(ResolveError::NameserverResolution {
             name: ns_name.to_string(),
@@ -184,14 +222,17 @@ fn resolve_nameserver(
 
     if !addresses.is_empty() {
         progress.message(&format!("using glue for {}: {:?}", ns_name, addresses));
-        return Ok(addresses);
+        return Ok(addresses
+            .into_iter()
+            .map(|address| ServerTarget::with_name(address, ns_name.to_string()))
+            .collect());
     }
 
     progress.message(&format!("resolving addresses for {}", ns_name));
 
     for qtype in [RecordType::A, RecordType::AAAA] {
-        if let Ok(result) = query_first_available(
-            &filter_addresses(current_servers, config.ipv4_only, config.ipv6_only),
+        if let Ok((result, _)) = query_first_available(
+            &filter_targets(current_servers, config.ipv4_only, config.ipv6_only),
             config,
             ns_name,
             qtype,
@@ -209,7 +250,10 @@ fn resolve_nameserver(
 
     addresses = filter_addresses(&addresses, config.ipv4_only, config.ipv6_only);
     if !addresses.is_empty() {
-        return Ok(addresses);
+        return Ok(addresses
+            .into_iter()
+            .map(|address| ServerTarget::with_name(address, ns_name.to_string()))
+            .collect());
     }
 
     if ns_name.is_subdomain_of(parent_zone) {
@@ -234,7 +278,10 @@ fn resolve_nameserver(
             .collect::<Vec<_>>();
         addresses = filter_addresses(&parsed, config.ipv4_only, config.ipv6_only);
         if !addresses.is_empty() {
-            return Ok(addresses);
+            return Ok(addresses
+                .into_iter()
+                .map(|address| ServerTarget::with_name(address, ns_name.to_string()))
+                .collect());
         }
     }
 
@@ -262,9 +309,13 @@ fn is_authoritative_answer(response: &DnsResponse, qname: &DomainName, qtype: Re
     })
 }
 
-fn final_answer_from_query(query: &dns_core::QueryResult) -> FinalAnswer {
+fn final_answer_from_query(
+    query: &dns_core::QueryResult,
+    server_name: Option<String>,
+) -> FinalAnswer {
     FinalAnswer {
         server: query.server.to_string(),
+        server_name,
         rtt_ms: query.rtt.as_millis() as u64,
         rcode: query.response.rcode_text.clone(),
         records: query
@@ -328,7 +379,9 @@ mod tests {
         let error = resolve_nameserver(
             &ns_name,
             &referral,
-            &[IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))],
+            &[ServerTarget::from_address(IpAddr::V4(Ipv4Addr::new(
+                1, 1, 1, 1,
+            )))],
             &config,
             &parent_zone,
             &mut SilentProgress,
@@ -385,14 +438,22 @@ mod tests {
 
         let addresses = resolve_nameservers_from_referral(
             &referral,
-            &[IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))],
+            &[ServerTarget::from_address(IpAddr::V4(Ipv4Addr::new(
+                1, 1, 1, 1,
+            )))],
             &config,
             &parent_zone,
             &mut SilentProgress,
         )
         .expect("addresses");
 
-        assert_eq!(addresses, vec![IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))]);
+        assert_eq!(
+            addresses,
+            vec![ServerTarget::with_name(
+                IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)),
+                "ns1.example.com."
+            )]
+        );
     }
 
     #[test]

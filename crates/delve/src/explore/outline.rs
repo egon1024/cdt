@@ -1,5 +1,6 @@
 use super::detail::{
-    final_detail_lines, hop_detail_lines, hop_summary_line, render_indented_block,
+    final_detail_lines, final_summary_line, hop_detail_lines, hop_summary_line,
+    render_indented_block,
 };
 use super::tree::{ExploreNode, ExploreTree};
 
@@ -53,7 +54,14 @@ fn render_node(
             ));
         }
         ExploreNode::Final => {
-            output.push_str(&format!("{prefix}{branch}final\n"));
+            output.push_str(&format!(
+                "{prefix}{branch}{}\n",
+                final_summary_line(
+                    &tree.qname,
+                    &tree.qtype,
+                    tree.trace().final_response.as_ref(),
+                )
+            ));
             if let Some(answer) = tree.trace().final_response.as_ref() {
                 output.push_str(&render_indented_block(
                     &final_detail_lines(answer),
@@ -93,6 +101,7 @@ mod tests {
             hops: vec![TraceHop {
                 zone: ".".into(),
                 server: "198.41.0.4".into(),
+                server_name: None,
                 qname: "example.com.".into(),
                 qtype: "A".into(),
                 transport: "udp".into(),
@@ -107,6 +116,7 @@ mod tests {
             }],
             final_response: Some(FinalAnswer {
                 server: "93.184.216.34".into(),
+                server_name: None,
                 rtt_ms: 5,
                 rcode: "NOERROR".into(),
                 records: vec!["example.com. 300 93.184.216.34".into()],

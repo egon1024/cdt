@@ -13,14 +13,12 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::block::BorderType;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 
-use super::detail::hop_summary_line;
 use super::dig_view::{final_detail_styled, hop_detail_styled};
 use super::theme::Theme;
 use super::tree::{ExploreNode, ExploreTree};
 
 #[derive(Debug, Clone)]
 struct VisibleNode {
-    label: String,
     node: NodeRef,
     depth: usize,
     expandable: bool,
@@ -256,10 +254,26 @@ fn tree_line(
             Span::styled("resolve ", theme.accent()),
             Span::raw(target.clone()),
         ]),
-        NodeRef::Final => Line::from(vec![
-            Span::raw(format!("{indent}{marker}")),
-            Span::styled(node.label.clone(), theme.accent_bold()),
-        ]),
+        NodeRef::Final => {
+            let answer = tree.trace().final_response.as_ref();
+            Line::from(vec![
+                Span::raw(format!("{indent}{marker}")),
+                Span::styled(
+                    format!("{} {}  ", tree.qname, tree.qtype),
+                    theme.accent_bold(),
+                ),
+                Span::styled(
+                    format!("{}ms  ", answer.map(|a| a.rtt_ms).unwrap_or(0)),
+                    theme.meta(),
+                ),
+                Span::styled(
+                    answer
+                        .map(|a| a.rcode.clone())
+                        .unwrap_or_else(|| "—".into()),
+                    theme.rcode(answer.map(|a| a.rcode.as_str()).unwrap_or("")),
+                ),
+            ])
+        }
     }
 }
 
@@ -439,13 +453,12 @@ fn node_path(node_ref: &NodeRef) -> Option<Vec<usize>> {
 fn build_visible_nodes(tree: &ExploreTree, expanded_paths: &[Vec<usize>]) -> Vec<VisibleNode> {
     let mut visible = Vec::new();
     for (index, child) in tree.children.iter().enumerate() {
-        append_visible_node(tree, child, vec![index], 0, expanded_paths, &mut visible);
+        append_visible_node(child, vec![index], 0, expanded_paths, &mut visible);
     }
     visible
 }
 
 fn append_visible_node(
-    tree: &ExploreTree,
     node: &ExploreNode,
     path: Vec<usize>,
     depth: usize,
@@ -455,47 +468,22 @@ fn append_visible_node(
     let expandable = has_children(node);
     let expanded = expandable && expanded_paths.iter().any(|existing| existing == &path);
 
-    let (label, node_ref) = match node {
-        ExploreNode::Delegation { hop_index, .. } => {
-            let hop = tree.hop(*hop_index);
-            (
-                delegation_label(hop),
-                NodeRef::Delegation {
-                    hop_index: *hop_index,
-                    path: path.clone(),
-                },
-            )
-        }
-        ExploreNode::Resolve { target, .. } => (
-            format!("resolve {target}"),
-            NodeRef::Resolve {
-                target: target.clone(),
-                path: path.clone(),
-            },
-        ),
-        ExploreNode::Hop { hop_index } => {
-            let hop = tree.hop(*hop_index);
-            (
-                hop_label(hop),
-                NodeRef::Hop {
-                    hop_index: *hop_index,
-                },
-            )
-        }
-        ExploreNode::Final => {
-            let label = tree
-                .trace()
-                .final_response
-                .as_ref()
-                .and_then(|answer| answer.records.first())
-                .map(|record| format!("final: {record}"))
-                .unwrap_or_else(|| "final".into());
-            (label, NodeRef::Final)
-        }
+    let node_ref = match node {
+        ExploreNode::Delegation { hop_index, .. } => NodeRef::Delegation {
+            hop_index: *hop_index,
+            path: path.clone(),
+        },
+        ExploreNode::Resolve { target, .. } => NodeRef::Resolve {
+            target: target.clone(),
+            path: path.clone(),
+        },
+        ExploreNode::Hop { hop_index } => NodeRef::Hop {
+            hop_index: *hop_index,
+        },
+        ExploreNode::Final => NodeRef::Final,
     };
 
     visible.push(VisibleNode {
-        label,
         node: node_ref,
         depth,
         expandable,
@@ -516,16 +504,8 @@ fn append_visible_node(
     for (index, child) in children.iter().enumerate() {
         let mut child_path = path.clone();
         child_path.push(index);
-        append_visible_node(tree, child, child_path, depth + 1, expanded_paths, visible);
+        append_visible_node(child, child_path, depth + 1, expanded_paths, visible);
     }
-}
-
-fn delegation_label(hop: &TraceHop) -> String {
-    format!("{}  {}ms  {}", hop_summary_line(hop), hop.rtt_ms, hop.rcode)
-}
-
-fn hop_label(hop: &TraceHop) -> String {
-    delegation_label(hop)
 }
 
 #[cfg(test)]
