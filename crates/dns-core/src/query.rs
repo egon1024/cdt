@@ -66,6 +66,9 @@ pub fn build_query(options: &QueryOptions) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// Well-known type codes that hickory exposes only as `RecordType::Unknown`.
+const NAMED_UNKNOWN_TYPES: &[(&str, u16)] = &[("RP", 17), ("DNAME", 39), ("LOC", 29)];
+
 /// Parse a user-supplied query type name.
 pub fn parse_record_type(input: &str) -> Result<RecordType> {
     let upper = input.trim().to_ascii_uppercase();
@@ -76,22 +79,30 @@ pub fn parse_record_type(input: &str) -> Result<RecordType> {
         return Ok(RecordType::from(code));
     }
 
-    match upper.as_str() {
-        "RP" => Ok(RecordType::from(17)),
-        "DNAME" => Ok(RecordType::from(39)),
-        other => other
-            .parse::<RecordType>()
-            .map_err(|_| DnsCoreError::RecordType(input.into())),
+    if let Some((_, code)) = NAMED_UNKNOWN_TYPES
+        .iter()
+        .find(|(name, _)| *name == upper.as_str())
+    {
+        return Ok(RecordType::from(*code));
     }
+
+    upper
+        .parse::<RecordType>()
+        .map_err(|_| DnsCoreError::RecordType(input.into()))
 }
 
 /// Stable presentation name for a record type (including hickory `Unknown` codes).
 pub fn record_type_name(rtype: RecordType) -> String {
-    match rtype {
-        RecordType::Unknown(17) => "RP".into(),
-        RecordType::Unknown(39) => "DNAME".into(),
-        other => other.to_string(),
+    if let RecordType::Unknown(code) = rtype {
+        if let Some((name, _)) = NAMED_UNKNOWN_TYPES
+            .iter()
+            .find(|(_, known_code)| *known_code == code)
+        {
+            return (*name).to_string();
+        }
+        return format!("TYPE{code}");
     }
+    rtype.to_string()
 }
 
 /// Parse a DNS response from wire bytes.
@@ -169,6 +180,7 @@ mod tests {
             ("PTR", 12),
             ("RP", 17),
             ("DNAME", 39),
+            ("LOC", 29),
         ] {
             let parsed = parse_record_type(name).expect(name);
             assert_eq!(u16::from(parsed), code, "{name}");
@@ -180,5 +192,7 @@ mod tests {
     fn record_type_name_maps_unknown_codes() {
         assert_eq!(record_type_name(RecordType::from(39)), "DNAME");
         assert_eq!(record_type_name(RecordType::from(17)), "RP");
+        assert_eq!(record_type_name(RecordType::from(29)), "LOC");
+        assert_eq!(record_type_name(RecordType::from(999)), "TYPE999");
     }
 }
