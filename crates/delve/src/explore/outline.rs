@@ -113,6 +113,7 @@ mod tests {
                 referral_ns: vec!["a.gtld-servers.net.".into(), "b.gtld-servers.net.".into()],
                 glue: vec![],
                 response: Default::default(),
+                from_cache: false,
             }],
             final_response: Some(FinalAnswer {
                 server: "93.184.216.34".into(),
@@ -125,6 +126,7 @@ mod tests {
                 qtype: String::new(),
                 transport: String::new(),
                 response: Default::default(),
+                from_cache: false,
             }),
         }
     }

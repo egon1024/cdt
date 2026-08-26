@@ -68,6 +68,7 @@ mod tests {
                 referral_ns: vec![],
                 glue: vec![],
                 response: Default::default(),
+                from_cache: false,
             }],
             final_response: None,
         };

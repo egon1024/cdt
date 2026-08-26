@@ -20,6 +20,7 @@ struct DigView<'a> {
     zone: &'a str,
     message: &'a StoredDnsMessage,
     is_final: bool,
+    from_cache: bool,
 }
 
 impl<'a> DigView<'a> {
@@ -38,6 +39,7 @@ impl<'a> DigView<'a> {
             zone: &hop.zone,
             message: &hop.response,
             is_final: false,
+            from_cache: hop.from_cache,
         }
     }
 
@@ -70,6 +72,7 @@ impl<'a> DigView<'a> {
             zone: qname,
             message: &answer.response,
             is_final: true,
+            from_cache: answer.from_cache,
         }
     }
 
@@ -116,6 +119,10 @@ impl<'a> DigView<'a> {
             self.rtt_ms
         ));
         lines.push(format!("status: {}", self.rcode));
+        lines.push(format!(
+            "source: {}",
+            super::detail::cache_source_label(self.from_cache)
+        ));
         if let Some(nsid) = self.nsid {
             lines.push(format!("nsid: {nsid}"));
         }
@@ -148,6 +155,13 @@ impl<'a> DigView<'a> {
             Line::from(vec![
                 Span::styled("status: ", theme.label()),
                 Span::styled(self.rcode.to_string(), theme.rcode(self.rcode)),
+            ]),
+            Line::from(vec![
+                Span::styled("source: ", theme.label()),
+                Span::styled(
+                    super::detail::cache_source_label(self.from_cache).to_string(),
+                    theme.cache_source(self.from_cache),
+                ),
             ]),
         ];
         if let Some(nsid) = self.nsid {
@@ -375,6 +389,7 @@ mod tests {
             referral_ns: vec!["a.gtld-servers.net.".into()],
             glue: vec![],
             response: sample_message(),
+            from_cache: false,
         }
     }
 

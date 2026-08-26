@@ -213,6 +213,9 @@ pub struct TraceHop {
     pub glue: Vec<String>,
     #[serde(default)]
     pub response: StoredDnsMessage,
+    /// True when this hop was served from the response cache.
+    #[serde(default)]
+    pub from_cache: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -241,6 +244,9 @@ pub struct FinalAnswer {
     pub transport: String,
     #[serde(default)]
     pub response: StoredDnsMessage,
+    /// True when the final answer was served from the response cache.
+    #[serde(default)]
+    pub from_cache: bool,
 }
 
 pub trait TraceProgress: Send {
@@ -278,16 +284,19 @@ pub(crate) fn query_server(
     if cache_enabled_for(config, qname) {
         if let Some(cache) = &config.cache {
             if let Some(entry) = cache.get(&key) {
-                return Ok(entry.result);
+                let mut result = entry.result;
+                result.from_cache = true;
+                return Ok(result);
             }
         }
     }
 
     config.exchange_counter.fetch_add(1, Ordering::SeqCst);
-    let result = config
+    let mut result = config
         .exchange
         .exchange(server, config.port, &options)
         .map_err(ResolveError::from)?;
+    result.from_cache = false;
 
     if cache_enabled_for(config, qname) {
         if let Some(cache) = &config.cache {
@@ -342,6 +351,7 @@ pub(crate) fn hop_from_query(
         referral_ns,
         glue,
         response: StoredDnsMessage::from_response(&query.response),
+        from_cache: query.from_cache,
     }
 }
 
@@ -410,8 +420,29 @@ mod cache_tests {
                     additionals: vec![],
                     edns: EdnsMeta::default(),
                 },
+                from_cache: false,
             })
         }
+    }
+
+    #[test]
+    fn cache_hit_marks_result_from_cache() {
+        let qname = DomainName::parse("example.com.").expect("qname");
+        let mut config = TraceConfig::new(qname, RecordType::A);
+        let _cache = config.with_memory_cache();
+        let calls = Arc::new(AtomicUsize::new(0));
+        config.exchange = Arc::new(CountingExchange {
+            calls: calls.clone(),
+        });
+
+        let server = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
+        let first =
+            query_server(server, &config, &config.qname.clone(), RecordType::A).expect("first");
+        let second =
+            query_server(server, &config, &config.qname.clone(), RecordType::A).expect("second");
+
+        assert!(!first.from_cache);
+        assert!(second.from_cache);
     }
 
     #[test]
@@ -525,6 +556,7 @@ mod cache_tests {
                     additionals: vec![],
                     edns: EdnsMeta::default(),
                 },
+                from_cache: false,
             })
         }
     }

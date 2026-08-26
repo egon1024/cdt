@@ -13,6 +13,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::block::BorderType;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 
+use super::detail::cache_source_label;
 use super::dig_view::{final_detail_styled, hop_detail_styled};
 use super::theme::Theme;
 use super::tree::{ExploreNode, ExploreTree};
@@ -285,6 +286,13 @@ fn tree_line(
                         .unwrap_or_else(|| "—".into()),
                     theme.rcode(answer.map(|a| a.rcode.as_str()).unwrap_or("")),
                 ),
+                Span::styled(
+                    format!(
+                        "  {}",
+                        cache_source_label(answer.is_some_and(|a| a.from_cache))
+                    ),
+                    theme.cache_source(answer.is_some_and(|a| a.from_cache)),
+                ),
             ])
         }
     }
@@ -297,6 +305,10 @@ fn hop_tree_line(indent: &str, marker: &str, hop: &TraceHop, theme: &Theme) -> L
         Span::raw(format!("{} {}  ", hop.qname, hop.qtype)),
         Span::styled(format!("{}ms  ", hop.rtt_ms), theme.meta()),
         Span::styled(hop.rcode.clone(), theme.rcode(&hop.rcode)),
+        Span::styled(
+            format!("  {}  ", cache_source_label(hop.from_cache)),
+            theme.cache_source(hop.from_cache),
+        ),
     ])
 }
 

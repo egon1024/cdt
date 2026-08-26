@@ -2,11 +2,32 @@ use std::net::IpAddr;
 
 use dns_resolve::{FinalAnswer, TraceHop};
 
+pub fn cache_source_label(from_cache: bool) -> &'static str {
+    if from_cache { "cache" } else { "live" }
+}
+
 pub fn final_summary_line(qname: &str, qtype: &str, answer: Option<&FinalAnswer>) -> String {
     match answer {
-        Some(answer) => format!("{qname} {qtype}  {}ms  {}", answer.rtt_ms, answer.rcode),
+        Some(answer) => format!(
+            "{qname} {qtype}  {}ms  {}  {}",
+            answer.rtt_ms,
+            answer.rcode,
+            cache_source_label(answer.from_cache)
+        ),
         None => format!("{qname} {qtype}"),
     }
+}
+
+pub fn hop_summary_line(hop: &TraceHop) -> String {
+    format!(
+        "[{}] {} {}  {}ms  {}  {}",
+        hop.zone,
+        hop.qname,
+        hop.qtype,
+        hop.rtt_ms,
+        hop.rcode,
+        cache_source_label(hop.from_cache)
+    )
 }
 
 pub fn format_server_endpoint(server: &str, server_name: Option<&str>) -> String {
@@ -47,10 +68,6 @@ pub fn render_indented_block(lines: &[String], indent: &str) -> String {
     output
 }
 
-pub fn hop_summary_line(hop: &TraceHop) -> String {
-    format!("[{}] {} {}", hop.zone, hop.qname, hop.qtype)
-}
-
 pub fn hop_detail_lines(hop: &TraceHop) -> Vec<String> {
     if hop.response.is_stored() {
         return super::dig_view::hop_detail_plain(hop)
@@ -82,6 +99,7 @@ pub(crate) fn legacy_hop_detail_lines(hop: &TraceHop) -> Vec<String> {
             hop.rtt_ms,
         ),
         format!("rcode: {}", hop.rcode),
+        format!("source: {}", cache_source_label(hop.from_cache)),
     ];
     if let Some(nsid) = &hop.nsid {
         lines.push(format!("nsid: {nsid}"));
@@ -108,6 +126,7 @@ pub(crate) fn legacy_final_detail_lines(answer: &FinalAnswer) -> Vec<String> {
             answer.rtt_ms,
         ),
         format!("rcode: {}", answer.rcode),
+        format!("source: {}", cache_source_label(answer.from_cache)),
     ];
     if let Some(nsid) = &answer.nsid {
         lines.push(format!("nsid: {nsid}"));
@@ -147,6 +166,7 @@ mod tests {
             glue: vec!["93.184.216.34".into()],
             server_name: None,
             response: Default::default(),
+            from_cache: false,
         };
         let detail = hop_detail_lines(&hop).join("\n");
         assert!(detail.contains("referral NS:\n  - ns1.example.com.\n  - ns2.example.com."));

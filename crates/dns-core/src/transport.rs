@@ -37,6 +37,7 @@ fn perform_exchange(server: IpAddr, port: u16, options: &QueryOptions) -> Result
         qtype: record_type_name(options.qtype),
         rtt,
         response,
+        from_cache: false,
     })
 }
 

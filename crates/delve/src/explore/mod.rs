@@ -115,6 +115,7 @@ mod tests {
                         referral_ns: vec!["a.gtld-servers.net.".into()],
                         glue: vec![],
                         response: Default::default(),
+                        from_cache: false,
                     },
                     TraceHop {
                         zone: "com.".into(),
@@ -131,6 +132,7 @@ mod tests {
                         referral_ns: vec![],
                         glue: vec![],
                         response: Default::default(),
+                        from_cache: false,
                     },
                 ],
                 final_response: Some(FinalAnswer {
@@ -144,6 +146,7 @@ mod tests {
                     qtype: String::new(),
                     transport: String::new(),
                     response: Default::default(),
+                    from_cache: false,
                 }),
             },
         };

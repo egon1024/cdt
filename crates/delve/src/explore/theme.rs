@@ -95,6 +95,21 @@ impl Theme {
         }
     }
 
+    pub fn cache_source(&self, from_cache: bool) -> Style {
+        if !self.color_enabled {
+            return if from_cache {
+                Style::default().add_modifier(Modifier::DIM)
+            } else {
+                Style::default()
+            };
+        }
+        if from_cache {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        }
+    }
+
     pub fn border_focused(&self) -> Style {
         if self.color_enabled {
             Style::default().fg(Color::Cyan)

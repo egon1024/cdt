@@ -369,6 +369,7 @@ fn final_answer_from_query(
         qtype: record_type_name(qtype),
         transport: query.transport.to_string(),
         response: StoredDnsMessage::from_response(&query.response),
+        from_cache: query.from_cache,
     }
 }
 

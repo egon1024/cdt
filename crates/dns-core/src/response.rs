@@ -174,6 +174,9 @@ pub struct QueryResult {
     pub qtype: String,
     pub rtt: Duration,
     pub response: DnsResponse,
+    /// True when this response was served from the response cache.
+    #[serde(default)]
+    pub from_cache: bool,
 }
 
 fn convert_record(record: &Record) -> DnsRecord {

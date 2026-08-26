@@ -236,6 +236,7 @@ mod tests {
                 additionals: vec![],
                 edns: EdnsMeta::default(),
             },
+            from_cache: false,
         }
     }
 
