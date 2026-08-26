@@ -2,16 +2,17 @@ use super::detail::{
     final_detail_lines, final_summary_line, hop_detail_lines, hop_summary_line,
     render_indented_block,
 };
+use super::terminal::UiSymbols;
 use super::tree::{ExploreNode, ExploreTree};
 
-pub fn render_outline(tree: &ExploreTree) -> String {
+pub fn render_outline(tree: &ExploreTree, symbols: UiSymbols) -> String {
     let mut output = String::new();
     output.push_str(&format!("{} {}\n", tree.qname, tree.qtype));
 
     let child_count = tree.children.len();
     for (index, child) in tree.children.iter().enumerate() {
         let last = index + 1 == child_count;
-        render_node(tree, child, "", last, &mut output);
+        render_node(tree, child, "", last, symbols, &mut output);
     }
 
     output
@@ -22,10 +23,19 @@ fn render_node(
     node: &ExploreNode,
     prefix: &str,
     last: bool,
+    symbols: UiSymbols,
     output: &mut String,
 ) {
-    let branch = if last { "└─ " } else { "├─ " };
-    let child_prefix = format!("{}{}", prefix, if last { "   " } else { "│  " });
+    let branch = if last {
+        symbols.branch_end
+    } else {
+        symbols.branch_tee
+    };
+    let child_prefix = format!(
+        "{}{}",
+        prefix,
+        if last { "   " } else { symbols.branch_pipe }
+    );
     let detail_indent = format!("{child_prefix}   ");
 
     match node {
@@ -34,22 +44,28 @@ fn render_node(
             children,
         } => {
             let hop = tree.hop(*hop_index);
-            output.push_str(&format!("{prefix}{branch}{}\n", hop_summary_line(hop)));
+            output.push_str(&format!(
+                "{prefix}{branch}{}\n",
+                hop_summary_line(hop, symbols)
+            ));
             output.push_str(&render_indented_block(
-                &hop_detail_lines(hop),
+                &hop_detail_lines(hop, symbols),
                 &detail_indent,
             ));
-            render_children(tree, children, &child_prefix, output);
+            render_children(tree, children, &child_prefix, symbols, output);
         }
         ExploreNode::Resolve { target, children } => {
             output.push_str(&format!("{prefix}{branch}(resolve {target})\n"));
-            render_children(tree, children, &child_prefix, output);
+            render_children(tree, children, &child_prefix, symbols, output);
         }
         ExploreNode::Hop { hop_index } => {
             let hop = tree.hop(*hop_index);
-            output.push_str(&format!("{prefix}{branch}{}\n", hop_summary_line(hop)));
+            output.push_str(&format!(
+                "{prefix}{branch}{}\n",
+                hop_summary_line(hop, symbols)
+            ));
             output.push_str(&render_indented_block(
-                &hop_detail_lines(hop),
+                &hop_detail_lines(hop, symbols),
                 &detail_indent,
             ));
         }
@@ -60,15 +76,16 @@ fn render_node(
                     &tree.qname,
                     &tree.qtype,
                     tree.trace().final_response.as_ref(),
+                    symbols,
                 )
             ));
             if let Some(answer) = tree.trace().final_response.as_ref() {
                 output.push_str(&render_indented_block(
-                    &final_detail_lines(answer),
+                    &final_detail_lines(answer, symbols),
                     &detail_indent,
                 ));
             } else {
-                output.push_str(&format!("{detail_indent}—\n"));
+                output.push_str(&format!("{detail_indent}{}\n", symbols.missing));
             }
         }
     }
@@ -78,18 +95,20 @@ fn render_children(
     tree: &ExploreTree,
     children: &[ExploreNode],
     prefix: &str,
+    symbols: UiSymbols,
     output: &mut String,
 ) {
     let child_count = children.len();
     for (index, child) in children.iter().enumerate() {
         let last = index + 1 == child_count;
-        render_node(tree, child, prefix, last, output);
+        render_node(tree, child, prefix, last, symbols, output);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::explore::terminal::UNICODE;
     use crate::explore::tree::build_explore_tree;
     use dns_resolve::{FinalAnswer, TraceHop, TraceResult};
 
@@ -134,7 +153,7 @@ mod tests {
     #[test]
     fn outline_uses_yaml_style_lists() {
         let tree = build_explore_tree(&sample_trace());
-        let outline = render_outline(&tree);
+        let outline = render_outline(&tree, UNICODE);
         assert!(outline.starts_with("example.com. A\n"));
         assert!(outline.contains("referral NS:\n"));
         assert!(outline.contains("  - a.gtld-servers.net."));

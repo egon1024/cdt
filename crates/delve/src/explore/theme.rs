@@ -3,12 +3,14 @@ use ratatui::style::{Color, Modifier, Style};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Theme {
     pub color_enabled: bool,
+    pub symbols: super::terminal::UiSymbols,
 }
 
 impl Theme {
     pub fn from_env() -> Self {
         Self {
             color_enabled: std::env::var("NO_COLOR").is_err(),
+            symbols: super::terminal::ui_symbols(),
         }
     }
 

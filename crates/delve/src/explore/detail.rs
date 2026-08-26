@@ -2,39 +2,26 @@ use std::net::IpAddr;
 
 use dns_resolve::{FinalAnswer, TraceHop};
 
-/// Filled diamond: response served from cache.
-pub const CACHE_SYMBOL: &str = "◆";
-/// Outline diamond: live DNS lookup.
-pub const LIVE_SYMBOL: &str = "◇";
+use super::terminal::{UiSymbols, cache_source_symbol};
 
-pub fn cache_source_symbol(from_cache: bool) -> &'static str {
-    if from_cache {
-        CACHE_SYMBOL
-    } else {
-        LIVE_SYMBOL
-    }
-}
-
-pub fn cache_source_legend() -> [(&'static str, &'static str); 2] {
-    [
-        (CACHE_SYMBOL, "response from cache"),
-        (LIVE_SYMBOL, "live DNS lookup"),
-    ]
-}
-
-pub fn final_summary_line(qname: &str, qtype: &str, answer: Option<&FinalAnswer>) -> String {
+pub fn final_summary_line(
+    qname: &str,
+    qtype: &str,
+    answer: Option<&FinalAnswer>,
+    symbols: UiSymbols,
+) -> String {
     match answer {
         Some(answer) => format!(
             "{qname} {qtype}  {}ms  {}  {}",
             answer.rtt_ms,
             answer.rcode,
-            cache_source_symbol(answer.from_cache)
+            cache_source_symbol(answer.from_cache, symbols)
         ),
         None => format!("{qname} {qtype}"),
     }
 }
 
-pub fn hop_summary_line(hop: &TraceHop) -> String {
+pub fn hop_summary_line(hop: &TraceHop, symbols: UiSymbols) -> String {
     format!(
         "[{}] {} {}  {}ms  {}  {}",
         hop.zone,
@@ -42,7 +29,7 @@ pub fn hop_summary_line(hop: &TraceHop) -> String {
         hop.qtype,
         hop.rtt_ms,
         hop.rcode,
-        cache_source_symbol(hop.from_cache)
+        cache_source_symbol(hop.from_cache, symbols)
     )
 }
 
@@ -84,27 +71,27 @@ pub fn render_indented_block(lines: &[String], indent: &str) -> String {
     output
 }
 
-pub fn hop_detail_lines(hop: &TraceHop) -> Vec<String> {
+pub fn hop_detail_lines(hop: &TraceHop, symbols: UiSymbols) -> Vec<String> {
     if hop.response.is_stored() {
-        return super::dig_view::hop_detail_plain(hop)
+        return super::dig_view::hop_detail_plain(hop, symbols)
             .lines()
             .map(str::to_owned)
             .collect();
     }
-    legacy_hop_detail_lines(hop)
+    legacy_hop_detail_lines(hop, symbols)
 }
 
-pub fn final_detail_lines(answer: &FinalAnswer) -> Vec<String> {
+pub fn final_detail_lines(answer: &FinalAnswer, symbols: UiSymbols) -> Vec<String> {
     if answer.response.is_stored() {
-        return super::dig_view::final_detail_plain(answer)
+        return super::dig_view::final_detail_plain(answer, symbols)
             .lines()
             .map(str::to_owned)
             .collect();
     }
-    legacy_final_detail_lines(answer)
+    legacy_final_detail_lines(answer, symbols)
 }
 
-pub(crate) fn legacy_hop_detail_lines(hop: &TraceHop) -> Vec<String> {
+pub(crate) fn legacy_hop_detail_lines(hop: &TraceHop, symbols: UiSymbols) -> Vec<String> {
     let mut lines = vec![
         format!("zone: {}", hop.zone),
         format!("query: {} {}", hop.qname, hop.qtype),
@@ -115,7 +102,7 @@ pub(crate) fn legacy_hop_detail_lines(hop: &TraceHop) -> Vec<String> {
             hop.rtt_ms,
         ),
         format!("rcode: {}", hop.rcode),
-        format!("source: {}", cache_source_symbol(hop.from_cache)),
+        format!("source: {}", cache_source_symbol(hop.from_cache, symbols)),
     ];
     if let Some(nsid) = &hop.nsid {
         lines.push(format!("nsid: {nsid}"));
@@ -129,7 +116,7 @@ pub(crate) fn legacy_hop_detail_lines(hop: &TraceHop) -> Vec<String> {
     lines
 }
 
-pub(crate) fn legacy_final_detail_lines(answer: &FinalAnswer) -> Vec<String> {
+pub(crate) fn legacy_final_detail_lines(answer: &FinalAnswer, symbols: UiSymbols) -> Vec<String> {
     let mut lines = vec![
         format_server_line(
             &answer.server,
@@ -142,7 +129,10 @@ pub(crate) fn legacy_final_detail_lines(answer: &FinalAnswer) -> Vec<String> {
             answer.rtt_ms,
         ),
         format!("rcode: {}", answer.rcode),
-        format!("source: {}", cache_source_symbol(answer.from_cache)),
+        format!(
+            "source: {}",
+            cache_source_symbol(answer.from_cache, symbols)
+        ),
     ];
     if let Some(nsid) = &answer.nsid {
         lines.push(format!("nsid: {nsid}"));
@@ -164,13 +154,7 @@ fn append_yaml_list_lines(lines: &mut Vec<String>, key: &str, values: &[String])
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn cache_source_symbols_are_distinct() {
-        assert_eq!(cache_source_symbol(true), CACHE_SYMBOL);
-        assert_eq!(cache_source_symbol(false), LIVE_SYMBOL);
-        assert_ne!(CACHE_SYMBOL, LIVE_SYMBOL);
-    }
+    use crate::explore::terminal::UNICODE;
 
     #[test]
     fn formats_multi_value_fields_as_yaml_lists() {
@@ -191,7 +175,7 @@ mod tests {
             response: Default::default(),
             from_cache: false,
         };
-        let detail = hop_detail_lines(&hop).join("\n");
+        let detail = hop_detail_lines(&hop, UNICODE).join("\n");
         assert!(detail.contains("referral NS:\n  - ns1.example.com.\n  - ns2.example.com."));
         assert!(detail.contains("glue:\n  - 93.184.216.34"));
     }

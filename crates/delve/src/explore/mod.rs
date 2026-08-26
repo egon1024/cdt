@@ -3,13 +3,14 @@ mod dig_view;
 mod flags;
 mod json;
 mod outline;
+mod terminal;
 mod theme;
 mod tree;
 mod tui;
 
-pub(crate) use detail::cache_source_symbol;
 pub use json::render_tree_json;
 pub use outline::render_outline;
+pub(crate) use terminal::{cache_source_symbol, ui_symbols};
 pub use tree::build_explore_tree;
 pub use tui::run_tui;
 
@@ -53,7 +54,7 @@ pub fn run_explore(
 
     let use_outline = options.outline || !io::stdout().is_terminal();
     if use_outline {
-        let outline = render_outline(&tree);
+        let outline = render_outline(&tree, ui_symbols());
         let mut stdout = io::stdout().lock();
         stdout
             .write_all(outline.as_bytes())
@@ -153,7 +154,7 @@ mod tests {
         };
 
         let tree = build_explore_tree(&document.result);
-        let outline = render_outline(&tree);
+        let outline = render_outline(&tree, ui_symbols());
         assert!(outline.contains("example.com. A"));
         assert!(outline.contains("records:\n"));
         assert!(outline.contains("  - example.com. 300 93.184.216.34"));

@@ -13,8 +13,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::block::BorderType;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 
-use super::detail::{CACHE_SYMBOL, LIVE_SYMBOL, cache_source_legend, cache_source_symbol};
 use super::dig_view::{final_detail_styled, hop_detail_styled};
+use super::terminal::{cache_source_legend, cache_source_symbol};
 use super::theme::Theme;
 use super::tree::{ExploreNode, ExploreTree};
 
@@ -95,7 +95,11 @@ pub fn run_tui(tree: &ExploreTree) -> io::Result<()> {
                 .map(|(index, node)| {
                     let indent = "  ".repeat(node.depth);
                     let marker = if node.expandable {
-                        if node.expanded { "▼ " } else { "▶ " }
+                        if node.expanded {
+                            theme.symbols.tree_expand
+                        } else {
+                            theme.symbols.tree_collapse
+                        }
                     } else {
                         "  "
                     };
@@ -289,7 +293,7 @@ fn tree_line(
                 Span::styled(
                     format!(
                         "  {}",
-                        cache_source_symbol(answer.is_some_and(|a| a.from_cache))
+                        cache_source_symbol(answer.is_some_and(|a| a.from_cache), theme.symbols)
                     ),
                     theme.cache_source(answer.is_some_and(|a| a.from_cache)),
                 ),
@@ -306,7 +310,7 @@ fn hop_tree_line(indent: &str, marker: &str, hop: &TraceHop, theme: &Theme) -> L
         Span::styled(format!("{}ms  ", hop.rtt_ms), theme.meta()),
         Span::styled(hop.rcode.clone(), theme.rcode(&hop.rcode)),
         Span::styled(
-            format!("  {}  ", cache_source_symbol(hop.from_cache)),
+            format!("  {}  ", cache_source_symbol(hop.from_cache, theme.symbols)),
             theme.cache_source(hop.from_cache),
         ),
     ])
@@ -405,8 +409,18 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
         help_binding("←", "Collapse node", theme),
         Line::from(""),
         help_section("Hop symbols", theme),
-        help_symbol_legend(CACHE_SYMBOL, cache_source_legend()[0].1, true, theme),
-        help_symbol_legend(LIVE_SYMBOL, cache_source_legend()[1].1, false, theme),
+        help_symbol_legend(
+            cache_source_legend(theme.symbols)[0].0,
+            cache_source_legend(theme.symbols)[0].1,
+            true,
+            theme,
+        ),
+        help_symbol_legend(
+            cache_source_legend(theme.symbols)[1].0,
+            cache_source_legend(theme.symbols)[1].1,
+            false,
+            theme,
+        ),
         Line::from(""),
         help_section("Details pane", theme),
         help_binding("j, ↓", "Scroll down", theme),
@@ -555,13 +569,15 @@ mod pane_tests {
     use ratatui::style::{Color, Modifier};
     use ratatui::text::{Line, Span};
 
-    use super::{CACHE_SYMBOL, LIVE_SYMBOL, Pane, apply_tree_selection, help_lines};
+    use super::{Pane, apply_tree_selection, help_lines};
+    use crate::explore::terminal::UNICODE;
     use crate::explore::theme::Theme;
 
     #[test]
     fn tree_selection_overrides_span_colors() {
         let theme = Theme {
             color_enabled: true,
+            symbols: UNICODE,
         };
         let line = Line::from(vec![
             Span::styled("example.com. A", theme.accent_bold()),
@@ -610,8 +626,6 @@ mod pane_tests {
         assert!(text.contains("Shift-Tab      Previous pane"));
         assert!(text.contains("←              Collapse node"));
         assert!(text.contains("Toggle colors"));
-        assert!(text.contains(CACHE_SYMBOL));
-        assert!(text.contains(LIVE_SYMBOL));
         assert!(text.contains("response from cache"));
     }
 }

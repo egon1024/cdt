@@ -4,6 +4,7 @@ use ratatui::text::{Line, Span};
 
 use super::detail::{format_server_endpoint, legacy_final_detail_lines, legacy_hop_detail_lines};
 use super::flags::{format_flags_plain, format_flags_spans};
+use super::terminal::{UiSymbols, cache_source_symbol};
 use super::theme::Theme;
 
 struct DigView<'a> {
@@ -21,10 +22,11 @@ struct DigView<'a> {
     message: &'a StoredDnsMessage,
     is_final: bool,
     from_cache: bool,
+    symbols: UiSymbols,
 }
 
 impl<'a> DigView<'a> {
-    fn from_hop(hop: &'a TraceHop) -> Self {
+    fn from_hop(hop: &'a TraceHop, symbols: UiSymbols) -> Self {
         Self {
             qname: &hop.qname,
             qtype: &hop.qtype,
@@ -40,10 +42,11 @@ impl<'a> DigView<'a> {
             message: &hop.response,
             is_final: false,
             from_cache: hop.from_cache,
+            symbols,
         }
     }
 
-    fn from_final(answer: &'a FinalAnswer) -> Self {
+    fn from_final(answer: &'a FinalAnswer, symbols: UiSymbols) -> Self {
         let qname = if answer.qname.is_empty() {
             "."
         } else {
@@ -73,6 +76,7 @@ impl<'a> DigView<'a> {
             message: &answer.response,
             is_final: true,
             from_cache: answer.from_cache,
+            symbols,
         }
     }
 
@@ -121,7 +125,7 @@ impl<'a> DigView<'a> {
         lines.push(format!("status: {}", self.rcode));
         lines.push(format!(
             "source: {}",
-            super::detail::cache_source_symbol(self.from_cache)
+            cache_source_symbol(self.from_cache, self.symbols)
         ));
         if let Some(nsid) = self.nsid {
             lines.push(format!("nsid: {nsid}"));
@@ -159,7 +163,7 @@ impl<'a> DigView<'a> {
             Line::from(vec![
                 Span::styled("source: ", theme.label()),
                 Span::styled(
-                    super::detail::cache_source_symbol(self.from_cache).to_string(),
+                    cache_source_symbol(self.from_cache, theme.symbols).to_string(),
                     theme.cache_source(self.from_cache),
                 ),
             ]),
@@ -252,25 +256,25 @@ pub fn final_has_dig_view(answer: &FinalAnswer) -> bool {
     answer.response.is_stored()
 }
 
-pub fn hop_detail_plain(hop: &TraceHop) -> String {
+pub fn hop_detail_plain(hop: &TraceHop, symbols: UiSymbols) -> String {
     if hop_has_dig_view(hop) {
-        DigView::from_hop(hop).to_plain()
+        DigView::from_hop(hop, symbols).to_plain()
     } else {
-        legacy_hop_detail_lines(hop).join("\n")
+        legacy_hop_detail_lines(hop, symbols).join("\n")
     }
 }
 
-pub fn final_detail_plain(answer: &FinalAnswer) -> String {
+pub fn final_detail_plain(answer: &FinalAnswer, symbols: UiSymbols) -> String {
     if final_has_dig_view(answer) {
-        DigView::from_final(answer).to_plain()
+        DigView::from_final(answer, symbols).to_plain()
     } else {
-        legacy_final_detail_lines(answer).join("\n")
+        legacy_final_detail_lines(answer, symbols).join("\n")
     }
 }
 
 pub fn hop_detail_styled(hop: &TraceHop, theme: &Theme) -> Vec<Line<'static>> {
     if hop_has_dig_view(hop) {
-        DigView::from_hop(hop).to_styled(theme)
+        DigView::from_hop(hop, theme.symbols).to_styled(theme)
     } else {
         legacy_hop_lines(hop, theme)
     }
@@ -278,7 +282,7 @@ pub fn hop_detail_styled(hop: &TraceHop, theme: &Theme) -> Vec<Line<'static>> {
 
 pub fn final_detail_styled(answer: &FinalAnswer, theme: &Theme) -> Vec<Line<'static>> {
     if final_has_dig_view(answer) {
-        DigView::from_final(answer).to_styled(theme)
+        DigView::from_final(answer, theme.symbols).to_styled(theme)
     } else {
         legacy_final_lines(answer, theme)
     }
@@ -318,14 +322,14 @@ fn record_styled(record: &DnsRecord, theme: &Theme) -> Line<'static> {
 }
 
 fn legacy_hop_lines(hop: &TraceHop, theme: &Theme) -> Vec<Line<'static>> {
-    legacy_hop_detail_lines(hop)
+    legacy_hop_detail_lines(hop, theme.symbols)
         .into_iter()
         .map(|line| styled_plain_line(&line, theme))
         .collect()
 }
 
 fn legacy_final_lines(answer: &FinalAnswer, theme: &Theme) -> Vec<Line<'static>> {
-    legacy_final_detail_lines(answer)
+    legacy_final_detail_lines(answer, theme.symbols)
         .into_iter()
         .map(|line| styled_plain_line(&line, theme))
         .collect()
@@ -393,9 +397,11 @@ mod tests {
         }
     }
 
+    use crate::explore::terminal::UNICODE;
+
     #[test]
     fn dig_plain_includes_header_and_sections() {
-        let text = hop_detail_plain(&sample_hop());
+        let text = hop_detail_plain(&sample_hop(), UNICODE);
         assert!(text.contains(";; HEADER"));
         assert!(text.contains("flags: QR RD RA (aa) (tc) (ad) (cd)"));
         assert!(text.contains(";; QUESTION SECTION:"));
@@ -410,7 +416,7 @@ mod tests {
     fn legacy_hop_falls_back_to_yaml_lists() {
         let mut hop = sample_hop();
         hop.response = StoredDnsMessage::default();
-        let text = hop_detail_plain(&hop);
+        let text = hop_detail_plain(&hop, UNICODE);
         assert!(text.contains("referral NS:\n  - a.gtld-servers.net."));
     }
 }
