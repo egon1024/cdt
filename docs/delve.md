@@ -30,7 +30,8 @@ session: 01JXXXXXXXXXXXXXXXXXXXXXXXXXX
 | `delve session unpin <id>` | Allow retention purge again |
 | `delve session purge` | Apply retention policy now |
 | `delve session purge --dry-run` | Report what would be removed |
-| `delve session explore [id]` | Interactive tree explorer (TUI) or static outline; omit id to reopen the last session |
+| `delve session explore [id]` | Interactive tree explorer (TUI); omit id to reopen the last session |
+| `delve session outline [id]` | Indented resolution tree on stdout; omit id for the last session |
 | `delve cache stats` | Response cache statistics |
 | `delve cache purge` | Remove expired cache entries |
 | `delve cache purge --all` | Clear the entire response cache |
@@ -140,29 +141,26 @@ show a `*` prefix in `delve session list`.
 
 Manual removal: `delve session rm <id>` or `delve session purge`.
 
-## Session explore
+## Session explore and outline
 
-`delve session explore <id>` walks a stored trace as a tree — delegation hops and
-nameserver-resolution branches — without network I/O. Omit `<id>` to reopen the
-**last session** used (from a saved trace or a previous explore).
+`delve session explore <id>` opens a stored trace in the **interactive tree TUI**
+(no network I/O). Omit `<id>` to reopen the **last session**.
 
-```bash
-delve session explore              # last session (TUI or outline)
-delve session explore 01J...       # explicit id
-delve session explore +outline     # last session, outline mode
-```
-
-| Mode | When | Output |
-|------|------|--------|
-| **TUI** (default) | Interactive terminal | Colored tree + dig-style detail pane; `h` help, `c` toggle colors (`NO_COLOR` respected), `Tab` / `Shift-Tab` cycle panes, `j`/`k` scroll detail when focused, `q` quit |
-| **Outline** | `+outline`, or stdout not a tty | One-shot indented tree on stdout |
-| **Tree JSON** | `+events` | Structured tree document on stdout |
+`delve session outline <id>` prints the same tree as a **one-shot indented outline**
+on stdout — suitable for logs, pipes, and narrow terminals.
 
 ```bash
-delve session explore 01J...           # TUI when attached to a terminal
-delve session explore 01J... +outline  # print tree once and exit
-delve session explore 01J... +events   # JSON tree on stdout
+delve session explore              # last session, TUI
+delve session explore 01J...       # explicit id, TUI
+delve session outline 01J...       # print tree once and exit
+delve session outline 01J... +events  # JSON tree on stdout
 ```
+
+| Command | Output |
+|---------|--------|
+| **`session explore`** | TUI with colored tree + dig-style detail pane; `?` help, `c` toggle colors, `Tab` / `Shift-Tab` cycle panes |
+| **`session outline`** | Indented tree on stdout |
+| **`session outline +events`** | Structured JSON tree on stdout |
 
 New traces store full DNS response sections (header flags, question, answer, authority, additional) for each hop. The explore detail pane renders these in a **dig-style** layout. Older saved sessions without section data fall back to the compact YAML-style summary.
 

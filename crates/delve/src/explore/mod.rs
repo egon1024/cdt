@@ -19,17 +19,14 @@ use crate::session::SessionDocument;
 use std::io::{self, IsTerminal, Write};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ExploreOptions {
-    pub outline: bool,
+pub struct OutlineOptions {
     pub events: bool,
 }
 
-pub fn parse_explore_args(args: &[String]) -> Result<ExploreOptions, ParseError> {
-    let mut options = ExploreOptions::default();
+pub fn parse_outline_args(args: &[String]) -> Result<OutlineOptions, ParseError> {
+    let mut options = OutlineOptions::default();
     for arg in args {
         match arg.as_str() {
-            "+outline" => options.outline = true,
-            "+nooutline" => options.outline = false,
             "+events" => options.events = true,
             "+noevents" => options.events = false,
             other if other.starts_with('+') => {
@@ -41,9 +38,9 @@ pub fn parse_explore_args(args: &[String]) -> Result<ExploreOptions, ParseError>
     Ok(options)
 }
 
-pub fn run_explore(
+pub fn run_outline(
     document: &SessionDocument,
-    options: ExploreOptions,
+    options: OutlineOptions,
 ) -> Result<(), ExploreError> {
     let tree = build_explore_tree(&document.result);
 
@@ -52,29 +49,31 @@ pub fn run_explore(
         return Ok(());
     }
 
-    let use_outline = options.outline || !io::stdout().is_terminal();
-    if use_outline {
-        let outline = render_outline(&tree, ui_symbols());
-        let mut stdout = io::stdout().lock();
-        stdout
-            .write_all(outline.as_bytes())
-            .map_err(ExploreError::Tui)?;
-        stdout.flush().map_err(ExploreError::Tui)?;
-        if !options.outline && !io::stdout().is_terminal() {
-            eprintln!(
-                "delve: stdout is not a terminal; wrote outline to stdout (redirect stdout to capture, e.g. > outline.txt)"
-            );
-        }
-        return Ok(());
+    let outline = render_outline(&tree, ui_symbols());
+    let mut stdout = io::stdout().lock();
+    stdout
+        .write_all(outline.as_bytes())
+        .map_err(ExploreError::Io)?;
+    stdout.flush().map_err(ExploreError::Io)?;
+    Ok(())
+}
+
+pub fn run_explore(document: &SessionDocument) -> Result<(), ExploreError> {
+    if !io::stdout().is_terminal() {
+        return Err(ExploreError::NotTerminal);
     }
 
-    run_tui(&tree).map_err(ExploreError::Tui)
+    let tree = build_explore_tree(&document.result);
+    run_tui(&tree).map_err(ExploreError::Io)
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExploreError {
     #[error(transparent)]
-    Tui(#[from] std::io::Error),
+    Io(#[from] std::io::Error),
+
+    #[error("stdout is not a terminal; use `delve session outline` for a printable tree")]
+    NotTerminal,
 }
 
 #[cfg(test)]
@@ -83,14 +82,22 @@ mod tests {
     use dns_resolve::{FinalAnswer, TraceHop, TraceResult};
 
     #[test]
-    fn parses_explore_flags() {
-        let options = parse_explore_args(&["+outline".into(), "+events".into()]).expect("parse");
-        assert!(options.outline);
+    fn parses_outline_flags() {
+        let options = parse_outline_args(&["+events".into()]).expect("parse");
         assert!(options.events);
+
+        let options = parse_outline_args(&["+noevents".into()]).expect("parse");
+        assert!(!options.events);
     }
 
     #[test]
-    fn run_explore_outline_writes_tree() {
+    fn rejects_unknown_outline_flags() {
+        let error = parse_outline_args(&["+outline".into()]).expect_err("parse");
+        assert!(matches!(error, ParseError::UnknownOption(option) if option == "+outline"));
+    }
+
+    #[test]
+    fn run_outline_writes_tree() {
         let document = SessionDocument {
             version: 1,
             id: "01JTESTSESSION000000000000".into(),
@@ -162,13 +169,6 @@ mod tests {
         let json = render_tree_json(&tree, &document.id);
         assert!(json.contains("\"event\":\"explore_tree\""));
 
-        run_explore(
-            &document,
-            ExploreOptions {
-                outline: true,
-                events: false,
-            },
-        )
-        .expect("outline explore");
+        run_outline(&document, OutlineOptions::default()).expect("outline");
     }
 }

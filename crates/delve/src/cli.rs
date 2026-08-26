@@ -6,7 +6,7 @@ use dns_resolve::{TraceConfig, run_trace};
 use thiserror::Error;
 
 use crate::dig_options::{ParseError, TraceOptions, parse_trace_args};
-use crate::explore::{ExploreError, parse_explore_args, run_explore};
+use crate::explore::{ExploreError, parse_outline_args, run_explore, run_outline};
 use crate::hop_display::print_hop_human;
 use crate::progress::StderrProgress;
 use crate::replay::{print_final_answer, print_reused_session_notice, replay_session};
@@ -63,13 +63,15 @@ pub enum SessionSubcommand {
     Unpin(SessionIdArgs),
     /// Purge sessions older than configured retention.
     Purge(SessionPurgeArgs),
-    /// Explore a stored session as a navigable tree (TUI or outline).
+    /// Print a stored session as an indented tree on stdout.
+    Outline(SessionOutlineArgs),
+    /// Explore a stored session in the interactive tree TUI.
     Explore(SessionExploreArgs),
 }
 
 #[derive(Debug, Parser)]
-pub struct SessionExploreArgs {
-    /// Session id or prefix. When omitted, reopens the last used session.
+pub struct SessionOutlineArgs {
+    /// Session id or prefix. When omitted, uses the last session.
     pub id: Option<String>,
     #[arg(
         trailing_var_arg = true,
@@ -78,6 +80,12 @@ pub struct SessionExploreArgs {
         value_name = "ARG"
     )]
     pub args: Vec<String>,
+}
+
+#[derive(Debug, Parser)]
+pub struct SessionExploreArgs {
+    /// Session id or prefix. When omitted, reopens the last used session.
+    pub id: Option<String>,
 }
 
 #[derive(Debug, Parser)]
@@ -294,11 +302,17 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
             }
             Ok(())
         }
-        SessionSubcommand::Explore(args) => {
-            let (session_id, flag_args) = resolve_explore_target(args.id, args.args, &runtime)?;
-            let options = parse_explore_args(&flag_args)?;
+        SessionSubcommand::Outline(args) => {
+            let (session_id, flag_args) = resolve_session_target(args.id, args.args, &runtime)?;
+            let options = parse_outline_args(&flag_args)?;
             let document = runtime.touch_session(&session_id)?;
-            run_explore(&document, options)?;
+            run_outline(&document, options)?;
+            Ok(())
+        }
+        SessionSubcommand::Explore(args) => {
+            let (session_id, _) = resolve_session_target(args.id, Vec::new(), &runtime)?;
+            let document = runtime.touch_session(&session_id)?;
+            run_explore(&document)?;
             Ok(())
         }
     }
@@ -330,7 +344,7 @@ fn run_cache_command(command: CacheCommand) -> Result<(), CliError> {
     }
 }
 
-fn resolve_explore_target(
+fn resolve_session_target(
     id: Option<String>,
     mut args: Vec<String>,
     runtime: &Runtime,
