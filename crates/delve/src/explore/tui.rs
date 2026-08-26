@@ -39,6 +39,28 @@ enum Pane {
     Detail,
 }
 
+impl Pane {
+    const ORDER: [Self; 2] = [Self::Tree, Self::Detail];
+
+    fn cycle_forward(self) -> Self {
+        let index = Self::index_of(self);
+        Self::ORDER[(index + 1) % Self::ORDER.len()]
+    }
+
+    fn cycle_backward(self) -> Self {
+        let index = Self::index_of(self);
+        let len = Self::ORDER.len();
+        Self::ORDER[(index + len - 1) % len]
+    }
+
+    fn index_of(pane: Self) -> usize {
+        Self::ORDER
+            .iter()
+            .position(|candidate| *candidate == pane)
+            .unwrap_or(0)
+    }
+}
+
 pub fn run_tui(tree: &ExploreTree) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -86,20 +108,17 @@ pub fn run_tui(tree: &ExploreTree) -> io::Result<()> {
             let tree_title = if focused == Pane::Tree {
                 format!("{} {}  [tree]", tree.qname, tree.qtype)
             } else {
-                format!("{} {}  [tree — Tab]", tree.qname, tree.qtype)
+                format!("{} {}  [tree — Tab / Shift-Tab]", tree.qname, tree.qtype)
             };
-            let tree_widget = List::new(tree_items).block(
-                Block::default()
-                    .title(tree_title)
-                    .borders(Borders::ALL),
-            );
+            let tree_widget = List::new(tree_items)
+                .block(Block::default().title(tree_title).borders(Borders::ALL));
             frame.render_widget(tree_widget, chunks[0]);
 
             let detail = detail_text(tree, visible.get(selected));
             let detail_title = if focused == Pane::Detail {
                 "Details  [focused — j/k scroll]".to_string()
             } else {
-                "Details  [Tab to focus]".to_string()
+                "Details  [Tab / Shift-Tab]".to_string()
             };
             let detail_widget = Paragraph::new(detail)
                 .block(Block::default().title(detail_title).borders(Borders::ALL))
@@ -115,12 +134,8 @@ pub fn run_tui(tree: &ExploreTree) -> io::Result<()> {
                 }
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => break,
-                    KeyCode::Tab => {
-                        focused = match focused {
-                            Pane::Tree => Pane::Detail,
-                            Pane::Detail => Pane::Tree,
-                        };
-                    }
+                    KeyCode::Tab => focused = focused.cycle_forward(),
+                    KeyCode::BackTab => focused = focused.cycle_backward(),
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
                     KeyCode::Char('?') => {}
                     _ if focused == Pane::Tree => match key.code {
@@ -339,5 +354,22 @@ fn detail_text(tree: &ExploreTree, selected: Option<&VisibleNode>) -> String {
             .as_ref()
             .map(format_final_answer)
             .unwrap_or_else(|| "No final answer recorded.".into()),
+    }
+}
+
+#[cfg(test)]
+mod pane_tests {
+    use super::Pane;
+
+    #[test]
+    fn tab_cycles_forward_through_panes() {
+        assert_eq!(Pane::Tree.cycle_forward(), Pane::Detail);
+        assert_eq!(Pane::Detail.cycle_forward(), Pane::Tree);
+    }
+
+    #[test]
+    fn shift_tab_cycles_backward_through_panes() {
+        assert_eq!(Pane::Tree.cycle_backward(), Pane::Detail);
+        assert_eq!(Pane::Detail.cycle_backward(), Pane::Tree);
     }
 }
