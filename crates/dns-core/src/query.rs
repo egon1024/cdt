@@ -69,6 +69,44 @@ pub fn build_query(options: &QueryOptions) -> Result<Vec<u8>> {
 /// Well-known type codes that hickory exposes only as `RecordType::Unknown`.
 const NAMED_UNKNOWN_TYPES: &[(&str, u16)] = &[("RP", 17), ("DNAME", 39), ("LOC", 29)];
 
+/// Record type names accepted by [`parse_record_type`].
+///
+/// Includes hickory-native names plus explicitly mapped unknown codes (`RP`, `DNAME`, `LOC`).
+/// Any IANA type code is also accepted via `TYPEnn` (for example `TYPE45`).
+pub const SUPPORTED_RECORD_TYPE_NAMES: &[&str] = &[
+    "A",
+    "AAAA",
+    "CAA",
+    "CDNSKEY",
+    "CDS",
+    "CERT",
+    "CNAME",
+    "CSYNC",
+    "DNAME",
+    "DNSKEY",
+    "DS",
+    "HINFO",
+    "HTTPS",
+    "LOC",
+    "MX",
+    "NAPTR",
+    "NS",
+    "NSEC",
+    "NSEC3",
+    "NSEC3PARAM",
+    "OPENPGPKEY",
+    "PTR",
+    "RP",
+    "RRSIG",
+    "SMIMEA",
+    "SOA",
+    "SRV",
+    "SSHFP",
+    "SVCB",
+    "TLSA",
+    "TXT",
+];
+
 /// Parse a user-supplied query type name.
 pub fn parse_record_type(input: &str) -> Result<RecordType> {
     let upper = input.trim().to_ascii_uppercase();
@@ -170,6 +208,13 @@ mod tests {
     }
 
     #[test]
+    fn parse_supported_record_type_names() {
+        for name in SUPPORTED_RECORD_TYPE_NAMES {
+            parse_record_type(name).unwrap_or_else(|_| panic!("unsupported: {name}"));
+        }
+    }
+
+    #[test]
     fn parse_extended_record_types() {
         for (name, code) in [
             ("SRV", 33_u16),
@@ -181,6 +226,21 @@ mod tests {
             ("RP", 17),
             ("DNAME", 39),
             ("LOC", 29),
+            ("DNSKEY", 48),
+            ("DS", 43),
+            ("RRSIG", 46),
+            ("NSEC", 47),
+            ("NSEC3", 50),
+            ("NSEC3PARAM", 51),
+            ("TLSA", 52),
+            ("CDS", 59),
+            ("CDNSKEY", 60),
+            ("CSYNC", 62),
+            ("NAPTR", 35),
+            ("HINFO", 13),
+            ("CERT", 37),
+            ("OPENPGPKEY", 61),
+            ("SMIMEA", 53),
         ] {
             let parsed = parse_record_type(name).expect(name);
             assert_eq!(u16::from(parsed), code, "{name}");

@@ -263,6 +263,12 @@ mod tests {
     }
 
     #[test]
+    fn supports_dnssec_type_shorthand() {
+        let options = parse_trace_args(&args(&["example.com", "-TLSA"])).expect("parse");
+        assert_eq!(options.qtype, "TLSA");
+    }
+
+    #[test]
     fn supports_nocache_for_specific_qname() {
         let options =
             parse_trace_args(&args(&["example.com", "+nocache=ns.example.com"])).expect("parse");

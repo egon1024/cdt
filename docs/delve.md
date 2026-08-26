@@ -59,9 +59,16 @@ Options follow **dig** conventions (not GNU long flags):
 | `-4` / `-6` | both | Address family; mutually exclusive |
 | `@server` | root hints | Starting server (**IP literal** only today) |
 
-Supported query types: `A`, `AAAA`, `NS`, `CNAME`, `SOA`, `MX`, `TXT`, `SRV`, `RP`, `SSHFP`, `DNAME`, `HTTPS`, `SVCB`, `CAA`, `PTR`, `LOC`, and `TYPEnn` numeric forms.
+Supported query types:
 
-Hickory also accepts many additional type names when passed with `-t` or `-TYPE`, including DNSSEC-related types (`DNSKEY`, `DS`, `RRSIG`, `NSEC`, `NSEC3`, `NSEC3PARAM`, `TLSA`, `CDS`, `CDNSKEY`), `NAPTR`, `HINFO`, `CERT`, `OPENPGPKEY`, `SMIMEA`, and others. Any IANA type code works via `TYPEnn` (e.g. `TYPE45` for IPSECKEY).
+| Category | Types |
+|----------|-------|
+| Address / naming | `A`, `AAAA`, `CNAME`, `DNAME`, `NS`, `PTR`, `RP` |
+| Mail / text / service | `MX`, `TXT`, `SRV`, `HTTPS`, `SVCB` |
+| Security / DNSSEC / DANE | `CAA`, `CDNSKEY`, `CDS`, `CERT`, `CSYNC`, `DNSKEY`, `DS`, `OPENPGPKEY`, `RRSIG`, `NSEC`, `NSEC3`, `NSEC3PARAM`, `SMIMEA`, `SSHFP`, `TLSA` |
+| Other | `HINFO`, `LOC`, `NAPTR`, `SOA` |
+
+Any IANA type code also works via `TYPEnn` (for example `TYPE45` for IPSECKEY).
 
 Truncated UDP responses (`TC=1`) are recorded as-is. Delve does **not** automatically retry over TCP when `TC` is set; use `+tcp` up front if you need TCP for the whole trace.
 
