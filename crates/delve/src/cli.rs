@@ -23,7 +23,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Trace delegation path for a query name.
+    /// Trace the DNS delegation path for a query name (dig-style options; see `delve trace --help`).
     Trace(TraceArgs),
     /// Inspect or manage stored trace sessions.
     Session(SessionCommand),
@@ -32,13 +32,19 @@ pub enum Command {
 }
 
 #[derive(Debug, Parser)]
+#[command(
+    about = "Trace the DNS delegation path for a query name",
+    long_about = "Trace the DNS delegation path for a query name.\n\
+Options use dig-style +flags and -type shorthands, not GNU --long-options.",
+    after_long_help = crate::dig_options::TRACE_OPTIONS_HELP
+)]
 pub struct TraceArgs {
-    /// Query name, optional @server, and dig-style query options (+tcp, +timeout=, -t TYPE, ...).
+    /// Query name, optional @server, and dig-style options (see below).
     #[arg(
         trailing_var_arg = true,
         allow_hyphen_values = true,
         num_args = 0..,
-        value_name = "ARG"
+        value_name = "QNAME [@SERVER] [OPTIONS...]"
     )]
     pub args: Vec<String>,
 }
