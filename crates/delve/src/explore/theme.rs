@@ -104,9 +104,11 @@ impl Theme {
             };
         }
         if from_cache {
-            Style::default().fg(Color::Yellow)
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(Color::Green)
         }
     }
 

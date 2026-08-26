@@ -7,6 +7,7 @@ mod theme;
 mod tree;
 mod tui;
 
+pub(crate) use detail::cache_source_symbol;
 pub use json::render_tree_json;
 pub use outline::render_outline;
 pub use tree::build_explore_tree;

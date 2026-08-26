@@ -121,7 +121,7 @@ impl<'a> DigView<'a> {
         lines.push(format!("status: {}", self.rcode));
         lines.push(format!(
             "source: {}",
-            super::detail::cache_source_label(self.from_cache)
+            super::detail::cache_source_symbol(self.from_cache)
         ));
         if let Some(nsid) = self.nsid {
             lines.push(format!("nsid: {nsid}"));
@@ -159,7 +159,7 @@ impl<'a> DigView<'a> {
             Line::from(vec![
                 Span::styled("source: ", theme.label()),
                 Span::styled(
-                    super::detail::cache_source_label(self.from_cache).to_string(),
+                    super::detail::cache_source_symbol(self.from_cache).to_string(),
                     theme.cache_source(self.from_cache),
                 ),
             ]),

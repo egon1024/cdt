@@ -2,8 +2,24 @@ use std::net::IpAddr;
 
 use dns_resolve::{FinalAnswer, TraceHop};
 
-pub fn cache_source_label(from_cache: bool) -> &'static str {
-    if from_cache { "cache" } else { "live" }
+/// Filled diamond: response served from cache.
+pub const CACHE_SYMBOL: &str = "◆";
+/// Outline diamond: live DNS lookup.
+pub const LIVE_SYMBOL: &str = "◇";
+
+pub fn cache_source_symbol(from_cache: bool) -> &'static str {
+    if from_cache {
+        CACHE_SYMBOL
+    } else {
+        LIVE_SYMBOL
+    }
+}
+
+pub fn cache_source_legend() -> [(&'static str, &'static str); 2] {
+    [
+        (CACHE_SYMBOL, "response from cache"),
+        (LIVE_SYMBOL, "live DNS lookup"),
+    ]
 }
 
 pub fn final_summary_line(qname: &str, qtype: &str, answer: Option<&FinalAnswer>) -> String {
@@ -12,7 +28,7 @@ pub fn final_summary_line(qname: &str, qtype: &str, answer: Option<&FinalAnswer>
             "{qname} {qtype}  {}ms  {}  {}",
             answer.rtt_ms,
             answer.rcode,
-            cache_source_label(answer.from_cache)
+            cache_source_symbol(answer.from_cache)
         ),
         None => format!("{qname} {qtype}"),
     }
@@ -26,7 +42,7 @@ pub fn hop_summary_line(hop: &TraceHop) -> String {
         hop.qtype,
         hop.rtt_ms,
         hop.rcode,
-        cache_source_label(hop.from_cache)
+        cache_source_symbol(hop.from_cache)
     )
 }
 
@@ -99,7 +115,7 @@ pub(crate) fn legacy_hop_detail_lines(hop: &TraceHop) -> Vec<String> {
             hop.rtt_ms,
         ),
         format!("rcode: {}", hop.rcode),
-        format!("source: {}", cache_source_label(hop.from_cache)),
+        format!("source: {}", cache_source_symbol(hop.from_cache)),
     ];
     if let Some(nsid) = &hop.nsid {
         lines.push(format!("nsid: {nsid}"));
@@ -126,7 +142,7 @@ pub(crate) fn legacy_final_detail_lines(answer: &FinalAnswer) -> Vec<String> {
             answer.rtt_ms,
         ),
         format!("rcode: {}", answer.rcode),
-        format!("source: {}", cache_source_label(answer.from_cache)),
+        format!("source: {}", cache_source_symbol(answer.from_cache)),
     ];
     if let Some(nsid) = &answer.nsid {
         lines.push(format!("nsid: {nsid}"));
@@ -148,6 +164,13 @@ fn append_yaml_list_lines(lines: &mut Vec<String>, key: &str, values: &[String])
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_source_symbols_are_distinct() {
+        assert_eq!(cache_source_symbol(true), CACHE_SYMBOL);
+        assert_eq!(cache_source_symbol(false), LIVE_SYMBOL);
+        assert_ne!(CACHE_SYMBOL, LIVE_SYMBOL);
+    }
 
     #[test]
     fn formats_multi_value_fields_as_yaml_lists() {
