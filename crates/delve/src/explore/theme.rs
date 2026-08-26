@@ -85,9 +85,10 @@ impl Theme {
 
     pub fn tree_selected(&self) -> Style {
         if self.color_enabled {
+            // Blue (not cyan) so accent/zone text stays readable if a span style leaks through.
             Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
+                .fg(Color::White)
+                .bg(Color::Blue)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().add_modifier(Modifier::REVERSED)
