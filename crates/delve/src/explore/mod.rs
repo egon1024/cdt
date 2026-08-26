@@ -14,47 +14,23 @@ pub(crate) use terminal::{cache_source_symbol, ui_symbols};
 pub use tree::build_explore_tree;
 pub use tui::run_tui;
 
-use crate::dig_options::ParseError;
 use crate::session::SessionDocument;
 use std::io::{self, IsTerminal, Write};
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct OutlineOptions {
-    pub events: bool,
-}
-
-pub fn parse_outline_args(args: &[String]) -> Result<OutlineOptions, ParseError> {
-    let mut options = OutlineOptions::default();
-    for arg in args {
-        match arg.as_str() {
-            "+events" => options.events = true,
-            "+noevents" => options.events = false,
-            other if other.starts_with('+') => {
-                return Err(ParseError::UnknownOption(other.to_string()));
-            }
-            other => return Err(ParseError::Unexpected(other.to_string())),
-        }
-    }
-    Ok(options)
-}
-
-pub fn run_outline(
-    document: &SessionDocument,
-    options: OutlineOptions,
-) -> Result<(), ExploreError> {
+pub fn run_outline(document: &SessionDocument) -> Result<(), ExploreError> {
     let tree = build_explore_tree(&document.result);
-
-    if options.events {
-        println!("{}", render_tree_json(&tree, &document.id));
-        return Ok(());
-    }
-
     let outline = render_outline(&tree, ui_symbols());
     let mut stdout = io::stdout().lock();
     stdout
         .write_all(outline.as_bytes())
         .map_err(ExploreError::Io)?;
     stdout.flush().map_err(ExploreError::Io)?;
+    Ok(())
+}
+
+pub fn run_events(document: &SessionDocument) -> Result<(), ExploreError> {
+    let tree = build_explore_tree(&document.result);
+    println!("{}", render_tree_json(&tree, &document.id));
     Ok(())
 }
 
@@ -80,21 +56,6 @@ pub enum ExploreError {
 mod tests {
     use super::*;
     use dns_resolve::{FinalAnswer, TraceHop, TraceResult};
-
-    #[test]
-    fn parses_outline_flags() {
-        let options = parse_outline_args(&["+events".into()]).expect("parse");
-        assert!(options.events);
-
-        let options = parse_outline_args(&["+noevents".into()]).expect("parse");
-        assert!(!options.events);
-    }
-
-    #[test]
-    fn rejects_unknown_outline_flags() {
-        let error = parse_outline_args(&["+outline".into()]).expect_err("parse");
-        assert!(matches!(error, ParseError::UnknownOption(option) if option == "+outline"));
-    }
 
     #[test]
     fn run_outline_writes_tree() {
@@ -169,6 +130,7 @@ mod tests {
         let json = render_tree_json(&tree, &document.id);
         assert!(json.contains("\"event\":\"explore_tree\""));
 
-        run_outline(&document, OutlineOptions::default()).expect("outline");
+        run_outline(&document).expect("outline");
+        run_events(&document).expect("events");
     }
 }

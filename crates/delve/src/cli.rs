@@ -6,7 +6,7 @@ use dns_resolve::{TraceConfig, run_trace};
 use thiserror::Error;
 
 use crate::dig_options::{ParseError, TraceOptions, parse_trace_args};
-use crate::explore::{ExploreError, parse_outline_args, run_explore, run_outline};
+use crate::explore::{ExploreError, run_events, run_explore, run_outline};
 use crate::hop_display::print_hop_human;
 use crate::progress::StderrProgress;
 use crate::replay::{print_final_answer, print_reused_session_notice, replay_session};
@@ -65,6 +65,8 @@ pub enum SessionSubcommand {
     Purge(SessionPurgeArgs),
     /// Print a stored session as an indented tree on stdout.
     Outline(SessionOutlineArgs),
+    /// Print a stored session as structured JSON (explore tree) on stdout.
+    Events(SessionEventsArgs),
     /// Explore a stored session in the interactive tree TUI.
     Explore(SessionExploreArgs),
 }
@@ -73,13 +75,12 @@ pub enum SessionSubcommand {
 pub struct SessionOutlineArgs {
     /// Session id or prefix. When omitted, uses the last session.
     pub id: Option<String>,
-    #[arg(
-        trailing_var_arg = true,
-        allow_hyphen_values = true,
-        num_args = 0..,
-        value_name = "ARG"
-    )]
-    pub args: Vec<String>,
+}
+
+#[derive(Debug, Parser)]
+pub struct SessionEventsArgs {
+    /// Session id or prefix. When omitted, uses the last session.
+    pub id: Option<String>,
 }
 
 #[derive(Debug, Parser)]
@@ -303,10 +304,15 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
             Ok(())
         }
         SessionSubcommand::Outline(args) => {
-            let (session_id, flag_args) = resolve_session_target(args.id, args.args, &runtime)?;
-            let options = parse_outline_args(&flag_args)?;
+            let (session_id, _) = resolve_session_target(args.id, Vec::new(), &runtime)?;
             let document = runtime.touch_session(&session_id)?;
-            run_outline(&document, options)?;
+            run_outline(&document)?;
+            Ok(())
+        }
+        SessionSubcommand::Events(args) => {
+            let (session_id, _) = resolve_session_target(args.id, Vec::new(), &runtime)?;
+            let document = runtime.touch_session(&session_id)?;
+            run_events(&document)?;
             Ok(())
         }
         SessionSubcommand::Explore(args) => {
