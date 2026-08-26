@@ -47,7 +47,7 @@ pub fn build_explore_tree(trace: &TraceResult) -> ExploreTree {
     };
 
     if trace.final_response.is_some() {
-        children.push(ExploreNode::Final);
+        attach_final_node(&mut children);
     }
 
     ExploreTree {
@@ -55,6 +55,17 @@ pub fn build_explore_tree(trace: &TraceResult) -> ExploreTree {
         qtype: trace.qtype.clone(),
         children,
         trace: trace.clone(),
+    }
+}
+
+fn attach_final_node(children: &mut Vec<ExploreNode>) {
+    if let Some(ExploreNode::Resolve {
+        children: inner, ..
+    }) = children.last_mut()
+    {
+        inner.push(ExploreNode::Final);
+    } else {
+        children.push(ExploreNode::Final);
     }
 }
 
@@ -309,7 +320,7 @@ mod tests {
             ],
         ));
 
-        assert_eq!(tree.children.len(), 4);
+        assert_eq!(tree.children.len(), 3);
         assert!(matches!(
             &tree.children[0],
             ExploreNode::Resolve { target, .. } if target == "www.example.com."
@@ -318,10 +329,9 @@ mod tests {
             &tree.children[1],
             ExploreNode::Resolve { target, .. } if target == "cdn.example.com."
         ));
-        assert!(matches!(
-            &tree.children[2],
-            ExploreNode::Resolve { target, .. } if target == "target.example.com."
-        ));
-        assert!(matches!(tree.children[3], ExploreNode::Final));
+        let ExploreNode::Resolve { children, .. } = &tree.children[2] else {
+            panic!("expected final resolve branch");
+        };
+        assert!(matches!(children.last(), Some(ExploreNode::Final)));
     }
 }
