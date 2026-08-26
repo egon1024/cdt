@@ -23,8 +23,10 @@ session: 01JXXXXXXXXXXXXXXXXXXXXXXXXXX
 | Command | Purpose |
 |---------|---------|
 | `delve trace …` | Run a delegation trace |
-| `delve session list` | List stored sessions |
-| `delve session show <id>` | Show a stored session (no network) |
+| `delve session list` | List stored sessions (`*` pinned, `@` current default) |
+| `delve session current` | Print the current default session id |
+| `delve session show [id]` | Show a stored session (no network); omit id for the default |
+| `delve session show [id] --json` | Same session as flat JSON (`event: complete`) |
 | `delve session rm <id>` | Delete one session |
 | `delve session pin <id>` | Exempt from retention purge |
 | `delve session unpin <id>` | Allow retention purge again |
@@ -38,6 +40,11 @@ session: 01JXXXXXXXXXXXXXXXXXXXXXXXXXX
 | `delve cache purge --all` | Clear the entire response cache |
 
 Session ids accept a full ULID or a unique short prefix (like git).
+
+The **default session** is the last one you traced, explored, or otherwise
+touched. Commands that accept an optional `[id]` (`show`, `outline`, `events`,
+`explore`) use it when you omit the id. `delve session current` prints that id;
+`delve session list` marks it with `@` in the first column (`*` means pinned).
 
 ## Trace query options
 
@@ -145,26 +152,41 @@ Manual removal: `delve session rm <id>` or `delve session purge`.
 ## Session explore, outline, and events
 
 `delve session explore <id>` opens a stored trace in the **interactive tree TUI**
-(no network I/O). Omit `<id>` to reopen the **last session**.
+(no network I/O). Omit `<id>` to reopen the **default session**.
 
 `delve session outline <id>` prints the same tree as a **one-shot indented outline**
-on stdout — suitable for logs, pipes, and narrow terminals.
+on stdout — suitable for logs, pipes, and narrow terminals. The first line is
+`session: <id>`.
 
 `delve session events <id>` prints the explore tree as **structured JSON** on stdout
-(`event: explore_tree`).
+(`event: explore_tree`, including `session` and hierarchical `tree` nodes).
+
+### `show --json` vs `events`
+
+These are different JSON shapes for different jobs:
+
+| Command | JSON shape | Best for |
+|---------|------------|----------|
+| **`session show --json`** | Flat `TraceResult`: chronological `hops` array + `final_response` | Replaying trace data, diffing sessions, tools that expect the stored snapshot |
+| **`session events`** | Hierarchical explore `tree`: delegation / resolve / hop / final nodes | Tools that want the same structure as the TUI and outline views |
+
+Both include per-query **`rtt_ms`** and **`from_cache`** on each hop (and on the
+final answer). Cache hits keep the RTT from the original live exchange.
 
 ```bash
-delve session explore              # last session, TUI
+delve session explore              # default session, TUI
 delve session explore 01J...       # explicit id, TUI
 delve session outline 01J...       # print tree once and exit
-delve session events 01J...          # JSON tree on stdout
+delve session events 01J...        # JSON tree on stdout
+delve session show --json          # flat JSON for the default session
 ```
 
 | Command | Output |
 |---------|--------|
-| **`session explore`** | TUI with colored tree + dig-style detail pane; `?` help, `c` toggle colors, `Tab` / `Shift-Tab` cycle panes |
-| **`session outline`** | Indented tree on stdout |
+| **`session explore`** | TUI with colored tree + dig-style detail pane; session id in title bar; `?` help, `c` toggle colors, `Tab` / `Shift-Tab` cycle panes |
+| **`session outline`** | `session: <id>` header + indented tree on stdout |
 | **`session events`** | Structured JSON explore tree on stdout |
+| **`session show --json`** | Flat JSON trace snapshot on stdout |
 
 New traces store full DNS response sections (header flags, question, answer, authority, additional) for each hop. The explore detail pane renders these in a **dig-style** layout. Older saved sessions without section data fall back to the compact YAML-style summary.
 

@@ -63,7 +63,7 @@ impl Pane {
     }
 }
 
-pub fn run_tui(tree: &ExploreTree) -> io::Result<()> {
+pub fn run_tui(tree: &ExploreTree, session_id: &str) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -136,14 +136,15 @@ pub fn run_tui(tree: &ExploreTree) -> io::Result<()> {
             } else {
                 String::new()
             };
+            let session_hint = format!("session:{session_id}  ");
             let tree_title = if focused == Pane::Tree {
                 format!(
-                    "{} {}  [tree]  color:{color_hint}{scroll_hint}",
+                    "{session_hint}{} {}  [tree]  color:{color_hint}{scroll_hint}",
                     tree.qname, tree.qtype
                 )
             } else {
                 format!(
-                    "{} {}  [Tab / Shift-Tab]  color:{color_hint}{scroll_hint}",
+                    "{session_hint}{} {}  [Tab / Shift-Tab]  color:{color_hint}{scroll_hint}",
                     tree.qname, tree.qtype
                 )
             };

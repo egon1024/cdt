@@ -53,6 +53,8 @@ pub struct SessionCommand {
 pub enum SessionSubcommand {
     /// List stored sessions.
     List,
+    /// Print the current default session id (last used).
+    Current,
     /// Show a stored session by id or prefix.
     Show(SessionShowArgs),
     /// Remove a stored session.
@@ -91,7 +93,11 @@ pub struct SessionExploreArgs {
 
 #[derive(Debug, Parser)]
 pub struct SessionShowArgs {
-    pub id: String,
+    /// Session id or prefix. When omitted, uses the last session.
+    pub id: Option<String>,
+    /// Emit the stored trace as JSON (`event: complete`).
+    #[arg(long)]
+    pub json: bool,
     #[arg(
         trailing_var_arg = true,
         allow_hyphen_values = true,
@@ -266,20 +272,31 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
     runtime.emit_warnings();
     match command.command {
         SessionSubcommand::List => {
-            let summaries = runtime.list_sessions()?;
-            for summary in summaries {
-                let marker = if summary.pinned { "* " } else { "  " };
+            let default_id = runtime.last_session_id().ok();
+            for summary in runtime.list_sessions()? {
+                let pin = if summary.pinned { '*' } else { ' ' };
+                let current = if default_id.as_deref() == Some(summary.id.as_str()) {
+                    '@'
+                } else {
+                    ' '
+                };
                 println!(
-                    "{marker}{}  {} {}  {} hops  {}",
+                    "{pin}{current} {}  {} {}  {} hops  {}",
                     summary.id, summary.qname, summary.qtype, summary.hop_count, summary.created_at
                 );
             }
             Ok(())
         }
+        SessionSubcommand::Current => {
+            let id = runtime.last_session_id()?;
+            println!("{id}");
+            Ok(())
+        }
         SessionSubcommand::Show(args) => {
-            let events = parse_events_only(&args.args)?;
-            let document = runtime.get_session(&args.id)?;
-            print_session(&document, events);
+            let (session_id, flag_args) = resolve_session_target(args.id, args.args, &runtime)?;
+            let json = args.json || parse_events_only(&flag_args)?;
+            let document = runtime.get_session(&session_id)?;
+            print_session(&document, json);
             Ok(())
         }
         SessionSubcommand::Rm(args) => {

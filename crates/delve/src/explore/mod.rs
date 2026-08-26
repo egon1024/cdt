@@ -19,10 +19,11 @@ use std::io::{self, IsTerminal, Write};
 
 pub fn run_outline(document: &SessionDocument) -> Result<(), ExploreError> {
     let tree = build_explore_tree(&document.result);
-    let outline = render_outline(&tree, ui_symbols());
+    let mut output = format!("session: {}\n", document.id);
+    output.push_str(&render_outline(&tree, ui_symbols()));
     let mut stdout = io::stdout().lock();
     stdout
-        .write_all(outline.as_bytes())
+        .write_all(output.as_bytes())
         .map_err(ExploreError::Io)?;
     stdout.flush().map_err(ExploreError::Io)?;
     Ok(())
@@ -40,7 +41,7 @@ pub fn run_explore(document: &SessionDocument) -> Result<(), ExploreError> {
     }
 
     let tree = build_explore_tree(&document.result);
-    run_tui(&tree).map_err(ExploreError::Io)
+    run_tui(&tree, &document.id).map_err(ExploreError::Io)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -124,6 +125,7 @@ mod tests {
         let tree = build_explore_tree(&document.result);
         let outline = render_outline(&tree, ui_symbols());
         assert!(outline.contains("example.com. A"));
+        assert!(outline.contains("11ms"));
         assert!(outline.contains("records:\n"));
         assert!(outline.contains("  - example.com. 300 93.184.216.34"));
 
