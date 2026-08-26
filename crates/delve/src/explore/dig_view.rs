@@ -3,6 +3,7 @@ use dns_resolve::{FinalAnswer, StoredDnsMessage, TraceHop};
 use ratatui::text::{Line, Span};
 
 use super::detail::{format_server_endpoint, legacy_final_detail_lines, legacy_hop_detail_lines};
+use super::flags::{format_flags_plain, format_flags_spans};
 use super::theme::Theme;
 
 struct DigView<'a> {
@@ -171,7 +172,7 @@ impl<'a> DigView<'a> {
             ";;   id: {}  opcode: QUERY  status: {}",
             self.message.id, self.rcode
         ));
-        lines.push(format!(";;   flags: {}", format_flags(self.message)));
+        lines.push(format!(";;   flags: {}", format_flags_plain(self.message)));
         lines.push(format!(
             ";;   QUESTION: 1  ANSWER: {}  AUTHORITY: {}  ADDITIONAL: {}",
             self.message.answers.len(),
@@ -193,10 +194,11 @@ impl<'a> DigView<'a> {
                     self.message.id, self.rcode
                 )),
             ]),
-            Line::from(vec![
-                Span::styled(";;   flags: ", theme.meta()),
-                Span::raw(format_flags(self.message)),
-            ]),
+            Line::from({
+                let mut spans = vec![Span::styled(";;   flags: ", theme.meta())];
+                spans.extend(format_flags_spans(self.message, theme));
+                spans
+            }),
             Line::from(vec![
                 Span::styled(";;   ", theme.meta()),
                 Span::raw(format!(
@@ -285,17 +287,6 @@ fn section_styled(title: &str, records: &[DnsRecord], theme: &Theme) -> Vec<Line
     lines
 }
 
-fn format_flags(message: &StoredDnsMessage) -> String {
-    let mut flags = vec!["qr"];
-    if message.authoritative {
-        flags.push("aa");
-    }
-    if message.truncated {
-        flags.push("tc");
-    }
-    flags.join(" ")
-}
-
 fn format_record(record: &DnsRecord) -> String {
     format!(
         "{:<24} {:<5} {:<3} {:<5} {}",
@@ -352,6 +343,10 @@ mod tests {
             id: 42,
             authoritative: false,
             truncated: false,
+            recursion_desired: true,
+            recursion_available: true,
+            authentic_data: false,
+            checking_disabled: false,
             answers: vec![],
             authorities: vec![DnsRecord {
                 name: DomainName::parse("com.").expect("zone"),
@@ -387,7 +382,7 @@ mod tests {
     fn dig_plain_includes_header_and_sections() {
         let text = hop_detail_plain(&sample_hop());
         assert!(text.contains(";; HEADER"));
-        assert!(text.contains("flags: qr"));
+        assert!(text.contains("flags: QR RD RA (aa) (tc) (ad) (cd)"));
         assert!(text.contains(";; QUESTION SECTION:"));
         assert!(text.contains(";example.com."));
         assert!(text.contains("IN  A"));

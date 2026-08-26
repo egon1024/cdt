@@ -1,5 +1,6 @@
 mod detail;
 mod dig_view;
+mod flags;
 mod json;
 mod outline;
 mod theme;

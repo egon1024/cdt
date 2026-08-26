@@ -120,6 +120,14 @@ pub struct StoredDnsMessage {
     pub id: u16,
     pub authoritative: bool,
     pub truncated: bool,
+    #[serde(default)]
+    pub recursion_desired: bool,
+    #[serde(default)]
+    pub recursion_available: bool,
+    #[serde(default)]
+    pub authentic_data: bool,
+    #[serde(default)]
+    pub checking_disabled: bool,
     pub answers: Vec<DnsRecord>,
     pub authorities: Vec<DnsRecord>,
     pub additionals: Vec<DnsRecord>,
@@ -131,6 +139,10 @@ impl StoredDnsMessage {
             id: response.id,
             authoritative: response.authoritative,
             truncated: response.truncated,
+            recursion_desired: response.recursion_desired,
+            recursion_available: response.recursion_available,
+            authentic_data: response.authentic_data,
+            checking_disabled: response.checking_disabled,
             answers: response.answers.clone(),
             authorities: response.authorities.clone(),
             additionals: response.additionals.clone(),
@@ -141,6 +153,10 @@ impl StoredDnsMessage {
         self.id != 0
             || self.authoritative
             || self.truncated
+            || self.recursion_desired
+            || self.recursion_available
+            || self.authentic_data
+            || self.checking_disabled
             || !self.answers.is_empty()
             || !self.authorities.is_empty()
             || !self.additionals.is_empty()
@@ -375,6 +391,10 @@ mod cache_tests {
                     rcode_text: "NOERROR".into(),
                     authoritative: true,
                     truncated: false,
+                    recursion_desired: false,
+                    recursion_available: false,
+                    authentic_data: false,
+                    checking_disabled: false,
                     answers: vec![],
                     authorities: vec![],
                     additionals: vec![],

@@ -110,6 +110,26 @@ impl Theme {
         }
     }
 
+    pub fn flag_active(&self) -> Style {
+        if self.color_enabled {
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().add_modifier(Modifier::BOLD)
+        }
+    }
+
+    pub fn flag_inactive(&self) -> Style {
+        if self.color_enabled {
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::DIM)
+        } else {
+            Style::default().add_modifier(Modifier::DIM)
+        }
+    }
+
     pub fn help_heading(&self) -> Style {
         self.accent_bold()
     }

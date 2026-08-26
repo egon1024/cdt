@@ -357,6 +357,10 @@ mod tests {
             rcode_text: "NOERROR".into(),
             authoritative: false,
             truncated: false,
+            recursion_desired: false,
+            recursion_available: false,
+            authentic_data: false,
+            checking_disabled: false,
             answers: vec![],
             authorities: vec![DnsRecord {
                 name: DomainName::parse("example.com.").expect("zone"),
@@ -404,6 +408,10 @@ mod tests {
             rcode_text: "NOERROR".into(),
             authoritative: false,
             truncated: false,
+            recursion_desired: false,
+            recursion_available: false,
+            authentic_data: false,
+            checking_disabled: false,
             answers: vec![],
             authorities: vec![
                 DnsRecord {
@@ -464,6 +472,10 @@ mod tests {
             rcode_text: "NOERROR".into(),
             authoritative: true,
             truncated: false,
+            recursion_desired: false,
+            recursion_available: false,
+            authentic_data: false,
+            checking_disabled: false,
             answers: vec![],
             authorities: vec![],
             additionals: vec![],

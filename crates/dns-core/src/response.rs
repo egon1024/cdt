@@ -33,6 +33,14 @@ pub struct DnsResponse {
     pub rcode_text: String,
     pub authoritative: bool,
     pub truncated: bool,
+    #[serde(default)]
+    pub recursion_desired: bool,
+    #[serde(default)]
+    pub recursion_available: bool,
+    #[serde(default)]
+    pub authentic_data: bool,
+    #[serde(default)]
+    pub checking_disabled: bool,
     pub answers: Vec<DnsRecord>,
     pub authorities: Vec<DnsRecord>,
     pub additionals: Vec<DnsRecord>,
@@ -63,6 +71,10 @@ impl DnsResponse {
             rcode_text: rcode_to_text(rcode),
             authoritative: message.metadata.authoritative,
             truncated: message.metadata.truncation,
+            recursion_desired: message.metadata.recursion_desired,
+            recursion_available: message.metadata.recursion_available,
+            authentic_data: message.metadata.authentic_data,
+            checking_disabled: message.metadata.checking_disabled,
             answers: message.answers.iter().map(convert_record).collect(),
             authorities: message.authorities.iter().map(convert_record).collect(),
             additionals: message.additionals.iter().map(convert_record).collect(),
@@ -141,6 +153,10 @@ mod tests {
             rcode_text: "NOERROR".into(),
             authoritative: false,
             truncated: false,
+            recursion_desired: false,
+            recursion_available: false,
+            authentic_data: false,
+            checking_disabled: false,
             answers: vec![],
             authorities: vec![DnsRecord {
                 name: DomainName::parse("com.").expect("zone"),
