@@ -88,7 +88,11 @@ pub fn run_tui(tree: &ExploreTree, session_id: &str) -> io::Result<()> {
         terminal.draw(|frame| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+                .constraints([
+                    Constraint::Percentage(55),
+                    Constraint::Percentage(45),
+                    Constraint::Length(1),
+                ])
                 .split(frame.area());
 
             let tree_viewport_width = chunks[0].width.saturating_sub(2);
@@ -182,6 +186,9 @@ pub fn run_tui(tree: &ExploreTree, session_id: &str) -> io::Result<()> {
                 .wrap(Wrap { trim: false })
                 .scroll((detail_scroll, 0));
             frame.render_widget(detail_widget, chunks[1]);
+
+            let footer = Paragraph::new(footer_line(&theme)).alignment(Alignment::Center);
+            frame.render_widget(footer, chunks[2]);
 
             if show_help {
                 render_help_overlay(frame, &theme);
@@ -385,6 +392,14 @@ fn hop_tree_line(indent: &str, marker: &str, hop: &TraceHop, theme: &Theme) -> L
             format!("  {}  ", cache_source_symbol(hop.from_cache, theme.symbols)),
             theme.cache_source(hop.from_cache),
         ),
+    ])
+}
+
+fn footer_line(theme: &Theme) -> Line<'static> {
+    Line::from(vec![
+        Span::raw("Press "),
+        Span::styled("?", theme.help_key()),
+        Span::raw(" for help"),
     ])
 }
 
@@ -642,9 +657,26 @@ mod pane_tests {
     use ratatui::style::{Color, Modifier};
     use ratatui::text::{Line, Span};
 
-    use super::{Pane, apply_tree_selection, help_lines, line_display_width, scroll_line};
+    use super::{
+        Pane, apply_tree_selection, footer_line, help_lines, line_display_width, scroll_line,
+    };
     use crate::explore::terminal::UNICODE;
     use crate::explore::theme::Theme;
+
+    #[test]
+    fn footer_line_prompts_for_help() {
+        let theme = Theme {
+            color_enabled: true,
+            symbols: UNICODE,
+        };
+        let line = footer_line(&theme);
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(text, "Press ? for help");
+    }
 
     #[test]
     fn tree_selection_overrides_span_colors() {
