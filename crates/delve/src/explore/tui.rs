@@ -98,10 +98,12 @@ pub fn run_tui(tree: &ExploreTree) -> io::Result<()> {
                     } else {
                         "  "
                     };
-                    let mut line = tree_line(tree, node, &indent, marker, &theme);
-                    if focused == Pane::Tree && index == selected {
-                        line = line.style(theme.tree_selected());
-                    }
+                    let line = tree_line(tree, node, &indent, marker, &theme);
+                    let line = if focused == Pane::Tree && index == selected {
+                        apply_tree_selection(line, &theme)
+                    } else {
+                        line
+                    };
                     ListItem::new(line)
                 })
                 .collect();
@@ -235,6 +237,17 @@ pub fn run_tui(tree: &ExploreTree) -> io::Result<()> {
     }
     terminal.show_cursor()?;
     result
+}
+
+/// Flatten per-span colors on the selected row so accent/zone styles do not
+/// override the selection background.
+fn apply_tree_selection(mut line: Line<'static>, theme: &Theme) -> Line<'static> {
+    let style = theme.tree_selected();
+    line.style = style;
+    for span in &mut line.spans {
+        span.style = style;
+    }
+    line
 }
 
 fn tree_line(
@@ -510,8 +523,33 @@ fn append_visible_node(
 
 #[cfg(test)]
 mod pane_tests {
-    use super::{Pane, help_lines};
+    use ratatui::style::{Color, Modifier};
+    use ratatui::text::{Line, Span};
+
+    use super::{Pane, apply_tree_selection, help_lines};
     use crate::explore::theme::Theme;
+
+    #[test]
+    fn tree_selection_overrides_span_colors() {
+        let theme = Theme {
+            color_enabled: true,
+        };
+        let line = Line::from(vec![
+            Span::styled("example.com. A", theme.accent_bold()),
+            Span::styled(" NOERROR", theme.rcode("NOERROR")),
+        ]);
+
+        let selected = apply_tree_selection(line, &theme);
+        let style = theme.tree_selected();
+
+        assert_eq!(selected.style, style);
+        for span in selected.spans {
+            assert_eq!(span.style, style);
+            assert_eq!(span.style.fg, Some(Color::White));
+            assert_eq!(span.style.bg, Some(Color::Blue));
+            assert!(span.style.add_modifier.contains(Modifier::BOLD));
+        }
+    }
 
     #[test]
     fn tab_cycles_forward_through_panes() {
