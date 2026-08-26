@@ -1,7 +1,7 @@
 use std::net::IpAddr;
 
 use clap::{Parser, Subcommand};
-use dns_core::{DomainName, Transport, parse_record_type};
+use dns_core::{DomainName, Transport, ip_to_ptr_name, parse_record_type, parse_reverse_target};
 use dns_resolve::{TraceConfig, run_trace};
 use thiserror::Error;
 
@@ -192,10 +192,16 @@ fn run_parsed_trace(options: TraceOptions, runtime: &Runtime) -> Result<(), CliE
         }
     }
 
-    let qname = DomainName::parse(&options.qname)?;
+    let qname = if options.reverse_lookup {
+        let ip = parse_reverse_target(&options.qname)?;
+        ip_to_ptr_name(ip)?
+    } else {
+        DomainName::parse(&options.qname)?
+    };
     let qtype = parse_record_type(&options.qtype)
         .map_err(|_| CliError::QueryType(options.qtype.clone()))?;
     let mut config = TraceConfig::new(qname, qtype);
+    config.follow_aliases = options.follow_aliases;
     config.transport = if options.use_tcp {
         Transport::Tcp
     } else {

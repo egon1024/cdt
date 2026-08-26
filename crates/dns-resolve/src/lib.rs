@@ -33,6 +33,12 @@ pub enum ResolveError {
 
     #[error("trace exceeded maximum delegation depth ({max})")]
     MaxDepth { max: usize },
+
+    #[error("alias loop detected at name {name}")]
+    AliasLoop { name: String },
+
+    #[error("trace exceeded maximum alias depth ({max})")]
+    MaxAliasDepth { max: usize },
 }
 
 pub type Result<T> = std::result::Result<T, ResolveError>;
@@ -74,6 +80,8 @@ pub struct TraceConfig {
     pub ipv4_only: bool,
     pub ipv6_only: bool,
     pub max_depth: usize,
+    pub max_alias_depth: usize,
+    pub follow_aliases: bool,
     pub start_servers: Option<Vec<IpAddr>>,
     pub use_cache: bool,
     pub cache_skip_qnames: HashSet<DomainName>,
@@ -98,6 +106,8 @@ impl TraceConfig {
             ipv4_only: false,
             ipv6_only: false,
             max_depth: 32,
+            max_alias_depth: 16,
+            follow_aliases: false,
             start_servers: None,
             use_cache: true,
             cache_skip_qnames: HashSet::new(),
@@ -462,5 +472,60 @@ mod cache_tests {
 
         assert_eq!(calls.load(Ordering::SeqCst), 3);
         assert_eq!(cache.stats().hits, 1);
+    }
+
+    #[test]
+    fn truncated_response_is_not_retried() {
+        let qname = DomainName::parse("example.com.").expect("qname");
+        let mut config = TraceConfig::new(qname, RecordType::A);
+        config.retries = 3;
+        let calls = Arc::new(AtomicUsize::new(0));
+        config.exchange = Arc::new(TruncatedExchange {
+            calls: calls.clone(),
+        });
+
+        let server = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
+        let result = query_server(server, &config, &config.qname.clone(), RecordType::A)
+            .expect("truncated response");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(result.response.truncated);
+    }
+
+    struct TruncatedExchange {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl DnsExchange for TruncatedExchange {
+        fn exchange(
+            &self,
+            server: IpAddr,
+            _port: u16,
+            options: &QueryOptions,
+        ) -> dns_core::Result<QueryResult> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(QueryResult {
+                server,
+                transport: options.transport,
+                qname: options.qname.clone(),
+                qtype: options.qtype.to_string(),
+                rtt: Duration::from_millis(1),
+                response: DnsResponse {
+                    id: 1,
+                    rcode: 0,
+                    rcode_text: "NOERROR".into(),
+                    authoritative: true,
+                    truncated: true,
+                    recursion_desired: false,
+                    recursion_available: false,
+                    authentic_data: false,
+                    checking_disabled: false,
+                    answers: vec![],
+                    authorities: vec![],
+                    additionals: vec![],
+                    edns: EdnsMeta::default(),
+                },
+            })
+        }
     }
 }

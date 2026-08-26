@@ -7,6 +7,8 @@ pub struct TraceOptions {
     pub qname: String,
     pub server: Option<String>,
     pub qtype: String,
+    pub reverse_lookup: bool,
+    pub follow_aliases: bool,
     pub ipv4_only: bool,
     pub ipv6_only: bool,
     pub use_tcp: bool,
@@ -27,6 +29,8 @@ impl Default for TraceOptions {
             qname: String::new(),
             server: None,
             qtype: "A".into(),
+            reverse_lookup: false,
+            follow_aliases: false,
             ipv4_only: false,
             ipv6_only: false,
             use_tcp: false,
@@ -77,6 +81,10 @@ pub fn parse_trace_args(args: &[String]) -> Result<TraceOptions, ParseError> {
         match arg.as_str() {
             "-4" => options.ipv4_only = true,
             "-6" => options.ipv6_only = true,
+            "-x" => {
+                options.reverse_lookup = true;
+                options.qtype = "PTR".into();
+            }
             "-t" | "-qtype" => {
                 options.qtype = next_value(args, &mut index, arg)?;
             }
@@ -106,6 +114,10 @@ pub fn parse_trace_args(args: &[String]) -> Result<TraceOptions, ParseError> {
 
     if options.ipv4_only && options.ipv6_only {
         return Err(ParseError::AddressFamily);
+    }
+
+    if options.reverse_lookup {
+        options.qtype = "PTR".into();
     }
 
     options.qname = qname;
@@ -163,6 +175,7 @@ fn apply_query_option(options: &mut TraceOptions, arg: &str) -> Result<(), Parse
         }
         "save" => options.save_session = !negate,
         "fresh" => options.fresh = !negate,
+        "follow" => options.follow_aliases = !negate,
         other => return Err(ParseError::UnknownOption(format!("+{other}"))),
     }
 
@@ -274,5 +287,23 @@ mod tests {
     fn supports_fresh_flag() {
         let options = parse_trace_args(&args(&["example.com", "+fresh"])).expect("parse");
         assert!(options.fresh);
+    }
+
+    #[test]
+    fn supports_reverse_lookup_flag() {
+        let options = parse_trace_args(&args(&["192.0.2.1", "-x"])).expect("parse");
+        assert!(options.reverse_lookup);
+        assert_eq!(options.qtype, "PTR");
+        assert_eq!(options.qname, "192.0.2.1");
+    }
+
+    #[test]
+    fn supports_alias_following_flag() {
+        let options =
+            parse_trace_args(&args(&["example.com", "+follow", "+nofollow"])).expect("parse");
+        assert!(!options.follow_aliases);
+
+        let options = parse_trace_args(&args(&["example.com", "+follow"])).expect("parse");
+        assert!(options.follow_aliases);
     }
 }

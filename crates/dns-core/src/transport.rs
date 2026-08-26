@@ -3,7 +3,7 @@ use std::net::{IpAddr, SocketAddr, TcpStream, UdpSocket};
 use std::time::{Duration, Instant};
 
 use crate::error::{DnsCoreError, Result};
-use crate::query::{QueryOptions, build_query};
+use crate::query::{QueryOptions, build_query, record_type_name};
 use crate::response::{DnsResponse, QueryResult, Transport};
 
 pub fn exchange(server: IpAddr, port: u16, options: &QueryOptions) -> Result<QueryResult> {
@@ -34,7 +34,7 @@ fn perform_exchange(server: IpAddr, port: u16, options: &QueryOptions) -> Result
         server,
         transport: options.transport,
         qname: options.qname.clone(),
-        qtype: options.qtype.to_string(),
+        qtype: record_type_name(options.qtype),
         rtt,
         response,
     })

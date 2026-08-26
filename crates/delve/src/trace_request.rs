@@ -7,6 +7,10 @@ use crate::dig_options::TraceOptions;
 pub struct TraceRequest {
     pub qname: String,
     pub qtype: String,
+    #[serde(default)]
+    pub reverse_lookup: bool,
+    #[serde(default)]
+    pub follow_aliases: bool,
     pub server: Option<String>,
     pub ipv4_only: bool,
     pub ipv6_only: bool,
@@ -26,6 +30,8 @@ impl TraceRequest {
         Self {
             qname: options.qname.clone(),
             qtype: options.qtype.clone(),
+            reverse_lookup: options.reverse_lookup,
+            follow_aliases: options.follow_aliases,
             server: options.server.clone(),
             ipv4_only: options.ipv4_only,
             ipv6_only: options.ipv6_only,

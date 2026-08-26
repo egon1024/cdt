@@ -53,11 +53,15 @@ Options follow **dig** conventions (not GNU long flags):
 | `+nocache=QNAME` | — | Skip cache for that exact query name (repeatable); other queries still use cache |
 | `+save` / `+nosave` | on | Persist trace as a session |
 | `+fresh` | off | Always run a live trace; do not reuse a stored session |
+| `+follow` / `+nofollow` | off | Follow CNAME and DNAME aliases, restarting delegation from the new name |
 | `-t TYPE` or `-TYPE` | `A` | Query type |
+| `-x` | off | Reverse lookup: positional argument is an IP address; queries `PTR` at the corresponding `in-addr.arpa` / `ip6.arpa` name |
 | `-4` / `-6` | both | Address family; mutually exclusive |
 | `@server` | root hints | Starting server (**IP literal** only today) |
 
-Supported query types: `A`, `AAAA`, `NS`, `CNAME`, `SOA`, `MX`, `TXT`.
+Supported query types: `A`, `AAAA`, `NS`, `CNAME`, `SOA`, `MX`, `TXT`, `SRV`, `RP`, `SSHFP`, `DNAME`, `HTTPS`, `SVCB`, `CAA`, `PTR`, and `TYPEnn` numeric forms.
+
+Truncated UDP responses (`TC=1`) are recorded as-is. Delve does **not** automatically retry over TCP when `TC` is set; use `+tcp` up front if you need TCP for the whole trace.
 
 Human progress is written to **stderr**; with `+events`, structured events go to
 **stdout** so you can redirect:

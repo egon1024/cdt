@@ -68,15 +68,29 @@ pub fn build_query(options: &QueryOptions) -> Result<Vec<u8>> {
 
 /// Parse a user-supplied query type name.
 pub fn parse_record_type(input: &str) -> Result<RecordType> {
-    match input.to_ascii_uppercase().as_str() {
-        "A" => Ok(RecordType::A),
-        "AAAA" => Ok(RecordType::AAAA),
-        "NS" => Ok(RecordType::NS),
-        "CNAME" => Ok(RecordType::CNAME),
-        "SOA" => Ok(RecordType::SOA),
-        "MX" => Ok(RecordType::MX),
-        "TXT" => Ok(RecordType::TXT),
-        other => Err(DnsCoreError::RecordType(other.into())),
+    let upper = input.trim().to_ascii_uppercase();
+    if let Some(raw) = upper.strip_prefix("TYPE") {
+        let code: u16 = raw
+            .parse()
+            .map_err(|_| DnsCoreError::RecordType(input.into()))?;
+        return Ok(RecordType::from(code));
+    }
+
+    match upper.as_str() {
+        "RP" => Ok(RecordType::from(17)),
+        "DNAME" => Ok(RecordType::from(39)),
+        other => other
+            .parse::<RecordType>()
+            .map_err(|_| DnsCoreError::RecordType(input.into())),
+    }
+}
+
+/// Stable presentation name for a record type (including hickory `Unknown` codes).
+pub fn record_type_name(rtype: RecordType) -> String {
+    match rtype {
+        RecordType::Unknown(17) => "RP".into(),
+        RecordType::Unknown(39) => "DNAME".into(),
+        other => other.to_string(),
     }
 }
 
@@ -142,5 +156,29 @@ mod tests {
         let wire = build_query(&options).expect("wire");
         let message = Message::from_vec(&wire).expect("message");
         assert!(message.edns.is_some());
+    }
+
+    #[test]
+    fn parse_extended_record_types() {
+        for (name, code) in [
+            ("SRV", 33_u16),
+            ("SSHFP", 44),
+            ("HTTPS", 65),
+            ("SVCB", 64),
+            ("CAA", 257),
+            ("PTR", 12),
+            ("RP", 17),
+            ("DNAME", 39),
+        ] {
+            let parsed = parse_record_type(name).expect(name);
+            assert_eq!(u16::from(parsed), code, "{name}");
+        }
+        assert_eq!(u16::from(parse_record_type("TYPE39").expect("type")), 39);
+    }
+
+    #[test]
+    fn record_type_name_maps_unknown_codes() {
+        assert_eq!(record_type_name(RecordType::from(39)), "DNAME");
+        assert_eq!(record_type_name(RecordType::from(17)), "RP");
     }
 }

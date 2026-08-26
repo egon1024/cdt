@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::net::IpAddr;
 
 use dns_core::name::DomainName;
+use dns_core::query::record_type_name;
 use dns_core::response::DnsResponse;
 use hickory_proto::rr::RecordType;
 
@@ -13,6 +14,132 @@ use crate::{
 };
 
 pub fn run(config: &TraceConfig, progress: &mut dyn TraceProgress) -> Result<TraceResult> {
+    let mut qname = config.qname.clone();
+    let mut alias_visited = HashSet::new();
+    let mut hops = Vec::new();
+
+    if start_servers(config).is_empty() {
+        return Err(ResolveError::NoReachableNameserver { zone: ".".into() });
+    }
+
+    'restart: loop {
+        let mut servers = start_servers(config);
+        let mut current_zone = DomainName::parse(".").expect("root zone");
+        let mut visited_zones = HashSet::new();
+
+        for depth in 0..config.max_depth {
+            let (query_result, server_name) =
+                query_first_available(&servers, config, &qname, config.qtype)?;
+            let referral_ns = query_result.response.ns_names();
+            let glue = collect_glue(&query_result.response, &referral_ns);
+
+            let hop = hop_from_query(
+                &current_zone,
+                &query_result,
+                server_name.clone(),
+                referral_ns.iter().map(ToString::to_string).collect(),
+                glue.iter().map(ToString::to_string).collect(),
+            );
+            progress.hop(&hop);
+            hops.push(hop);
+
+            if config.follow_aliases {
+                if let Some(alias) = query_result.response.alias_target(&qname) {
+                    if alias_visited.len() >= config.max_alias_depth {
+                        return Err(ResolveError::MaxAliasDepth {
+                            max: config.max_alias_depth,
+                        });
+                    }
+                    let alias_key = alias.to_string();
+                    if !alias_visited.insert(alias_key.clone()) {
+                        return Err(ResolveError::AliasLoop { name: alias_key });
+                    }
+                    progress.message(&format!("following alias to {alias}"));
+                    qname = alias;
+                    continue 'restart;
+                }
+            }
+
+            if is_authoritative_answer(&query_result.response, &qname, config.qtype) {
+                return Ok(TraceResult {
+                    qname: qname.to_string(),
+                    qtype: record_type_name(config.qtype),
+                    started_at: now_rfc3339(),
+                    hops,
+                    final_response: Some(final_answer_from_query(
+                        &query_result,
+                        server_name,
+                        &qname,
+                        config.qtype,
+                    )),
+                });
+            }
+
+            let Some(next_zone) = query_result.response.referral_zone(&qname) else {
+                return Ok(TraceResult {
+                    qname: qname.to_string(),
+                    qtype: record_type_name(config.qtype),
+                    started_at: now_rfc3339(),
+                    hops,
+                    final_response: Some(final_answer_from_query(
+                        &query_result,
+                        server_name,
+                        &qname,
+                        config.qtype,
+                    )),
+                });
+            };
+
+            if !visited_zones.insert(next_zone.to_string()) {
+                return Err(ResolveError::DelegationLoop {
+                    zone: next_zone.to_string(),
+                });
+            }
+
+            let ns_names = query_result.response.ns_names();
+            if ns_names.is_empty() {
+                return Err(ResolveError::NoReachableNameserver {
+                    zone: next_zone.to_string(),
+                });
+            }
+
+            progress.message(&format!(
+                "following delegation to zone {} via {:?}",
+                next_zone,
+                ns_names
+                    .iter()
+                    .map(|name| name.to_string())
+                    .collect::<Vec<_>>()
+            ));
+
+            servers = resolve_nameservers_from_referral(
+                &query_result.response,
+                &servers,
+                config,
+                &current_zone,
+                progress,
+            )?;
+
+            if servers.is_empty() {
+                return Err(ResolveError::NoReachableNameserver {
+                    zone: next_zone.to_string(),
+                });
+            }
+
+            current_zone = next_zone;
+
+            if depth + 1 == config.max_depth - 1 {
+                progress.message("approaching maximum delegation depth");
+            }
+        }
+
+        return Err(ResolveError::MaxDepth {
+            max: config.max_depth,
+        });
+    }
+}
+
+fn start_servers(config: &TraceConfig) -> Vec<ServerTarget> {
     let mut servers = config
         .start_servers
         .clone()
@@ -24,96 +151,7 @@ pub fn run(config: &TraceConfig, progress: &mut dyn TraceProgress) -> Result<Tra
         })
         .unwrap_or_else(default_root_targets);
     servers = filter_targets(&servers, config.ipv4_only, config.ipv6_only);
-    if servers.is_empty() {
-        return Err(ResolveError::NoReachableNameserver { zone: ".".into() });
-    }
-
-    let mut current_zone = DomainName::parse(".").expect("root zone");
-    let mut visited_zones = HashSet::new();
-    let mut hops = Vec::new();
-
-    for depth in 0..config.max_depth {
-        let (query_result, server_name) =
-            query_first_available(&servers, config, &config.qname, config.qtype)?;
-        let referral_ns = query_result.response.ns_names();
-        let glue = collect_glue(&query_result.response, &referral_ns);
-
-        let hop = hop_from_query(
-            &current_zone,
-            &query_result,
-            server_name.clone(),
-            referral_ns.iter().map(ToString::to_string).collect(),
-            glue.iter().map(ToString::to_string).collect(),
-        );
-        progress.hop(&hop);
-        hops.push(hop);
-
-        if is_authoritative_answer(&query_result.response, &config.qname, config.qtype) {
-            return Ok(TraceResult {
-                qname: config.qname.to_string(),
-                qtype: config.qtype.to_string(),
-                started_at: now_rfc3339(),
-                hops,
-                final_response: Some(final_answer_from_query(&query_result, server_name)),
-            });
-        }
-
-        let Some(next_zone) = query_result.response.referral_zone(&config.qname) else {
-            return Ok(TraceResult {
-                qname: config.qname.to_string(),
-                qtype: config.qtype.to_string(),
-                started_at: now_rfc3339(),
-                hops,
-                final_response: Some(final_answer_from_query(&query_result, server_name)),
-            });
-        };
-
-        if !visited_zones.insert(next_zone.to_string()) {
-            return Err(ResolveError::DelegationLoop {
-                zone: next_zone.to_string(),
-            });
-        }
-
-        let ns_names = query_result.response.ns_names();
-        if ns_names.is_empty() {
-            return Err(ResolveError::NoReachableNameserver {
-                zone: next_zone.to_string(),
-            });
-        }
-
-        progress.message(&format!(
-            "following delegation to zone {} via {:?}",
-            next_zone,
-            ns_names
-                .iter()
-                .map(|name| name.to_string())
-                .collect::<Vec<_>>()
-        ));
-
-        servers = resolve_nameservers_from_referral(
-            &query_result.response,
-            &servers,
-            config,
-            &current_zone,
-            progress,
-        )?;
-
-        if servers.is_empty() {
-            return Err(ResolveError::NoReachableNameserver {
-                zone: next_zone.to_string(),
-            });
-        }
-
-        current_zone = next_zone;
-
-        if depth + 1 == config.max_depth - 1 {
-            progress.message("approaching maximum delegation depth");
-        }
-    }
-
-    Err(ResolveError::MaxDepth {
-        max: config.max_depth,
-    })
+    servers
 }
 
 fn default_root_targets() -> Vec<ServerTarget> {
@@ -303,7 +341,7 @@ fn is_authoritative_answer(response: &DnsResponse, qname: &DomainName, qtype: Re
         return true;
     }
 
-    let qtype = qtype.to_string();
+    let qtype = record_type_name(qtype);
     response.answers.iter().any(|record| {
         record.name.as_str().eq_ignore_ascii_case(qname.as_str()) && record.rtype == qtype
     })
@@ -312,6 +350,8 @@ fn is_authoritative_answer(response: &DnsResponse, qname: &DomainName, qtype: Re
 fn final_answer_from_query(
     query: &dns_core::QueryResult,
     server_name: Option<String>,
+    qname: &DomainName,
+    qtype: RecordType,
 ) -> FinalAnswer {
     FinalAnswer {
         server: query.server.to_string(),
@@ -325,8 +365,8 @@ fn final_answer_from_query(
             .map(|record| format!("{} {} {}", record.name, record.ttl, record.rdata))
             .collect(),
         nsid: query.response.edns.nsid().map(str::to_owned),
-        qname: query.qname.to_string(),
-        qtype: query.qtype.clone(),
+        qname: qname.to_string(),
+        qtype: record_type_name(qtype),
         transport: query.transport.to_string(),
         response: StoredDnsMessage::from_response(&query.response),
     }
