@@ -88,11 +88,7 @@ pub fn run_tui(tree: &ExploreTree, session_id: &str) -> io::Result<()> {
         terminal.draw(|frame| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Percentage(55),
-                    Constraint::Percentage(45),
-                    Constraint::Length(1),
-                ])
+                .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
                 .split(frame.area());
 
             let tree_viewport_width = chunks[0].width.saturating_sub(2);
@@ -175,6 +171,7 @@ pub fn run_tui(tree: &ExploreTree, session_id: &str) -> io::Result<()> {
                 .block(
                     Block::default()
                         .title(detail_title)
+                        .title_bottom(footer_line(&theme).centered())
                         .borders(Borders::ALL)
                         .border_type(BorderType::Rounded)
                         .border_style(if focused == Pane::Detail {
@@ -186,9 +183,6 @@ pub fn run_tui(tree: &ExploreTree, session_id: &str) -> io::Result<()> {
                 .wrap(Wrap { trim: false })
                 .scroll((detail_scroll, 0));
             frame.render_widget(detail_widget, chunks[1]);
-
-            let footer = Paragraph::new(footer_line(&theme)).alignment(Alignment::Center);
-            frame.render_widget(footer, chunks[2]);
 
             if show_help {
                 render_help_overlay(frame, &theme);
