@@ -81,12 +81,16 @@ for f in "$OUT_DIR"/cdt_*.deb; do
   [[ -e "$f" ]] || continue
   base="$(basename "$f")"
   [[ "$base" == cdt-dbg_* ]] && continue
-  mv -f "$f" "$DEB_PROD"
+  if [[ "$f" != "$DEB_PROD" ]]; then
+    mv -f "$f" "$DEB_PROD"
+  fi
   break
 done
 for f in "$OUT_DIR"/cdt-dbg_*.deb; do
   [[ -e "$f" ]] || continue
-  mv -f "$f" "$DEB_DBG"
+  if [[ "$f" != "$DEB_DBG" ]]; then
+    mv -f "$f" "$DEB_DBG"
+  fi
   break
 done
 if [[ ! -e "$DEB_PROD" || ! -e "$DEB_DBG" ]]; then
@@ -104,12 +108,16 @@ for f in "$OUT_DIR"/cdt-*.rpm; do
   [[ -e "$f" ]] || continue
   base="$(basename "$f")"
   [[ "$base" == cdt-dbg-* ]] && continue
-  mv -f "$f" "$RPM_PROD"
+  if [[ "$f" != "$RPM_PROD" ]]; then
+    mv -f "$f" "$RPM_PROD"
+  fi
   break
 done
 for f in "$OUT_DIR"/cdt-dbg-*.rpm; do
   [[ -e "$f" ]] || continue
-  mv -f "$f" "$RPM_DBG"
+  if [[ "$f" != "$RPM_DBG" ]]; then
+    mv -f "$f" "$RPM_DBG"
+  fi
   break
 done
 if [[ ! -e "$RPM_PROD" || ! -e "$RPM_DBG" ]]; then
