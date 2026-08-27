@@ -95,17 +95,22 @@ echo "Building .deb packages..."
 
 DEB_PROD="${OUT_DIR}/cdt_${VERSION}_${ARCH}.deb"
 DEB_DBG="${OUT_DIR}/cdt-dbg_${VERSION}_${ARCH}.deb"
-for f in "$OUT_DIR"/*.deb; do
+for f in "$OUT_DIR"/cdt_*.deb; do
   [[ -e "$f" ]] || continue
-  case "$(basename "$f")" in
-    cdt_${VERSION}_*.deb)
-      [[ "$f" != "$DEB_PROD" ]] && mv -f "$f" "$DEB_PROD"
-      ;;
-    cdt-dbg_${VERSION}_*.deb)
-      [[ "$f" != "$DEB_DBG" ]] && mv -f "$f" "$DEB_DBG"
-      ;;
-  esac
+  base="$(basename "$f")"
+  [[ "$base" == cdt-dbg_* ]] && continue
+  mv -f "$f" "$DEB_PROD"
+  break
 done
+for f in "$OUT_DIR"/cdt-dbg_*.deb; do
+  [[ -e "$f" ]] || continue
+  mv -f "$f" "$DEB_DBG"
+  break
+done
+if [[ ! -e "$DEB_PROD" || ! -e "$DEB_DBG" ]]; then
+  echo "::error::Expected .deb packages were not created"
+  exit 1
+fi
 
 echo "Building .rpm packages..."
 "$NFPM" pkg --config packaging/nfpm/cdt.generated.yaml --packager rpm --target "$OUT_DIR"
@@ -113,17 +118,22 @@ echo "Building .rpm packages..."
 
 RPM_PROD="${OUT_DIR}/cdt-${VERSION}-1.${RPM_ARCH}.rpm"
 RPM_DBG="${OUT_DIR}/cdt-dbg-${VERSION}-1.${RPM_ARCH}.rpm"
-for f in "$OUT_DIR"/*.rpm; do
+for f in "$OUT_DIR"/cdt-*.rpm; do
   [[ -e "$f" ]] || continue
-  case "$(basename "$f")" in
-    cdt-${VERSION}*.rpm)
-      [[ "$f" != "$RPM_PROD" ]] && mv -f "$f" "$RPM_PROD"
-      ;;
-    cdt-dbg-${VERSION}*.rpm)
-      [[ "$f" != "$RPM_DBG" ]] && mv -f "$f" "$RPM_DBG"
-      ;;
-  esac
+  base="$(basename "$f")"
+  [[ "$base" == cdt-dbg-* ]] && continue
+  mv -f "$f" "$RPM_PROD"
+  break
 done
+for f in "$OUT_DIR"/cdt-dbg-*.rpm; do
+  [[ -e "$f" ]] || continue
+  mv -f "$f" "$RPM_DBG"
+  break
+done
+if [[ ! -e "$RPM_PROD" || ! -e "$RPM_DBG" ]]; then
+  echo "::error::Expected .rpm packages were not created"
+  exit 1
+fi
 
 SBOM_PATH="${OUT_DIR}/cdt-${VERSION}.spdx.json"
 checksum_files=(

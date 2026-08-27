@@ -28,4 +28,55 @@ jobs:
       - name: Test
         run: make test
 
-      # Release artifact packaging runs in build-release-artifacts.yml on release.
+  packaging:
+    name: Build and verify packages
+    runs-on: ubuntu-22.04
+    env:
+      PACKAGE_VERSION: 0.0.0-ci
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install nfpm
+        run: |
+          set -euo pipefail
+          NFPM_VERSION=2.41.2
+          curl -sL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_amd64.deb" -o /tmp/nfpm.deb
+          sudo dpkg -i /tmp/nfpm.deb
+
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx --locked
+
+      - name: Build release artifacts
+        run: VERSION="${PACKAGE_VERSION}" make release-artifacts
+
+      - name: Verify release artifacts
+        run: bash .github/scripts/verify-release-artifacts.sh
+
+      - name: Install and verify .deb
+        run: |
+          set -euo pipefail
+          sudo dpkg -i "release-artifacts/cdt_${PACKAGE_VERSION}_amd64.deb" || sudo apt-get -f install -y
+          test -x /usr/bin/cdt
+          test -x /usr/bin/delve
+          cdt version
+          delve --help >/dev/null
+          dpkg -s cdt | grep -q '^Status: install ok installed'
+
+      - name: Install and verify .rpm
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "${PWD}/release-artifacts:/artifacts:ro" \
+            fedora:41 \
+            bash -euxo pipefail -c '
+              rpm -ivh "/artifacts/cdt-${PACKAGE_VERSION}-1.x86_64.rpm"
+              test -x /usr/bin/cdt
+              test -x /usr/bin/delve
+              cdt version
+              delve --help >/dev/null
+              rpm -q cdt
+            '
