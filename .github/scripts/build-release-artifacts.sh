@@ -13,31 +13,13 @@ NFPM="${NFPM:-nfpm}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
-readarray -t BUILD_PACKAGES < <(python3 - <<'PY'
-import tomllib
-from pathlib import Path
+readarray -t BUILD_PACKAGES < <(python3 .github/scripts/cdt-versions.py packages)
+readarray -t BINARIES < <(python3 .github/scripts/cdt-versions.py binaries)
 
-manifest = tomllib.loads(Path("cdt-manifest.toml").read_text(encoding="utf-8"))
-packages = ["cdt"]
-for component in manifest["components"]:
-    crate = component["crate"]
-    if crate not in packages:
-        packages.append(crate)
-print("\n".join(packages))
-PY
-)
-
-readarray -t BINARIES < <(python3 - <<'PY'
-import tomllib
-from pathlib import Path
-
-manifest = tomllib.loads(Path("cdt-manifest.toml").read_text(encoding="utf-8"))
-binaries = ["cdt"]
-for component in manifest["components"]:
-    binaries.append(component.get("binary", component["crate"]))
-print("\n".join(binaries))
-PY
-)
+if [[ ${#BUILD_PACKAGES[@]} -eq 0 || ${#BINARIES[@]} -eq 0 ]]; then
+  echo "::error::Failed to resolve packages/binaries from cdt-manifest.toml"
+  exit 1
+fi
 
 mkdir -p "$OUT_DIR"
 rm -rf packaging/staging packaging/staging-dbg
