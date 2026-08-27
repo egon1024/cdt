@@ -281,6 +281,23 @@ def cmd_binaries(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_component_versions_json(_: argparse.Namespace) -> int:
+    manifest = load_manifest()
+    versions = {entry["name"]: entry["version"] for entry in manifest.get("components", [])}
+    print(json.dumps(versions, separators=(",", ":")))
+    return 0
+
+
+def cmd_release_notes(args: argparse.Namespace) -> int:
+    versions = json.loads(args.component_versions)
+    print(f"## CDT bundle {args.version}")
+    print()
+    print("### Utilities")
+    for name in sorted(versions):
+        print(f"- **{name}**: `{versions[name]}`")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -306,6 +323,14 @@ def main() -> int:
 
     binaries = sub.add_parser("binaries")
     binaries.set_defaults(func=cmd_binaries)
+
+    component_versions_json = sub.add_parser("component-versions-json")
+    component_versions_json.set_defaults(func=cmd_component_versions_json)
+
+    release_notes = sub.add_parser("release-notes")
+    release_notes.add_argument("--version", required=True)
+    release_notes.add_argument("--component-versions", required=True)
+    release_notes.set_defaults(func=cmd_release_notes)
 
     args = parser.parse_args()
     return args.func(args)
