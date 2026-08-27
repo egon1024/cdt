@@ -261,6 +261,26 @@ def cmd_show(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_packages(_: argparse.Namespace) -> int:
+    manifest = load_manifest()
+    packages = ["cdt"]
+    for entry in manifest.get("components", []):
+        crate = entry["crate"]
+        if crate not in packages:
+            packages.append(crate)
+    print("\n".join(packages))
+    return 0
+
+
+def cmd_binaries(_: argparse.Namespace) -> int:
+    manifest = load_manifest()
+    binaries = ["cdt"]
+    for entry in manifest.get("components", []):
+        binaries.append(entry.get("binary", entry["crate"]))
+    print("\n".join(binaries))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -280,6 +300,12 @@ def main() -> int:
 
     show = sub.add_parser("show")
     show.set_defaults(func=cmd_show)
+
+    packages = sub.add_parser("packages")
+    packages.set_defaults(func=cmd_packages)
+
+    binaries = sub.add_parser("binaries")
+    binaries.set_defaults(func=cmd_binaries)
 
     args = parser.parse_args()
     return args.func(args)
