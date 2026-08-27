@@ -292,3 +292,39 @@ jobs:
     with:
       version: ${{ needs.publish.outputs.version }}
     secrets: inherit
+
+  backfill:
+    name: Detect releases missing assets
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.find.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Find newest release missing assets
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for tag in $(git tag -l 'cdt-v*' --sort=-version:refname); do
+            version="${tag#cdt-v}"
+            if ! bash .github/scripts/check-release-assets-complete.sh "${version}"; then
+              echo "version=${version}" >>"$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "version=" >>"$GITHUB_OUTPUT"
+
+  backfill-artifacts:
+    name: Backfill release assets
+    needs: backfill
+    if: needs.backfill.outputs.version != ''
+    uses: ./.github/workflows/build-release-artifacts.yml
+    with:
+      version: ${{ needs.backfill.outputs.version }}
+    secrets: inherit
