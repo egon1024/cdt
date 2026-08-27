@@ -54,6 +54,8 @@ Cole's DNS Tools debug binaries (unstripped) for troubleshooting.
         [
             "license: Apache-2.0",
             "homepage: https://github.com/egon1024/cdt",
+            "rpm:",
+            "  group: Applications/Internet",
             "contents:",
         ]
     )

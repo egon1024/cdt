@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Build release tarballs, .deb packages, and SHA256SUMS for a CDT bundle version.
+# Build release tarballs, .deb/.rpm packages, SBOM, and SHA256SUMS for a CDT bundle version.
 # Run from repository root. Requires: cargo, strip, tar, nfpm, sha256sum, python3.
+# Optional: cargo-cyclonedx (for SBOM generation).
 set -euo pipefail
 
 VERSION="${VERSION:?VERSION is required (e.g. 0.1.0)}"
 ARCH="${ARCH:-amd64}"
+RPM_ARCH="${RPM_ARCH:-x86_64}"
 OUT_DIR="${OUT_DIR:-release-artifacts}"
 NFPM="${NFPM:-nfpm}"
 
@@ -82,17 +84,19 @@ echo "Rendering nfpm configs..."
 python3 .github/scripts/render-nfpm-config.py --variant prod >packaging/nfpm/cdt.generated.yaml
 python3 .github/scripts/render-nfpm-config.py --variant dbg >packaging/nfpm/cdt-dbg.generated.yaml
 
-echo "Building .deb packages..."
 if ! command -v "$NFPM" >/dev/null 2>&1; then
   echo "::error::nfpm not found (set NFPM or install from https://nfpm.goreleaser.com)"
   exit 1
 fi
+
+echo "Building .deb packages..."
 "$NFPM" pkg --config packaging/nfpm/cdt.generated.yaml --packager deb --target "$OUT_DIR"
 "$NFPM" pkg --config packaging/nfpm/cdt-dbg.generated.yaml --packager deb --target "$OUT_DIR"
 
 DEB_PROD="${OUT_DIR}/cdt_${VERSION}_${ARCH}.deb"
 DEB_DBG="${OUT_DIR}/cdt-dbg_${VERSION}_${ARCH}.deb"
 for f in "$OUT_DIR"/*.deb; do
+  [[ -e "$f" ]] || continue
   case "$(basename "$f")" in
     cdt_${VERSION}_*.deb)
       [[ "$f" != "$DEB_PROD" ]] && mv -f "$f" "$DEB_PROD"
@@ -103,13 +107,48 @@ for f in "$OUT_DIR"/*.deb; do
   esac
 done
 
+echo "Building .rpm packages..."
+"$NFPM" pkg --config packaging/nfpm/cdt.generated.yaml --packager rpm --target "$OUT_DIR"
+"$NFPM" pkg --config packaging/nfpm/cdt-dbg.generated.yaml --packager rpm --target "$OUT_DIR"
+
+RPM_PROD="${OUT_DIR}/cdt-${VERSION}-1.${RPM_ARCH}.rpm"
+RPM_DBG="${OUT_DIR}/cdt-dbg-${VERSION}-1.${RPM_ARCH}.rpm"
+for f in "$OUT_DIR"/*.rpm; do
+  [[ -e "$f" ]] || continue
+  case "$(basename "$f")" in
+    cdt-${VERSION}*.rpm)
+      [[ "$f" != "$RPM_PROD" ]] && mv -f "$f" "$RPM_PROD"
+      ;;
+    cdt-dbg-${VERSION}*.rpm)
+      [[ "$f" != "$RPM_DBG" ]] && mv -f "$f" "$RPM_DBG"
+      ;;
+  esac
+done
+
+SBOM_PATH="${OUT_DIR}/cdt-${VERSION}.spdx.json"
+checksum_files=(
+  "$(basename "$TARBALL_PROD")"
+  "$(basename "$TARBALL_DBG")"
+  "$(basename "$DEB_PROD")"
+  "$(basename "$DEB_DBG")"
+  "$(basename "$RPM_PROD")"
+  "$(basename "$RPM_DBG")"
+)
+
+if cargo cyclonedx --version >/dev/null 2>&1; then
+  echo "Generating SBOM..."
+  cargo cyclonedx --manifest-path crates/delve/Cargo.toml \
+    --format json --all-features --describe crate -q
+  mv "crates/delve/delve.cdx.json" "$SBOM_PATH"
+  checksum_files+=("$(basename "$SBOM_PATH")")
+else
+  echo "cargo-cyclonedx not installed; skipping SBOM"
+fi
+
 echo "Generating SHA256SUMS..."
 (
   cd "$OUT_DIR"
-  sha256sum "$(basename "$TARBALL_PROD")" \
-    "$(basename "$TARBALL_DBG")" \
-    "$(basename "$DEB_PROD")" \
-    "$(basename "$DEB_DBG")" >SHA256SUMS
+  sha256sum "${checksum_files[@]}" >SHA256SUMS
 )
 
 echo "Release artifacts in ${OUT_DIR}:"

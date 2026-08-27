@@ -52,4 +52,4 @@ version:
 	@$(CARGO) run -q -p cdt -- version
 
 release-artifacts:
-	@bash .github/scripts/build-release-artifacts.sh
+	VERSION=$(VERSION) bash .github/scripts/build-release-artifacts.sh

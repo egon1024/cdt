@@ -69,6 +69,9 @@ jobs:
             "cdt-${RELEASE_VERSION}-amd64-debug.tar.gz"
             "cdt_${RELEASE_VERSION}_amd64.deb"
             "cdt-dbg_${RELEASE_VERSION}_amd64.deb"
+            "cdt-${RELEASE_VERSION}-1.x86_64.rpm"
+            "cdt-dbg-${RELEASE_VERSION}-1.x86_64.rpm"
+            "cdt-${RELEASE_VERSION}.spdx.json"
             "SHA256SUMS"
           )
           existing="$(gh release view "${RELEASE_TAG}" --json assets --jq '.assets[].name' || true)"
@@ -88,6 +91,9 @@ jobs:
           NFPM_VERSION=2.41.2
           curl -sL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_amd64.deb" -o /tmp/nfpm.deb
           sudo dpkg -i /tmp/nfpm.deb
+
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx --locked
 
       - name: Build release artifacts
         env:
@@ -129,3 +135,33 @@ jobs:
           cdt version
           delve --help >/dev/null
           dpkg -s cdt | grep -q '^Status: install ok installed'
+
+  smoke-test-rpm:
+    name: Install .rpm on Fedora 41
+    needs: build
+    runs-on: ubuntu-24.04
+    container: fedora:41
+    env:
+      RELEASE_TAG: cdt-v${{ inputs.version }}
+    steps:
+      - name: Install tooling
+        run: dnf install -y gh tar
+
+      - name: Download production .rpm from release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release download "${RELEASE_TAG}" \
+            -p "cdt-${{ inputs.version }}-1.x86_64.rpm" \
+            -D /tmp/rpm-test
+
+      - name: Install and verify
+        run: |
+          set -euo pipefail
+          rpm -ivh "/tmp/rpm-test/cdt-${{ inputs.version }}-1.x86_64.rpm"
+          test -x /usr/bin/cdt
+          test -x /usr/bin/delve
+          cdt version
+          delve --help >/dev/null
+          rpm -q cdt
