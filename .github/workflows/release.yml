@@ -98,15 +98,21 @@ jobs:
 
       - name: Select release version
         id: release_version
+        env:
+          PR_BODY: ${{ steps.pr.outputs.body || '' }}
+          MANUAL_VERSION: ${{ steps.manual_version.outputs.next_bundle_version }}
         run: |
           set -euo pipefail
-          if [[ -n "${{ steps.manual_version.outputs.next_bundle_version }}" ]]; then
-            echo "next_bundle_version=${{ steps.manual_version.outputs.next_bundle_version }}" >>"$GITHUB_OUTPUT"
-            components="$(python3 .github/scripts/cdt-versions.py component-versions-json)"
-            echo "component_versions=${components}" >>"$GITHUB_OUTPUT"
+          if [[ -n "${MANUAL_VERSION}" ]]; then
+            echo "next_bundle_version=${MANUAL_VERSION}" >>"$GITHUB_OUTPUT"
+            python3 .github/scripts/cdt-versions.py component-versions-json >.release-component-versions.json
           else
             echo "next_bundle_version=${{ steps.version.outputs.next_bundle_version }}" >>"$GITHUB_OUTPUT"
-            echo "component_versions=${{ steps.version.outputs.component_versions }}" >>"$GITHUB_OUTPUT"
+            python3 .github/scripts/cdt-versions.py preview \
+              --pr-body "${PR_BODY}" \
+              --changed-files "$(cat changed-files.txt)" \
+              --format json \
+              | python3 -c 'import json,sys; json.dump(json.load(sys.stdin)["component_versions"], open(".release-component-versions.json","w"), separators=(",",":"))'
           fi
 
       - name: Validate version bump
@@ -138,7 +144,7 @@ jobs:
         if: steps.exists.outputs.skip != 'true'
         env:
           BUNDLE_VERSION: ${{ steps.release_version.outputs.next_bundle_version }}
-          COMPONENT_VERSIONS: ${{ steps.release_version.outputs.component_versions }}
+          COMPONENT_VERSIONS_FILE: .release-component-versions.json
         run: bash .github/scripts/bump-cdt-versions.sh
 
       - name: Commit release preparation
@@ -213,7 +219,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           NEXT_VERSION: ${{ steps.release_version.outputs.next_bundle_version }}
-          COMPONENT_VERSIONS: ${{ steps.release_version.outputs.component_versions }}
         run: |
           set -euo pipefail
           git fetch origin "${RELEASE_BRANCH}"
@@ -226,7 +231,7 @@ jobs:
           notes_file="$(mktemp)"
           python3 .github/scripts/cdt-versions.py release-notes \
             --version "${NEXT_VERSION}" \
-            --component-versions "${COMPONENT_VERSIONS}" >"$notes_file"
+            --component-versions "$(cat .release-component-versions.json)" >"$notes_file"
 
           gh release create "$tag" \
             --target "${RELEASE_BRANCH}" \

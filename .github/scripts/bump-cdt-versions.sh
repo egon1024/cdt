@@ -3,7 +3,15 @@
 set -euo pipefail
 
 BUNDLE_VERSION="${BUNDLE_VERSION:?BUNDLE_VERSION is required}"
-COMPONENT_VERSIONS="${COMPONENT_VERSIONS:?COMPONENT_VERSIONS is required}"
+
+if [[ -n "${COMPONENT_VERSIONS_FILE:-}" ]]; then
+  COMPONENT_VERSIONS="$(cat "$COMPONENT_VERSIONS_FILE")"
+elif [[ -n "${COMPONENT_VERSIONS:-}" ]]; then
+  :
+else
+  echo "::error::COMPONENT_VERSIONS or COMPONENT_VERSIONS_FILE is required"
+  exit 1
+fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 python3 "${ROOT_DIR}/.github/scripts/cdt-versions.py" apply \
