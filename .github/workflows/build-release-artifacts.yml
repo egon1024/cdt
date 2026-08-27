@@ -50,6 +50,17 @@ jobs:
           fetch-depth: 0
           ref: refs/tags/${{ env.RELEASE_TAG }}
 
+      - name: Sync release build scripts from main
+        run: |
+          set -euo pipefail
+          git fetch origin main --depth=1
+          git checkout origin/main -- \
+            .github/scripts/build-release-artifacts.sh \
+            .github/scripts/render-nfpm-config.py \
+            .github/scripts/verify-release-artifacts.sh \
+            .github/scripts/cdt-versions.py
+          chmod +x .github/scripts/*.sh
+
       - name: Verify tag exists
         run: |
           set -euo pipefail
