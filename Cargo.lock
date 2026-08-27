@@ -115,7 +115,7 @@ dependencies = [
 
 [[package]]
 name = "cdt"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "clap",
  "serde",
@@ -355,7 +355,7 @@ dependencies = [
 
 [[package]]
 name = "dns-cache"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "dns-core",
  "rusqlite",
@@ -368,7 +368,7 @@ dependencies = [
 
 [[package]]
 name = "dns-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "hickory-proto",
  "serde",
@@ -378,7 +378,7 @@ dependencies = [
 
 [[package]]
 name = "dns-resolve"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "dns-cache",
  "dns-core",
