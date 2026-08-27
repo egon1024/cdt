@@ -1,4 +1,4 @@
-use dns_resolve::{TraceHop, TraceResult};
+use dns_resolve::{FinalAnswer, TraceHop, TraceResult};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExploreNode {
@@ -46,7 +46,7 @@ pub fn build_explore_tree(trace: &TraceResult) -> ExploreTree {
         )
     };
 
-    if trace.final_response.is_some() {
+    if trace.final_response.is_some() && should_show_final_node(trace) {
         attach_final_node(&mut children);
     }
 
@@ -67,6 +67,30 @@ fn attach_final_node(children: &mut Vec<ExploreNode>) {
     } else {
         children.push(ExploreNode::Final);
     }
+}
+
+/// The trace stores the authoritative exchange as both the last hop and
+/// `final_response`. Skip a separate Final node when they describe the same query.
+fn should_show_final_node(trace: &TraceResult) -> bool {
+    let Some(answer) = trace.final_response.as_ref() else {
+        return false;
+    };
+    let Some(last_hop) = trace.hops.last() else {
+        return true;
+    };
+    !final_answer_matches_hop(last_hop, answer, &trace.qname)
+}
+
+fn final_answer_matches_hop(hop: &TraceHop, answer: &FinalAnswer, trace_qname: &str) -> bool {
+    let answer_qname = if answer.qname.is_empty() {
+        trace_qname
+    } else {
+        answer.qname.as_str()
+    };
+    hop.server == answer.server
+        && hop.rtt_ms == answer.rtt_ms
+        && hop.rcode == answer.rcode
+        && normalize_qname(&hop.qname) == normalize_qname(answer_qname)
 }
 
 fn build_alias_chain_children(hops: &[TraceHop], legs: &[(usize, usize)]) -> Vec<ExploreNode> {
@@ -304,6 +328,52 @@ mod tests {
         assert_eq!(children.len(), 2);
         assert!(matches!(children[0], ExploreNode::Hop { hop_index: 1 }));
         assert!(matches!(children[1], ExploreNode::Hop { hop_index: 2 }));
+    }
+
+    #[test]
+    fn omits_final_node_when_last_hop_matches_final_answer() {
+        let mut authoritative = hop("example.com.", "example.com.", "93.184.216.34");
+        authoritative.rtt_ms = 5;
+        let trace = TraceResult {
+            qname: "example.com.".into(),
+            qtype: "A".into(),
+            started_at: "2026-08-25T00:00:00Z".into(),
+            hops: vec![
+                hop(".", "example.com.", "198.41.0.4"),
+                hop("com.", "example.com.", "192.41.162.30"),
+                authoritative,
+            ],
+            final_response: Some(FinalAnswer {
+                server: "93.184.216.34".into(),
+                server_name: None,
+                rtt_ms: 5,
+                rcode: "NOERROR".into(),
+                records: vec!["example.com. 300 93.184.216.34".into()],
+                nsid: None,
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                transport: "udp".into(),
+                response: Default::default(),
+                from_cache: false,
+            }),
+        };
+
+        let tree = build_explore_tree(&trace);
+        assert!(!contains_final_node(&tree.children));
+        assert!(matches!(
+            tree.children.last(),
+            Some(ExploreNode::Delegation { hop_index: 2, .. })
+        ));
+    }
+
+    fn contains_final_node(nodes: &[ExploreNode]) -> bool {
+        nodes.iter().any(|node| match node {
+            ExploreNode::Final => true,
+            ExploreNode::Delegation { children, .. } | ExploreNode::Resolve { children, .. } => {
+                contains_final_node(children)
+            }
+            ExploreNode::Hop { .. } => false,
+        })
     }
 
     #[test]

@@ -170,8 +170,12 @@ These are different JSON shapes for different jobs:
 | **`session show --json`** | Flat `TraceResult`: chronological `hops` array + `final_response` | Replaying trace data, diffing sessions, tools that expect the stored snapshot |
 | **`session events`** | Hierarchical explore `tree`: delegation / resolve / hop / final nodes | Tools that want the same structure as the TUI and outline views |
 
-Both include per-query **`rtt_ms`** and **`from_cache`** on each hop (and on the
-final answer). Cache hits keep the RTT from the original live exchange.
+Both include per-query **`rtt_ms`** and **`from_cache`** in hop JSON. The explore
+tree omits a separate final node when the last hop already records the
+authoritative answer (same exchange as `final_response`).
+
+Use **`--json`** for JSON output from `session show` (not `+events`; that flag is
+for `delve trace` only).
 
 ```bash
 delve session explore              # default session, TUI

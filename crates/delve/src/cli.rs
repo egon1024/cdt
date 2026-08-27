@@ -104,13 +104,6 @@ pub struct SessionShowArgs {
     /// Emit the stored trace as JSON (`event: complete`).
     #[arg(long)]
     pub json: bool,
-    #[arg(
-        trailing_var_arg = true,
-        allow_hyphen_values = true,
-        num_args = 0..,
-        value_name = "ARG"
-    )]
-    pub args: Vec<String>,
 }
 
 #[derive(Debug, Parser)]
@@ -299,10 +292,16 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
             Ok(())
         }
         SessionSubcommand::Show(args) => {
-            let (session_id, flag_args) = resolve_session_target(args.id, args.args, &runtime)?;
-            let json = args.json || parse_events_only(&flag_args)?;
+            if let Some(id) = &args.id {
+                if id.starts_with('+') {
+                    return Err(CliError::Parse(ParseError::Unexpected(format!(
+                        "{id} is not valid for session show; use --json for JSON output"
+                    ))));
+                }
+            }
+            let (session_id, _) = resolve_session_target(args.id, Vec::new(), &runtime)?;
             let document = runtime.get_session(&session_id)?;
-            print_session(&document, json);
+            print_session(&document, args.json);
             Ok(())
         }
         SessionSubcommand::Rm(args) => {
@@ -389,23 +388,8 @@ fn resolve_session_target(
     Ok((last, args))
 }
 
-fn parse_events_only(args: &[String]) -> Result<bool, ParseError> {
-    let mut events = false;
-    for arg in args {
-        match arg.as_str() {
-            "+events" => events = true,
-            "+noevents" => events = false,
-            other if other.starts_with('+') => {
-                return Err(ParseError::UnknownOption(other.to_string()));
-            }
-            other => return Err(ParseError::Unexpected(other.to_string())),
-        }
-    }
-    Ok(events)
-}
-
-fn print_session(document: &SessionDocument, events: bool) {
-    if events {
+fn print_session(document: &SessionDocument, json: bool) {
+    if json {
         println!(
             "{}",
             serde_json::to_string(&serde_json::json!({
