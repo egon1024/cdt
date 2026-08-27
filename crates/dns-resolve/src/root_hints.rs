@@ -38,3 +38,23 @@ pub fn root_server_names() -> [&'static str; 13] {
         "m.root-servers.net.",
     ]
 }
+
+/// Nameserver hostname for a built-in root server address, when known.
+pub fn root_server_name_for(address: std::net::IpAddr) -> Option<&'static str> {
+    root_servers()
+        .into_iter()
+        .zip(root_server_names())
+        .find_map(|(candidate, name)| (candidate == address).then_some(name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    #[test]
+    fn root_server_name_for_known_address() {
+        let address = IpAddr::V4(Ipv4Addr::new(198, 41, 0, 4));
+        assert_eq!(root_server_name_for(address), Some("a.root-servers.net."));
+    }
+}

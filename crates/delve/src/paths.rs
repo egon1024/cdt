@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 pub struct DelvePaths {
     pub cache_dir: PathBuf,
     pub data_dir: PathBuf,
+    pub state_dir: PathBuf,
     pub sessions_dir: PathBuf,
     pub cache_db: PathBuf,
     pub sessions_db: PathBuf,
@@ -18,10 +19,13 @@ impl DelvePaths {
         let data_dir = directories::BaseDirs::new()
             .map(|dirs| dirs.data_dir().join("cdt/delve"))
             .unwrap_or_else(|| PathBuf::from(".cdt/data/delve"));
+        let state_dir = directories::BaseDirs::new()
+            .and_then(|dirs| dirs.state_dir().map(|path| path.join("cdt/delve")))
+            .unwrap_or_else(|| PathBuf::from(".cdt/state/delve"));
         let config_file = directories::BaseDirs::new()
             .map(|dirs| dirs.config_dir().join("cdt/delve.yaml"))
             .unwrap_or_else(|| PathBuf::from(".cdt/config/delve.yaml"));
-        Self::from_dirs(cache_dir, data_dir, config_file)
+        Self::from_dirs(cache_dir, data_dir, state_dir, config_file)
     }
 
     #[allow(dead_code)]
@@ -29,22 +33,33 @@ impl DelvePaths {
         Self::from_dirs(
             root.join("cache"),
             root.join("data"),
+            root.join("state"),
             root.join("config/delve.yaml"),
         )
     }
 
-    fn from_dirs(cache_dir: PathBuf, data_dir: PathBuf, config_file: PathBuf) -> Self {
+    fn from_dirs(
+        cache_dir: PathBuf,
+        data_dir: PathBuf,
+        state_dir: PathBuf,
+        config_file: PathBuf,
+    ) -> Self {
         let sessions_dir = data_dir.join("sessions");
         let cache_db = cache_dir.join("cache.sqlite");
         let sessions_db = data_dir.join("sessions.sqlite");
         Self {
             cache_dir,
             data_dir,
+            state_dir,
             sessions_dir,
             cache_db,
             sessions_db,
             config_file,
         }
+    }
+
+    pub fn last_session_file(&self) -> PathBuf {
+        self.state_dir.join("last-session")
     }
 
     pub fn config_file(&self) -> &Path {
@@ -58,6 +73,7 @@ impl DelvePaths {
     pub fn ensure_data_dirs(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.data_dir)?;
         std::fs::create_dir_all(&self.sessions_dir)?;
+        std::fs::create_dir_all(&self.state_dir)?;
         Ok(())
     }
 }
@@ -72,6 +88,8 @@ mod tests {
         let paths = DelvePaths::from_root(&root);
         assert_eq!(paths.cache_db, root.join("cache/cache.sqlite"));
         assert_eq!(paths.sessions_dir, root.join("data/sessions"));
+        assert_eq!(paths.state_dir, root.join("state"));
+        assert_eq!(paths.last_session_file(), root.join("state/last-session"));
         assert_eq!(paths.sessions_db, root.join("data/sessions.sqlite"));
     }
 }

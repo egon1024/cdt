@@ -1,15 +1,18 @@
 use std::net::IpAddr;
 
 use clap::{Parser, Subcommand};
-use dns_core::{DomainName, Transport, parse_record_type};
+use dns_core::{DomainName, Transport, ip_to_ptr_name, parse_record_type, parse_reverse_target};
 use dns_resolve::{TraceConfig, run_trace};
 use thiserror::Error;
 
 use crate::dig_options::{ParseError, TraceOptions, parse_trace_args};
+use crate::explore::{ExploreError, run_events, run_explore, run_outline};
 use crate::hop_display::print_hop_human;
 use crate::progress::StderrProgress;
+use crate::replay::{print_final_answer, print_reused_session_notice, replay_session};
 use crate::runtime::Runtime;
 use crate::session::SessionDocument;
+use crate::trace_request::TraceRequest;
 
 #[derive(Debug, Parser)]
 #[command(name = "delve", version, about = "DNS delegation-path tracer")]
@@ -20,7 +23,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Trace delegation path for a query name.
+    /// Trace the DNS delegation path for a query name (dig-style options; see `delve trace --help`).
     Trace(TraceArgs),
     /// Inspect or manage stored trace sessions.
     Session(SessionCommand),
@@ -29,13 +32,19 @@ pub enum Command {
 }
 
 #[derive(Debug, Parser)]
+#[command(
+    about = "Trace the DNS delegation path for a query name",
+    long_about = "Trace the DNS delegation path for a query name.\n\
+Options use dig-style +flags and -type shorthands, not GNU --long-options.",
+    after_long_help = crate::dig_options::TRACE_OPTIONS_HELP
+)]
 pub struct TraceArgs {
-    /// Query name, optional @server, and dig-style query options (+tcp, +timeout=, -t TYPE, ...).
+    /// Query name, optional @server, and dig-style options (see below).
     #[arg(
         trailing_var_arg = true,
         allow_hyphen_values = true,
         num_args = 0..,
-        value_name = "ARG"
+        value_name = "QNAME [@SERVER] [OPTIONS...]"
     )]
     pub args: Vec<String>,
 }
@@ -50,6 +59,8 @@ pub struct SessionCommand {
 pub enum SessionSubcommand {
     /// List stored sessions.
     List,
+    /// Print the current default session id (last used).
+    Current,
     /// Show a stored session by id or prefix.
     Show(SessionShowArgs),
     /// Remove a stored session.
@@ -60,18 +71,39 @@ pub enum SessionSubcommand {
     Unpin(SessionIdArgs),
     /// Purge sessions older than configured retention.
     Purge(SessionPurgeArgs),
+    /// Print a stored session as an indented tree on stdout.
+    Outline(SessionOutlineArgs),
+    /// Print a stored session as structured JSON (explore tree) on stdout.
+    Events(SessionEventsArgs),
+    /// Explore a stored session in the interactive tree TUI.
+    Explore(SessionExploreArgs),
+}
+
+#[derive(Debug, Parser)]
+pub struct SessionOutlineArgs {
+    /// Session id or prefix. When omitted, uses the last session.
+    pub id: Option<String>,
+}
+
+#[derive(Debug, Parser)]
+pub struct SessionEventsArgs {
+    /// Session id or prefix. When omitted, uses the last session.
+    pub id: Option<String>,
+}
+
+#[derive(Debug, Parser)]
+pub struct SessionExploreArgs {
+    /// Session id or prefix. When omitted, reopens the last used session.
+    pub id: Option<String>,
 }
 
 #[derive(Debug, Parser)]
 pub struct SessionShowArgs {
-    pub id: String,
-    #[arg(
-        trailing_var_arg = true,
-        allow_hyphen_values = true,
-        num_args = 0..,
-        value_name = "ARG"
-    )]
-    pub args: Vec<String>,
+    /// Session id or prefix. When omitted, uses the last session.
+    pub id: Option<String>,
+    /// Emit the stored trace as JSON (`event: complete`).
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -140,6 +172,9 @@ pub enum CliError {
 
     #[error("response cache is not available")]
     CacheUnavailable,
+
+    #[error(transparent)]
+    Explore(#[from] ExploreError),
 }
 
 impl Cli {
@@ -160,10 +195,27 @@ fn run_trace_command(args: TraceArgs) -> Result<(), CliError> {
 }
 
 fn run_parsed_trace(options: TraceOptions, runtime: &Runtime) -> Result<(), CliError> {
-    let qname = DomainName::parse(&options.qname)?;
+    let request = TraceRequest::from_options(&options);
+
+    if options.save_session && !options.fresh {
+        if let Some(document) = runtime.find_matching_session(&request)? {
+            replay_session(&document, options.events);
+            print_reused_session_notice(&document);
+            runtime.remember_session(&document.id)?;
+            return Ok(());
+        }
+    }
+
+    let qname = if options.reverse_lookup {
+        let ip = parse_reverse_target(&options.qname)?;
+        ip_to_ptr_name(ip)?
+    } else {
+        DomainName::parse(&options.qname)?
+    };
     let qtype = parse_record_type(&options.qtype)
         .map_err(|_| CliError::QueryType(options.qtype.clone()))?;
     let mut config = TraceConfig::new(qname, qtype);
+    config.follow_aliases = options.follow_aliases;
     config.transport = if options.use_tcp {
         Transport::Tcp
     } else {
@@ -192,7 +244,8 @@ fn run_parsed_trace(options: TraceOptions, runtime: &Runtime) -> Result<(), CliE
     let result = run_trace(&config, &mut progress)?;
 
     if options.save_session {
-        let session_id = runtime.save_session(&result)?;
+        let session_id = runtime.save_session(&result, &request)?;
+        runtime.remember_session(&session_id)?;
         eprintln!("session: {session_id}");
     }
 
@@ -207,18 +260,7 @@ fn run_parsed_trace(options: TraceOptions, runtime: &Runtime) -> Result<(), CliE
         );
     } else {
         eprintln!();
-        if let Some(answer) = &result.final_response {
-            eprintln!(
-                "final answer from {} in {}ms ({})",
-                answer.server, answer.rtt_ms, answer.rcode
-            );
-            for record in &answer.records {
-                eprintln!("  {record}");
-            }
-            if let Some(nsid) = &answer.nsid {
-                eprintln!("  NSID: {nsid}");
-            }
-        }
+        print_final_answer(&result);
     }
 
     Ok(())
@@ -229,20 +271,37 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
     runtime.emit_warnings();
     match command.command {
         SessionSubcommand::List => {
-            let summaries = runtime.list_sessions()?;
-            for summary in summaries {
-                let marker = if summary.pinned { "* " } else { "  " };
+            let default_id = runtime.last_session_id().ok();
+            for summary in runtime.list_sessions()? {
+                let pin = if summary.pinned { '*' } else { ' ' };
+                let current = if default_id.as_deref() == Some(summary.id.as_str()) {
+                    '@'
+                } else {
+                    ' '
+                };
                 println!(
-                    "{marker}{}  {} {}  {} hops  {}",
+                    "{pin}{current} {}  {} {}  {} hops  {}",
                     summary.id, summary.qname, summary.qtype, summary.hop_count, summary.created_at
                 );
             }
             Ok(())
         }
+        SessionSubcommand::Current => {
+            let id = runtime.last_session_id()?;
+            println!("{id}");
+            Ok(())
+        }
         SessionSubcommand::Show(args) => {
-            let events = parse_events_only(&args.args)?;
-            let document = runtime.get_session(&args.id)?;
-            print_session(&document, events);
+            if let Some(id) = &args.id {
+                if id.starts_with('+') {
+                    return Err(CliError::Parse(ParseError::Unexpected(format!(
+                        "{id} is not valid for session show; use --json for JSON output"
+                    ))));
+                }
+            }
+            let (session_id, _) = resolve_session_target(args.id, Vec::new(), &runtime)?;
+            let document = runtime.get_session(&session_id)?;
+            print_session(&document, args.json);
             Ok(())
         }
         SessionSubcommand::Rm(args) => {
@@ -264,6 +323,24 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
             } else {
                 println!("removed {} sessions", report.removed);
             }
+            Ok(())
+        }
+        SessionSubcommand::Outline(args) => {
+            let (session_id, _) = resolve_session_target(args.id, Vec::new(), &runtime)?;
+            let document = runtime.touch_session(&session_id)?;
+            run_outline(&document)?;
+            Ok(())
+        }
+        SessionSubcommand::Events(args) => {
+            let (session_id, _) = resolve_session_target(args.id, Vec::new(), &runtime)?;
+            let document = runtime.touch_session(&session_id)?;
+            run_events(&document)?;
+            Ok(())
+        }
+        SessionSubcommand::Explore(args) => {
+            let (session_id, _) = resolve_session_target(args.id, Vec::new(), &runtime)?;
+            let document = runtime.touch_session(&session_id)?;
+            run_explore(&document)?;
             Ok(())
         }
     }
@@ -295,23 +372,24 @@ fn run_cache_command(command: CacheCommand) -> Result<(), CliError> {
     }
 }
 
-fn parse_events_only(args: &[String]) -> Result<bool, ParseError> {
-    let mut events = false;
-    for arg in args {
-        match arg.as_str() {
-            "+events" => events = true,
-            "+noevents" => events = false,
-            other if other.starts_with('+') => {
-                return Err(ParseError::UnknownOption(other.to_string()));
-            }
-            other => return Err(ParseError::Unexpected(other.to_string())),
+fn resolve_session_target(
+    id: Option<String>,
+    mut args: Vec<String>,
+    runtime: &Runtime,
+) -> Result<(String, Vec<String>), CliError> {
+    if let Some(id) = id {
+        if id.starts_with('+') {
+            args.insert(0, id);
+        } else {
+            return Ok((id, args));
         }
     }
-    Ok(events)
+    let last = runtime.last_session_id()?;
+    Ok((last, args))
 }
 
-fn print_session(document: &SessionDocument, events: bool) {
-    if events {
+fn print_session(document: &SessionDocument, json: bool) {
+    if json {
         println!(
             "{}",
             serde_json::to_string(&serde_json::json!({

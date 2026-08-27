@@ -7,7 +7,7 @@ use std::time::Duration;
 use dns_cache::{CacheKey, CachedEntry, ResponseCache, now_unix, shared_cache, ttl_from_result};
 use dns_core::name::DomainName;
 use dns_core::query::QueryOptions;
-use dns_core::response::{QueryResult, Transport};
+use dns_core::response::{DnsRecord, DnsResponse, QueryResult, Transport};
 use dns_core::transport::exchange;
 use hickory_proto::rr::RecordType;
 use serde::{Deserialize, Serialize};
@@ -33,6 +33,12 @@ pub enum ResolveError {
 
     #[error("trace exceeded maximum delegation depth ({max})")]
     MaxDepth { max: usize },
+
+    #[error("alias loop detected at name {name}")]
+    AliasLoop { name: String },
+
+    #[error("trace exceeded maximum alias depth ({max})")]
+    MaxAliasDepth { max: usize },
 }
 
 pub type Result<T> = std::result::Result<T, ResolveError>;
@@ -74,6 +80,8 @@ pub struct TraceConfig {
     pub ipv4_only: bool,
     pub ipv6_only: bool,
     pub max_depth: usize,
+    pub max_alias_depth: usize,
+    pub follow_aliases: bool,
     pub start_servers: Option<Vec<IpAddr>>,
     pub use_cache: bool,
     pub cache_skip_qnames: HashSet<DomainName>,
@@ -98,6 +106,8 @@ impl TraceConfig {
             ipv4_only: false,
             ipv6_only: false,
             max_depth: 32,
+            max_alias_depth: 16,
+            follow_aliases: false,
             start_servers: None,
             use_cache: true,
             cache_skip_qnames: HashSet::new(),
@@ -115,10 +125,82 @@ impl TraceConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct StoredDnsMessage {
+    pub id: u16,
+    pub authoritative: bool,
+    pub truncated: bool,
+    #[serde(default)]
+    pub recursion_desired: bool,
+    #[serde(default)]
+    pub recursion_available: bool,
+    #[serde(default)]
+    pub authentic_data: bool,
+    #[serde(default)]
+    pub checking_disabled: bool,
+    pub answers: Vec<DnsRecord>,
+    pub authorities: Vec<DnsRecord>,
+    pub additionals: Vec<DnsRecord>,
+}
+
+impl StoredDnsMessage {
+    pub fn from_response(response: &DnsResponse) -> Self {
+        Self {
+            id: response.id,
+            authoritative: response.authoritative,
+            truncated: response.truncated,
+            recursion_desired: response.recursion_desired,
+            recursion_available: response.recursion_available,
+            authentic_data: response.authentic_data,
+            checking_disabled: response.checking_disabled,
+            answers: response.answers.clone(),
+            authorities: response.authorities.clone(),
+            additionals: response.additionals.clone(),
+        }
+    }
+
+    pub fn is_stored(&self) -> bool {
+        self.id != 0
+            || self.authoritative
+            || self.truncated
+            || self.recursion_desired
+            || self.recursion_available
+            || self.authentic_data
+            || self.checking_disabled
+            || !self.answers.is_empty()
+            || !self.authorities.is_empty()
+            || !self.additionals.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ServerTarget {
+    pub address: IpAddr,
+    pub name: Option<String>,
+}
+
+impl ServerTarget {
+    pub fn from_address(address: IpAddr) -> Self {
+        Self {
+            address,
+            name: None,
+        }
+    }
+
+    pub fn with_name(address: IpAddr, name: impl Into<String>) -> Self {
+        Self {
+            address,
+            name: Some(name.into()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TraceHop {
     pub zone: String,
     pub server: String,
+    #[serde(default)]
+    pub server_name: Option<String>,
     pub qname: String,
     pub qtype: String,
     pub transport: String,
@@ -129,6 +211,11 @@ pub struct TraceHop {
     pub ede_text: Option<String>,
     pub referral_ns: Vec<String>,
     pub glue: Vec<String>,
+    #[serde(default)]
+    pub response: StoredDnsMessage,
+    /// True when this hop was served from the response cache.
+    #[serde(default)]
+    pub from_cache: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -143,10 +230,23 @@ pub struct TraceResult {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FinalAnswer {
     pub server: String,
+    #[serde(default)]
+    pub server_name: Option<String>,
     pub rtt_ms: u64,
     pub rcode: String,
     pub records: Vec<String>,
     pub nsid: Option<String>,
+    #[serde(default)]
+    pub qname: String,
+    #[serde(default)]
+    pub qtype: String,
+    #[serde(default)]
+    pub transport: String,
+    #[serde(default)]
+    pub response: StoredDnsMessage,
+    /// True when the final answer was served from the response cache.
+    #[serde(default)]
+    pub from_cache: bool,
 }
 
 pub trait TraceProgress: Send {
@@ -184,16 +284,19 @@ pub(crate) fn query_server(
     if cache_enabled_for(config, qname) {
         if let Some(cache) = &config.cache {
             if let Some(entry) = cache.get(&key) {
-                return Ok(entry.result);
+                let mut result = entry.result;
+                result.from_cache = true;
+                return Ok(result);
             }
         }
     }
 
     config.exchange_counter.fetch_add(1, Ordering::SeqCst);
-    let result = config
+    let mut result = config
         .exchange
         .exchange(server, config.port, &options)
         .map_err(ResolveError::from)?;
+    result.from_cache = false;
 
     if cache_enabled_for(config, qname) {
         if let Some(cache) = &config.cache {
@@ -225,12 +328,14 @@ pub(crate) fn cache_enabled_for(config: &TraceConfig, qname: &DomainName) -> boo
 pub(crate) fn hop_from_query(
     zone: &DomainName,
     query: &QueryResult,
+    server_name: Option<String>,
     referral_ns: Vec<String>,
     glue: Vec<String>,
 ) -> TraceHop {
     TraceHop {
         zone: zone.to_string(),
         server: query.server.to_string(),
+        server_name,
         qname: query.qname.to_string(),
         qtype: query.qtype.clone(),
         transport: query.transport.to_string(),
@@ -245,6 +350,8 @@ pub(crate) fn hop_from_query(
             .and_then(|ede| ede.extra_text.clone()),
         referral_ns,
         glue,
+        response: StoredDnsMessage::from_response(&query.response),
+        from_cache: query.from_cache,
     }
 }
 
@@ -304,13 +411,38 @@ mod cache_tests {
                     rcode_text: "NOERROR".into(),
                     authoritative: true,
                     truncated: false,
+                    recursion_desired: false,
+                    recursion_available: false,
+                    authentic_data: false,
+                    checking_disabled: false,
                     answers: vec![],
                     authorities: vec![],
                     additionals: vec![],
                     edns: EdnsMeta::default(),
                 },
+                from_cache: false,
             })
         }
+    }
+
+    #[test]
+    fn cache_hit_marks_result_from_cache() {
+        let qname = DomainName::parse("example.com.").expect("qname");
+        let mut config = TraceConfig::new(qname, RecordType::A);
+        let _cache = config.with_memory_cache();
+        let calls = Arc::new(AtomicUsize::new(0));
+        config.exchange = Arc::new(CountingExchange {
+            calls: calls.clone(),
+        });
+
+        let server = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
+        let first =
+            query_server(server, &config, &config.qname.clone(), RecordType::A).expect("first");
+        let second =
+            query_server(server, &config, &config.qname.clone(), RecordType::A).expect("second");
+
+        assert!(!first.from_cache);
+        assert!(second.from_cache);
     }
 
     #[test]
@@ -371,5 +503,61 @@ mod cache_tests {
 
         assert_eq!(calls.load(Ordering::SeqCst), 3);
         assert_eq!(cache.stats().hits, 1);
+    }
+
+    #[test]
+    fn truncated_response_is_not_retried() {
+        let qname = DomainName::parse("example.com.").expect("qname");
+        let mut config = TraceConfig::new(qname, RecordType::A);
+        config.retries = 3;
+        let calls = Arc::new(AtomicUsize::new(0));
+        config.exchange = Arc::new(TruncatedExchange {
+            calls: calls.clone(),
+        });
+
+        let server = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
+        let result = query_server(server, &config, &config.qname.clone(), RecordType::A)
+            .expect("truncated response");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(result.response.truncated);
+    }
+
+    struct TruncatedExchange {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl DnsExchange for TruncatedExchange {
+        fn exchange(
+            &self,
+            server: IpAddr,
+            _port: u16,
+            options: &QueryOptions,
+        ) -> dns_core::Result<QueryResult> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(QueryResult {
+                server,
+                transport: options.transport,
+                qname: options.qname.clone(),
+                qtype: options.qtype.to_string(),
+                rtt: Duration::from_millis(1),
+                response: DnsResponse {
+                    id: 1,
+                    rcode: 0,
+                    rcode_text: "NOERROR".into(),
+                    authoritative: true,
+                    truncated: true,
+                    recursion_desired: false,
+                    recursion_available: false,
+                    authentic_data: false,
+                    checking_disabled: false,
+                    answers: vec![],
+                    authorities: vec![],
+                    additionals: vec![],
+                    edns: EdnsMeta::default(),
+                },
+                from_cache: false,
+            })
+        }
     }
 }

@@ -2,11 +2,65 @@ use std::time::Duration;
 
 use dns_core::parse_record_type;
 
+/// Printed after `delve trace --help` usage (options are dig-style, not clap flags).
+pub const TRACE_OPTIONS_HELP: &str = "\
+Query arguments:
+  QNAME                 Name to trace (required unless only showing help)
+  @SERVER               Start from this server (IP address; default: root hints)
+
+Query type:
+  -t TYPE               Query type (default: A)
+  -qtype TYPE           Alias for -t
+  -TYPE                 Shorthand for -t TYPE (e.g. -NS, -MX)
+  -x                     Reverse lookup: argument is an IP; queries PTR
+
+Address family:
+  -4                     IPv4 only
+  -6                     IPv6 only
+
+Transport and timing:
+  +tcp / +notcp          Use TCP or UDP (default: UDP)
+  +timeout=N             Per-query timeout in seconds (default: 5; min 1)
+  +time=N                Alias for +timeout=N
+  +tries=N               Retries per server (default: 2)
+
+DNS behavior:
+  +dnssec / +nodnssec    Set or clear the DO bit (default: off)
+  +nsid / +nonsid        Request EDNS NSID (default: on)
+  +follow / +nofollow    Follow CNAME/DNAME alias chains (default: off)
+
+Output and sessions:
+  +events / +noevents    Emit NDJSON events on stdout (default: off)
+  +save / +nosave        Persist trace as a session (default: on)
+  +fresh                 Force a live trace; do not reuse a stored session
+
+Response cache:
+  +cache / +nocache      Use the response cache (default: on)
+  +nocache=QNAME         Skip cache for that qname only (repeatable)
+
+Supported types include A, AAAA, CNAME, DNAME, NS, MX, TXT, SOA, DNSSEC types
+(DNSKEY, DS, RRSIG, …), SVCB, HTTPS, TLSA, and TYPEnn for any IANA code.
+
+Output:
+  Progress and hop summaries go to stderr. With +events, structured NDJSON
+  (hop, message, complete) goes to stdout for piping.
+
+Examples:
+  delve trace example.com
+  delve trace example.com +events > trace.ndjson
+  delve trace example.com +tcp -4 +timeout=3 -t NS @1.1.1.1
+  delve trace example.com +follow +fresh
+  delve trace example.com +nocache=example.com
+  delve trace 192.0.2.1 -x
+";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TraceOptions {
     pub qname: String,
     pub server: Option<String>,
     pub qtype: String,
+    pub reverse_lookup: bool,
+    pub follow_aliases: bool,
     pub ipv4_only: bool,
     pub ipv6_only: bool,
     pub use_tcp: bool,
@@ -18,6 +72,7 @@ pub struct TraceOptions {
     pub cache_skip_qnames: Vec<String>,
     pub save_session: bool,
     pub events: bool,
+    pub fresh: bool,
 }
 
 impl Default for TraceOptions {
@@ -26,6 +81,8 @@ impl Default for TraceOptions {
             qname: String::new(),
             server: None,
             qtype: "A".into(),
+            reverse_lookup: false,
+            follow_aliases: false,
             ipv4_only: false,
             ipv6_only: false,
             use_tcp: false,
@@ -37,6 +94,7 @@ impl Default for TraceOptions {
             cache_skip_qnames: Vec::new(),
             save_session: true,
             events: false,
+            fresh: false,
         }
     }
 }
@@ -75,6 +133,10 @@ pub fn parse_trace_args(args: &[String]) -> Result<TraceOptions, ParseError> {
         match arg.as_str() {
             "-4" => options.ipv4_only = true,
             "-6" => options.ipv6_only = true,
+            "-x" => {
+                options.reverse_lookup = true;
+                options.qtype = "PTR".into();
+            }
             "-t" | "-qtype" => {
                 options.qtype = next_value(args, &mut index, arg)?;
             }
@@ -104,6 +166,10 @@ pub fn parse_trace_args(args: &[String]) -> Result<TraceOptions, ParseError> {
 
     if options.ipv4_only && options.ipv6_only {
         return Err(ParseError::AddressFamily);
+    }
+
+    if options.reverse_lookup {
+        options.qtype = "PTR".into();
     }
 
     options.qname = qname;
@@ -160,6 +226,8 @@ fn apply_query_option(options: &mut TraceOptions, arg: &str) -> Result<(), Parse
             }
         }
         "save" => options.save_session = !negate,
+        "fresh" => options.fresh = !negate,
+        "follow" => options.follow_aliases = !negate,
         other => return Err(ParseError::UnknownOption(format!("+{other}"))),
     }
 
@@ -200,6 +268,14 @@ fn parse_tries(raw: &str) -> Result<u8, ParseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trace_options_help_documents_key_flags() {
+        assert!(TRACE_OPTIONS_HELP.contains("+follow"));
+        assert!(TRACE_OPTIONS_HELP.contains("+events"));
+        assert!(TRACE_OPTIONS_HELP.contains("+timeout=N"));
+        assert!(TRACE_OPTIONS_HELP.contains("-x"));
+    }
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_string()).collect()
@@ -247,6 +323,12 @@ mod tests {
     }
 
     #[test]
+    fn supports_dnssec_type_shorthand() {
+        let options = parse_trace_args(&args(&["example.com", "-TLSA"])).expect("parse");
+        assert_eq!(options.qtype, "TLSA");
+    }
+
+    #[test]
     fn supports_nocache_for_specific_qname() {
         let options =
             parse_trace_args(&args(&["example.com", "+nocache=ns.example.com"])).expect("parse");
@@ -265,5 +347,29 @@ mod tests {
 
         assert!(!options.use_tcp);
         assert!(!options.dnssec);
+    }
+
+    #[test]
+    fn supports_fresh_flag() {
+        let options = parse_trace_args(&args(&["example.com", "+fresh"])).expect("parse");
+        assert!(options.fresh);
+    }
+
+    #[test]
+    fn supports_reverse_lookup_flag() {
+        let options = parse_trace_args(&args(&["192.0.2.1", "-x"])).expect("parse");
+        assert!(options.reverse_lookup);
+        assert_eq!(options.qtype, "PTR");
+        assert_eq!(options.qname, "192.0.2.1");
+    }
+
+    #[test]
+    fn supports_alias_following_flag() {
+        let options =
+            parse_trace_args(&args(&["example.com", "+follow", "+nofollow"])).expect("parse");
+        assert!(!options.follow_aliases);
+
+        let options = parse_trace_args(&args(&["example.com", "+follow"])).expect("parse");
+        assert!(options.follow_aliases);
     }
 }

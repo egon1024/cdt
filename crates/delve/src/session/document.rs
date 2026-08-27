@@ -1,6 +1,8 @@
 use dns_resolve::TraceResult;
 use serde::{Deserialize, Serialize};
 
+use crate::trace_request::TraceRequest;
+
 pub const SESSION_FORMAT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -10,16 +12,19 @@ pub struct SessionDocument {
     pub created_at: String,
     #[serde(default)]
     pub pinned: bool,
+    #[serde(default)]
+    pub request: Option<TraceRequest>,
     pub result: TraceResult,
 }
 
 impl SessionDocument {
-    pub fn new(id: String, result: TraceResult) -> Self {
+    pub fn new(id: String, request: TraceRequest, result: TraceResult) -> Self {
         Self {
             version: SESSION_FORMAT_VERSION,
             id,
             created_at: result.started_at.clone(),
             pinned: false,
+            request: Some(request),
             result,
         }
     }

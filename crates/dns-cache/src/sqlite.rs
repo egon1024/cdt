@@ -227,11 +227,16 @@ mod tests {
                 rcode_text: "NOERROR".into(),
                 authoritative: true,
                 truncated: false,
+                recursion_desired: false,
+                recursion_available: false,
+                authentic_data: false,
+                checking_disabled: false,
                 answers: vec![],
                 authorities: vec![],
                 additionals: vec![],
                 edns: EdnsMeta::default(),
             },
+            from_cache: false,
         }
     }
 

@@ -13,14 +13,15 @@ cdt list               # bundled utilities (name, version, description)
 cdt list --json
 ```
 
-## Versioning
+## Version output
 
 The bundle version and per-utility versions live in `cdt-manifest.toml` at the
-repository root. Release automation keeps crate `Cargo.toml` versions in sync
-with the manifest.
+repository root.
 
-See the [repository README](../README.md#releases) for bump directives and
-release workflow.
+```bash
+make version
+cargo run -p cdt -- version
+```
 
 ## Related utilities
 

@@ -1,10 +1,19 @@
 use dns_resolve::TraceHop;
 
+use crate::explore::{cache_source_symbol, ui_symbols};
+
 /// Human-readable hop line(s) matching live trace stderr output.
 pub fn print_hop_human(hop: &TraceHop) {
     let mut line = format!(
-        "[{}] {} {} {} via {} in {}ms ({})",
-        hop.zone, hop.qname, hop.qtype, hop.server, hop.transport, hop.rtt_ms, hop.rcode
+        "[{}] {} {} {} via {} in {}ms ({}) {}",
+        hop.zone,
+        hop.qname,
+        hop.qtype,
+        hop.server,
+        hop.transport,
+        hop.rtt_ms,
+        hop.rcode,
+        cache_source_symbol(hop.from_cache, ui_symbols())
     );
 
     if let Some(nsid) = &hop.nsid {

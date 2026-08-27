@@ -4,12 +4,14 @@ use dns_cache::{ResponseCache, SqliteCache};
 use dns_resolve::TraceResult;
 
 use crate::config::DelveConfig;
+use crate::last_session::{clear_last_session, read_last_session, write_last_session};
 use crate::paths::DelvePaths;
 use crate::retention::retention_label;
 use crate::session::SessionStore;
 use crate::session::{
     OpenSessionStore, SessionDocument, SessionError, SessionSummary, open_session_store,
 };
+use crate::trace_request::TraceRequest;
 
 pub struct Runtime {
     pub paths: DelvePaths,
@@ -82,8 +84,46 @@ impl Runtime {
         }
     }
 
-    pub fn save_session(&self, result: &TraceResult) -> Result<String, SessionError> {
-        self.sessions.lock().expect("session lock").save(result)
+    pub fn save_session(
+        &self,
+        result: &TraceResult,
+        request: &TraceRequest,
+    ) -> Result<String, SessionError> {
+        self.sessions
+            .lock()
+            .expect("session lock")
+            .save(result, request)
+    }
+
+    pub fn find_matching_session(
+        &self,
+        request: &TraceRequest,
+    ) -> Result<Option<SessionDocument>, SessionError> {
+        for summary in self.list_sessions()? {
+            let document = self.get_session(&summary.id)?;
+            if document.request.as_ref() == Some(request) {
+                return Ok(Some(document));
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn remember_session(&self, id: &str) -> Result<(), SessionError> {
+        write_last_session(&self.paths, id)
+    }
+
+    pub fn last_session_id(&self) -> Result<String, SessionError> {
+        read_last_session(&self.paths)
+    }
+
+    pub fn forget_last_session(&self) -> Result<(), SessionError> {
+        clear_last_session(&self.paths)
+    }
+
+    pub fn touch_session(&self, id: &str) -> Result<SessionDocument, SessionError> {
+        let document = self.get_session(id)?;
+        self.remember_session(&document.id)?;
+        Ok(document)
     }
 
     pub fn get_session(&self, id: &str) -> Result<SessionDocument, SessionError> {
@@ -95,7 +135,15 @@ impl Runtime {
     }
 
     pub fn remove_session(&self, id: &str) -> Result<(), SessionError> {
-        self.sessions.lock().expect("session lock").remove(id)
+        let resolved = self.get_session(id)?;
+        self.sessions
+            .lock()
+            .expect("session lock")
+            .remove(&resolved.id)?;
+        if self.last_session_id().ok().as_deref() == Some(resolved.id.as_str()) {
+            let _ = self.forget_last_session();
+        }
+        Ok(())
     }
 
     pub fn pin_session(&self, id: &str) -> Result<(), SessionError> {
@@ -127,7 +175,15 @@ impl Runtime {
 mod degradation_tests {
     use super::*;
     use crate::session::SessionStore;
+    use crate::trace_request::TraceRequest;
     use dns_resolve::TraceResult;
+
+    fn sample_request() -> TraceRequest {
+        TraceRequest::from_options(&crate::dig_options::TraceOptions {
+            qname: "example.com".into(),
+            ..Default::default()
+        })
+    }
 
     #[test]
     fn falls_back_to_ndjson_when_sessions_db_unwritable() {
@@ -141,13 +197,16 @@ mod degradation_tests {
         assert!(report.fallback_warning.is_some());
         let mut store = report.store;
         let id = store
-            .save(&TraceResult {
-                qname: "example.com.".into(),
-                qtype: "A".into(),
-                started_at: "2026-08-25T00:00:00Z".into(),
-                hops: vec![],
-                final_response: None,
-            })
+            .save(
+                &TraceResult {
+                    qname: "example.com.".into(),
+                    qtype: "A".into(),
+                    started_at: "2026-08-25T00:00:00Z".into(),
+                    hops: vec![],
+                    final_response: None,
+                },
+                &sample_request(),
+            )
             .expect("save via ndjson");
         assert!(store.get(&id).is_ok());
     }
@@ -166,5 +225,53 @@ mod degradation_tests {
                 .iter()
                 .any(|w| w.contains("response cache"))
         );
+    }
+
+    #[test]
+    fn find_matching_session_returns_most_recent_match() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = DelvePaths::from_root(dir.path());
+        let runtime = Runtime::open(paths);
+        let request = sample_request();
+        let result = TraceResult {
+            qname: "example.com.".into(),
+            qtype: "A".into(),
+            started_at: "2026-08-25T00:00:00Z".into(),
+            hops: vec![],
+            final_response: None,
+        };
+        let first = runtime
+            .save_session(
+                &TraceResult {
+                    started_at: "2026-08-25T00:00:00Z".into(),
+                    ..result.clone()
+                },
+                &request,
+            )
+            .expect("first");
+        let second = runtime
+            .save_session(
+                &TraceResult {
+                    started_at: "2026-08-25T01:00:00Z".into(),
+                    ..result
+                },
+                &request,
+            )
+            .expect("second");
+        let matched = runtime
+            .find_matching_session(&request)
+            .expect("find")
+            .expect("some");
+        assert_eq!(matched.id, second);
+        assert_ne!(matched.id, first);
+    }
+
+    #[test]
+    fn remember_session_round_trip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = DelvePaths::from_root(dir.path());
+        let runtime = Runtime::open(paths);
+        runtime.remember_session("01JTEST").expect("remember");
+        assert_eq!(runtime.last_session_id().expect("last"), "01JTEST");
     }
 }
