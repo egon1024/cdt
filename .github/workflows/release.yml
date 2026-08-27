@@ -25,6 +25,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  actions: write
 
 concurrency:
   group: release-${{ github.ref_name }}
@@ -238,4 +239,14 @@ PY
             --notes-file "$notes_file"
           rm -f "$notes_file"
 
-          # Future: attach release binaries and dispatch packaging workflows here.
+      - name: Trigger release artifacts build
+        if: steps.exists.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEXT_VERSION: ${{ steps.release_version.outputs.next_bundle_version }}
+        run: |
+          set -euo pipefail
+          gh workflow run build-release-artifacts.yml \
+            --ref "cdt-v${NEXT_VERSION}" \
+            -f "version=${NEXT_VERSION}"
+          echo "Dispatched release artifacts build for cdt-v${NEXT_VERSION}."

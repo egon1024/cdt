@@ -1,0 +1,131 @@
+# Build and upload GitHub release assets for an existing cdt-v* tag.
+# Invoked from release.yml (workflow_call) or manually (workflow_dispatch).
+
+name: Build release artifacts
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Bundle semver to build (e.g. 0.1.0)
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >-
+          Bundle semver to build (e.g. 0.1.0). Must match an existing cdt-v* tag
+          and GitHub release.
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: release-artifacts-${{ inputs.version }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_VERSION: ${{ inputs.version }}
+  RELEASE_TAG: cdt-v${{ inputs.version }}
+
+jobs:
+  build:
+    name: Build and upload (${{ inputs.version }})
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Validate version
+        run: |
+          set -euo pipefail
+          if [[ ! "${RELEASE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must be MAJOR.MINOR.PATCH (got: ${RELEASE_VERSION})"
+            exit 1
+          fi
+
+      - name: Checkout tag
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+
+      - name: Verify tag exists
+        run: |
+          set -euo pipefail
+          git rev-parse "refs/tags/${RELEASE_TAG}^{commit}" >/dev/null
+
+      - name: Fail if release assets already exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "::error::GitHub release ${RELEASE_TAG} does not exist yet"
+            exit 1
+          fi
+          expected=(
+            "cdt-${RELEASE_VERSION}-amd64.tar.gz"
+            "cdt-${RELEASE_VERSION}-amd64-debug.tar.gz"
+            "cdt_${RELEASE_VERSION}_amd64.deb"
+            "cdt-dbg_${RELEASE_VERSION}_amd64.deb"
+            "SHA256SUMS"
+          )
+          existing="$(gh release view "${RELEASE_TAG}" --json assets --jq '.assets[].name' || true)"
+          for name in "${expected[@]}"; do
+            if echo "${existing}" | grep -qx "${name}"; then
+              echo "::error::Release asset already exists: ${name}. Delete it before rebuilding."
+              exit 1
+            fi
+          done
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install nfpm
+        run: |
+          set -euo pipefail
+          NFPM_VERSION=2.41.2
+          curl -sL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_amd64.deb" -o /tmp/nfpm.deb
+          sudo dpkg -i /tmp/nfpm.deb
+
+      - name: Build release artifacts
+        env:
+          VERSION: ${{ env.RELEASE_VERSION }}
+        run: bash .github/scripts/build-release-artifacts.sh
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "${RELEASE_TAG}" release-artifacts/*
+
+  smoke-test-deb:
+    name: Install .deb on Ubuntu 24.04
+    needs: build
+    runs-on: ubuntu-24.04
+    env:
+      RELEASE_TAG: cdt-v${{ inputs.version }}
+    steps:
+      - name: Checkout (for gh)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Download production .deb from release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release download "${RELEASE_TAG}" \
+            -p "cdt_${{ inputs.version }}_amd64.deb" \
+            -D /tmp/deb-test
+
+      - name: Install and verify
+        run: |
+          set -euo pipefail
+          sudo dpkg -i "/tmp/deb-test/cdt_${{ inputs.version }}_amd64.deb" || sudo apt-get -f install -y
+          test -x /usr/bin/cdt
+          test -x /usr/bin/delve
+          cdt version
+          delve --help >/dev/null
+          dpkg -s cdt | grep -q '^Status: install ok installed'

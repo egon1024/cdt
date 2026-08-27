@@ -11,8 +11,9 @@
 
 CARGO ?= cargo
 CLIPPY_FLAGS := --workspace --all-targets -- -D warnings
+VERSION ?= $(shell python3 -c 'import tomllib, pathlib; print(tomllib.loads(pathlib.Path("cdt-manifest.toml").read_text())["bundle"]["version"])')
 
-.PHONY: help test fmt fmt-check clippy unit build check version
+.PHONY: help test fmt fmt-check clippy unit build check version release-artifacts
 
 help:
 	@echo "cdt Makefile targets:"
@@ -24,6 +25,7 @@ help:
 	@echo "  make build      Build all workspace crates"
 	@echo "  make check      Run cargo check --workspace --all-targets"
 	@echo "  make version    Show CDT bundle manifest"
+	@echo "  make release-artifacts  Build local .deb/tarballs (VERSION=0.1.0)"
 
 test: fmt-check clippy unit
 
@@ -48,3 +50,6 @@ check:
 version:
 	@python3 .github/scripts/cdt-versions.py show
 	@$(CARGO) run -q -p cdt -- version
+
+release-artifacts:
+	@bash .github/scripts/build-release-artifacts.sh

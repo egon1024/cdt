@@ -28,4 +28,4 @@ jobs:
       - name: Test
         run: make test
 
-      # Future: docs build/validation and release artifact packaging.
+      # Release artifact packaging runs in build-release-artifacts.yml on release.
