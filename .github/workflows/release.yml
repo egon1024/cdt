@@ -46,6 +46,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install tomli
+
       - name: Resolve merged pull request body
         if: github.event_name != 'workflow_dispatch'
         id: pr
@@ -94,12 +102,7 @@ jobs:
           set -euo pipefail
           if [[ -n "${{ steps.manual_version.outputs.next_bundle_version }}" ]]; then
             echo "next_bundle_version=${{ steps.manual_version.outputs.next_bundle_version }}" >>"$GITHUB_OUTPUT"
-            components="$(python3 - <<'PY'
-import json, tomllib, pathlib
-manifest = tomllib.loads(pathlib.Path("cdt-manifest.toml").read_bytes())
-print(json.dumps({c["name"]: c["version"] for c in manifest["components"]}, separators=(",", ":")))
-PY
-)"
+            components="$(python3 .github/scripts/cdt-versions.py component-versions-json)"
             echo "component_versions=${components}" >>"$GITHUB_OUTPUT"
           else
             echo "next_bundle_version=${{ steps.version.outputs.next_bundle_version }}" >>"$GITHUB_OUTPUT"
@@ -221,17 +224,9 @@ PY
           fi
 
           notes_file="$(mktemp)"
-          {
-            echo "## CDT bundle ${NEXT_VERSION}"
-            echo
-            echo "### Utilities"
-            python3 - <<'PY' "${COMPONENT_VERSIONS}"
-import json, sys
-versions = json.loads(sys.argv[1] or "{}")
-for name in sorted(versions):
-    print(f"- **{name}**: `{versions[name]}`")
-PY
-          } >"$notes_file"
+          python3 .github/scripts/cdt-versions.py release-notes \
+            --version "${NEXT_VERSION}" \
+            --component-versions "${COMPONENT_VERSIONS}" >"$notes_file"
 
           gh release create "$tag" \
             --target "${RELEASE_BRANCH}" \
