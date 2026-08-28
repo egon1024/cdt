@@ -103,29 +103,7 @@ fn trace_leg(
     qname: DomainName,
     defer_terminal_expansion: bool,
 ) -> Result<TraceNode> {
-    let root_zone = DomainName::parse(".").expect("root zone");
-    match config.expansion_policy {
-        ExpansionPolicy::None => crate::job_queue::run_none_policy(config, budget, progress, qname),
-        ExpansionPolicy::Last => trace_last_policy(
-            config,
-            budget,
-            progress,
-            qname,
-            root_zone,
-            defer_terminal_expansion,
-        ),
-        ExpansionPolicy::All => trace_all_policy(
-            config,
-            budget,
-            progress,
-            &NodePath::root(0),
-            start_servers(config),
-            qname,
-            root_zone,
-            &mut HashSet::new(),
-            false,
-        ),
-    }
+    crate::job_queue::run_policy(config, budget, progress, qname, defer_terminal_expansion)
 }
 
 fn attach_alias_leg(root: &mut TraceNode, leg: TraceNode) {
@@ -290,61 +268,6 @@ fn query_result_from_hop(hop: &TraceHop, server: IpAddr) -> Result<dns_core::Que
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn finish_terminal_answer(
-    config: &TraceConfig,
-    budget: &mut QueryBudget,
-    progress: &mut dyn TraceProgress,
-    chain: &mut Vec<TraceNode>,
-    path_prefix: &[usize],
-    parent_delegation: Option<&DnsResponse>,
-    parent_delegation_zone: &DomainName,
-    servers: &[ServerTarget],
-    current_zone: &DomainName,
-    current_qname: &DomainName,
-    defer_terminal_expansion: bool,
-    primary_server: ServerTarget,
-    query_result: dns_core::QueryResult,
-    hop: TraceHop,
-) -> Result<TraceNode> {
-    if defer_terminal_expansion {
-        let path = node_path(0, path_prefix);
-        progress.hop(&hop, &path);
-        chain.push(TraceNode {
-            hop,
-            origin: NodeOrigin::Trace,
-            children: Vec::new(),
-        });
-        return Ok(link_chain(std::mem::take(chain)));
-    }
-
-    let expansion_servers = expansion_targets_for_cut(
-        parent_delegation,
-        parent_delegation_zone,
-        servers,
-        config,
-        budget,
-        progress,
-    )?;
-    expand_cut(
-        config,
-        budget,
-        progress,
-        chain,
-        path_prefix,
-        &expansion_servers,
-        current_zone,
-        current_qname,
-        true,
-        Some(PrimaryAttempt {
-            server: primary_server,
-            query_result,
-            hop,
-        }),
-    )?;
-    Ok(link_chain(std::mem::take(chain)))
-}
-
 fn alias_target_from_tree(root: &TraceNode, qtype: RecordType) -> Option<String> {
     let leaf = primary_leaf(root);
     let qname = DomainName::parse(&leaf.hop.qname).ok()?;
@@ -381,181 +304,6 @@ fn primary_leaf(node: &TraceNode) -> &TraceNode {
         current = child;
     }
     current
-}
-
-fn trace_last_policy(
-    config: &TraceConfig,
-    budget: &mut QueryBudget,
-    progress: &mut dyn TraceProgress,
-    qname: DomainName,
-    root_zone: DomainName,
-    defer_terminal_expansion: bool,
-) -> Result<TraceNode> {
-    let mut visited_zones = HashSet::new();
-    let mut chain: Vec<TraceNode> = Vec::new();
-    let mut path_prefix: Vec<usize> = Vec::new();
-    let mut servers = start_servers(config);
-    let mut current_zone = root_zone.clone();
-    let current_qname = qname;
-    let mut parent_delegation: Option<DnsResponse> = None;
-    let mut parent_delegation_zone = root_zone;
-
-    for depth in 0..config.max_depth {
-        let (query_result, server_name) =
-            query_one(&servers, config, budget, &current_qname, config.qtype)?;
-        let referral_ns = query_result.response.ns_names();
-        let glue = collect_glue(&query_result.response, &referral_ns);
-
-        if config.follow_aliases
-            && query_result
-                .response
-                .alias_target(&current_qname, config.qtype)
-                .is_some()
-        {
-            // Outer restart loop handles alias following after the tree is built.
-        }
-
-        if is_authoritative_answer(&query_result.response, &current_qname, config.qtype) {
-            let primary_server = servers
-                .iter()
-                .find(|server| server.address == query_result.server)
-                .cloned()
-                .unwrap_or_else(|| {
-                    ServerTarget::with_name(
-                        query_result.server,
-                        server_name.clone().unwrap_or_default(),
-                    )
-                });
-            let hop = hop_from_query(
-                &current_zone,
-                &query_result,
-                server_name.clone(),
-                referral_ns.iter().map(ToString::to_string).collect(),
-                glue.iter().map(ToString::to_string).collect(),
-                HopOutcome::Answered,
-            );
-            return finish_terminal_answer(
-                config,
-                budget,
-                progress,
-                &mut chain,
-                &path_prefix,
-                parent_delegation.as_ref(),
-                &parent_delegation_zone,
-                &servers,
-                &current_zone,
-                &current_qname,
-                defer_terminal_expansion,
-                primary_server,
-                query_result,
-                hop,
-            );
-        }
-
-        let Some(next_zone) = query_result.response.referral_zone(&current_qname) else {
-            let primary_server = servers
-                .iter()
-                .find(|server| server.address == query_result.server)
-                .cloned()
-                .unwrap_or_else(|| {
-                    ServerTarget::with_name(
-                        query_result.server,
-                        server_name.clone().unwrap_or_default(),
-                    )
-                });
-            let hop = hop_from_query(
-                &current_zone,
-                &query_result,
-                server_name,
-                referral_ns.iter().map(ToString::to_string).collect(),
-                glue.iter().map(ToString::to_string).collect(),
-                HopOutcome::Answered,
-            );
-            return finish_terminal_answer(
-                config,
-                budget,
-                progress,
-                &mut chain,
-                &path_prefix,
-                parent_delegation.as_ref(),
-                &parent_delegation_zone,
-                &servers,
-                &current_zone,
-                &current_qname,
-                defer_terminal_expansion,
-                primary_server,
-                query_result,
-                hop,
-            );
-        };
-
-        let hop = hop_from_query(
-            &current_zone,
-            &query_result,
-            server_name.clone(),
-            referral_ns.iter().map(ToString::to_string).collect(),
-            glue.iter().map(ToString::to_string).collect(),
-            HopOutcome::Referral,
-        );
-        let path = node_path(0, &path_prefix);
-        progress.hop(&hop, &path);
-        chain.push(TraceNode {
-            hop,
-            origin: NodeOrigin::Trace,
-            children: Vec::new(),
-        });
-
-        if !visited_zones.insert(next_zone.to_string()) {
-            return Err(ResolveError::DelegationLoop {
-                zone: next_zone.to_string(),
-            });
-        }
-
-        let ns_names = query_result.response.ns_names();
-        if ns_names.is_empty() {
-            return Err(ResolveError::NoReachableNameserver {
-                zone: next_zone.to_string(),
-            });
-        }
-
-        progress.message(&format!(
-            "following delegation to zone {} via {:?}",
-            next_zone,
-            ns_names
-                .iter()
-                .map(|name| name.to_string())
-                .collect::<Vec<_>>()
-        ));
-
-        parent_delegation = Some(query_result.response.clone());
-        parent_delegation_zone = current_zone.clone();
-
-        servers = resolve_nameservers_from_referral(
-            &query_result.response,
-            &servers,
-            config,
-            budget,
-            &current_zone,
-            progress,
-        )?;
-
-        if servers.is_empty() {
-            return Err(ResolveError::NoReachableNameserver {
-                zone: next_zone.to_string(),
-            });
-        }
-
-        current_zone = next_zone;
-        path_prefix.push(0);
-
-        if depth + 1 == config.max_depth - 1 {
-            progress.message("approaching maximum delegation depth");
-        }
-    }
-
-    Err(ResolveError::MaxDepth {
-        max: config.max_depth,
-    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -832,7 +580,7 @@ fn expand_cut(
         let sibling_path = node_path(0, &sibling_path);
 
         if let Some(primary_attempt) = primary.as_ref() {
-            if server_matches_primary(server, primary_attempt) {
+            if server_matches_primary_attempt(server, primary_attempt) {
                 progress.hop(&primary_attempt.hop, &sibling_path);
                 siblings.push(TraceNode {
                     hop: primary_attempt.hop.clone(),
@@ -1040,7 +788,7 @@ pub(crate) fn query_all(
 
 fn progress_budget_if_needed(_config: &TraceConfig, _budget: &mut QueryBudget) {}
 
-fn failed_hop(
+pub(crate) fn failed_hop(
     config: &TraceConfig,
     zone: &DomainName,
     qname: &DomainName,
@@ -1125,7 +873,7 @@ fn filter_targets(targets: &[ServerTarget], ipv4_only: bool, ipv6_only: bool) ->
     .collect()
 }
 
-fn expansion_targets_for_cut(
+pub(crate) fn expansion_targets_for_cut(
     parent_delegation: Option<&DnsResponse>,
     parent_zone: &DomainName,
     fallback_servers: &[ServerTarget],
@@ -1194,7 +942,7 @@ fn resolve_all_nameserver_targets_from_referral(
     })
 }
 
-fn announce_multi_server_query(
+pub(crate) fn announce_multi_server_query(
     progress: &mut dyn TraceProgress,
     zone: &DomainName,
     server_count: usize,
@@ -1206,14 +954,22 @@ fn announce_multi_server_query(
     }
 }
 
-fn server_matches_primary(server: &ServerTarget, primary: &PrimaryAttempt) -> bool {
-    if server.address == primary.server.address || server.address == primary.query_result.server {
+pub(crate) fn server_matches_primary(
+    server: &ServerTarget,
+    primary_server: &ServerTarget,
+    primary_result_server: IpAddr,
+) -> bool {
+    if server.address == primary_server.address || server.address == primary_result_server {
         return true;
     }
-    match (&server.name, &primary.server.name) {
+    match (&server.name, &primary_server.name) {
         (Some(server_name), Some(primary_name)) => server_name.eq_ignore_ascii_case(primary_name),
         _ => false,
     }
+}
+
+fn server_matches_primary_attempt(server: &ServerTarget, primary: &PrimaryAttempt) -> bool {
+    server_matches_primary(server, &primary.server, primary.query_result.server)
 }
 
 pub(crate) fn resolve_nameservers_from_referral(
