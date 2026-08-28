@@ -13,6 +13,7 @@ use crate::{
     filter_addresses, hop_from_query, now_rfc3339, query_server,
 };
 
+#[allow(dead_code)]
 pub(crate) struct QueryAttempt {
     pub server: ServerTarget,
     pub result: Result<dns_core::QueryResult>,
@@ -449,28 +450,26 @@ fn trace_all_policy(
         );
     }
 
-    let attempts = query_all(&servers, config, budget, &qname, config.qtype);
-    if attempts.is_empty() && budget.truncated {
-        progress.budget_truncated(budget.cap());
-        return Err(ResolveError::NoReachableNameserver {
-            zone: current_zone.to_string(),
-        });
-    }
+    announce_multi_server_query(progress, &current_zone, servers.len());
 
     let mut siblings = Vec::new();
-    for (index, attempt) in attempts.into_iter().enumerate() {
+    for (index, server) in servers.iter().enumerate() {
+        if !budget.try_consume() {
+            break;
+        }
+
         let mut child_path = path.path.clone();
         child_path.push(index);
         let child_path = node_path(path.tree, &child_path);
 
-        match attempt.result {
+        match query_server(server.address, config, &qname, config.qtype) {
             Ok(query_result) => {
                 let referral_ns = query_result.response.ns_names();
                 let glue = collect_glue(&query_result.response, &referral_ns);
                 let hop = hop_from_query(
                     &current_zone,
                     &query_result,
-                    attempt.server.name.clone(),
+                    server.name.clone(),
                     referral_ns.iter().map(ToString::to_string).collect(),
                     glue.iter().map(ToString::to_string).collect(),
                     HopOutcome::Referral,
@@ -543,14 +542,7 @@ fn trace_all_policy(
                 siblings.push(node);
             }
             Err(error) => {
-                let hop = failed_hop(
-                    config,
-                    &current_zone,
-                    &qname,
-                    config.qtype,
-                    &attempt.server,
-                    &error,
-                );
+                let hop = failed_hop(config, &current_zone, &qname, config.qtype, server, &error);
                 progress.hop(&hop, &child_path);
                 siblings.push(TraceNode {
                     hop,
@@ -561,7 +553,7 @@ fn trace_all_policy(
         }
     }
 
-    if budget.truncated {
+    if siblings.is_empty() && budget.truncated {
         progress.budget_truncated(budget.cap());
     }
 
@@ -589,18 +581,12 @@ fn expand_cut(
     force_single_subtrees: bool,
     primary: Option<PrimaryAttempt>,
 ) -> Result<()> {
-    let attempts = query_expansion_servers(
-        expansion_servers,
-        config,
-        budget,
-        qname,
-        config.qtype,
-        primary.as_ref(),
-    );
+    announce_multi_server_query(progress, current_zone, expansion_servers.len());
+
     let mut siblings = Vec::new();
     let mut seen_referrals: HashMap<String, ()> = HashMap::new();
 
-    for (index, attempt) in attempts.into_iter().enumerate() {
+    for (index, server) in expansion_servers.iter().enumerate() {
         let mut sibling_path = path_prefix.to_vec();
         if chain.len() <= 1 {
             sibling_path.push(index);
@@ -610,26 +596,30 @@ fn expand_cut(
         }
         let sibling_path = node_path(0, &sibling_path);
 
-        match attempt.result {
-            Ok(query_result) => {
-                if let Some(primary_attempt) = primary.as_ref() {
-                    if server_matches_primary(&attempt.server, primary_attempt) {
-                        progress.hop(&primary_attempt.hop, &sibling_path);
-                        siblings.push(TraceNode {
-                            hop: primary_attempt.hop.clone(),
-                            origin: NodeOrigin::Trace,
-                            children: Vec::new(),
-                        });
-                        continue;
-                    }
-                }
+        if let Some(primary_attempt) = primary.as_ref() {
+            if server_matches_primary(server, primary_attempt) {
+                progress.hop(&primary_attempt.hop, &sibling_path);
+                siblings.push(TraceNode {
+                    hop: primary_attempt.hop.clone(),
+                    origin: NodeOrigin::Trace,
+                    children: Vec::new(),
+                });
+                continue;
+            }
+        }
 
+        if !budget.try_consume() {
+            break;
+        }
+
+        match query_server(server.address, config, qname, config.qtype) {
+            Ok(query_result) => {
                 let referral_ns = query_result.response.ns_names();
                 let glue = collect_glue(&query_result.response, &referral_ns);
                 let hop = hop_from_query(
                     current_zone,
                     &query_result,
-                    attempt.server.name.clone(),
+                    server.name.clone(),
                     referral_ns.iter().map(ToString::to_string).collect(),
                     glue.iter().map(ToString::to_string).collect(),
                     if is_authoritative_answer(&query_result.response, qname, config.qtype) {
@@ -700,14 +690,7 @@ fn expand_cut(
                 siblings.push(node);
             }
             Err(error) => {
-                let hop = failed_hop(
-                    config,
-                    current_zone,
-                    qname,
-                    config.qtype,
-                    &attempt.server,
-                    &error,
-                );
+                let hop = failed_hop(config, current_zone, qname, config.qtype, server, &error);
                 progress.hop(&hop, &sibling_path);
                 siblings.push(TraceNode {
                     hop,
@@ -798,6 +781,7 @@ pub(crate) fn query_one(
     )
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn query_all(
     servers: &[ServerTarget],
     config: &TraceConfig,
@@ -975,35 +959,16 @@ fn resolve_all_nameserver_targets_from_referral(
     })
 }
 
-fn query_expansion_servers(
-    servers: &[ServerTarget],
-    config: &TraceConfig,
-    budget: &mut QueryBudget,
-    qname: &DomainName,
-    qtype: RecordType,
-    primary: Option<&PrimaryAttempt>,
-) -> Vec<QueryAttempt> {
-    let mut attempts = Vec::new();
-    for server in servers {
-        if let Some(primary_attempt) = primary {
-            if server_matches_primary(server, primary_attempt) {
-                attempts.push(QueryAttempt {
-                    server: server.clone(),
-                    result: Ok(primary_attempt.query_result.clone()),
-                });
-                continue;
-            }
-        }
-        if !budget.try_consume() {
-            break;
-        }
-        let result = query_server(server.address, config, qname, qtype);
-        attempts.push(QueryAttempt {
-            server: server.clone(),
-            result,
-        });
+fn announce_multi_server_query(
+    progress: &mut dyn TraceProgress,
+    zone: &DomainName,
+    server_count: usize,
+) {
+    if server_count > 1 {
+        progress.message(&format!(
+            "querying {server_count} nameserver(s) at zone {zone}"
+        ));
     }
-    attempts
 }
 
 fn server_matches_primary(server: &ServerTarget, primary: &PrimaryAttempt) -> bool {

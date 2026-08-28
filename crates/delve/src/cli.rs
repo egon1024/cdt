@@ -1,3 +1,4 @@
+use std::io::{self, Write};
 use std::net::IpAddr;
 
 use clap::{Parser, Subcommand};
@@ -206,7 +207,10 @@ fn run_parsed_trace(options: TraceOptions, runtime: &Runtime) -> Result<(), CliE
         let budget = runtime.config.trace_max_queries_per_action;
         let mut read_tty = read_tty_line;
         match confirm_expand_all(server_count, budget, &mut read_tty, expand_all_is_tty()) {
-            ExpandConfirmOutcome::Confirmed => {}
+            ExpandConfirmOutcome::Confirmed => {
+                eprintln!("starting full expansion trace...");
+                let _ = io::stderr().flush();
+            }
             ExpandConfirmOutcome::Declined => return Ok(()),
             ExpandConfirmOutcome::NoTerminal => return Err(CliError::ExpandAllNeedsForce),
         }
