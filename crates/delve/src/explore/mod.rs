@@ -11,14 +11,18 @@ mod tui;
 pub use json::render_tree_json;
 pub use outline::render_outline;
 pub(crate) use terminal::{cache_source_symbol, ui_symbols};
-pub use tree::build_explore_tree;
+pub use tree::{build_explore_tree, build_explore_tree_with_qname};
 pub use tui::run_tui;
 
 use crate::session::SessionDocument;
 use std::io::{self, IsTerminal, Write};
 
 pub fn run_outline(document: &SessionDocument) -> Result<(), ExploreError> {
-    let tree = build_explore_tree(&document.result);
+    let tree = if let Some(request) = document.request.as_ref() {
+        build_explore_tree_with_qname(&document.result, Some(&request.qname))
+    } else {
+        build_explore_tree(&document.result)
+    };
     let mut output = format!("session: {}\n", document.id);
     output.push_str(&render_outline(&tree, ui_symbols()));
     let mut stdout = io::stdout().lock();
@@ -30,7 +34,11 @@ pub fn run_outline(document: &SessionDocument) -> Result<(), ExploreError> {
 }
 
 pub fn run_events(document: &SessionDocument) -> Result<(), ExploreError> {
-    let tree = build_explore_tree(&document.result);
+    let tree = if let Some(request) = document.request.as_ref() {
+        build_explore_tree_with_qname(&document.result, Some(&request.qname))
+    } else {
+        build_explore_tree(&document.result)
+    };
     println!("{}", render_tree_json(&tree, &document.id));
     Ok(())
 }
@@ -40,7 +48,11 @@ pub fn run_explore(document: &SessionDocument) -> Result<(), ExploreError> {
         return Err(ExploreError::NotTerminal);
     }
 
-    let tree = build_explore_tree(&document.result);
+    let tree = if let Some(request) = document.request.as_ref() {
+        build_explore_tree_with_qname(&document.result, Some(&request.qname))
+    } else {
+        build_explore_tree(&document.result)
+    };
     run_tui(&tree, &document.id).map_err(ExploreError::Io)
 }
 

@@ -25,72 +25,333 @@ struct PrimaryAttempt {
     hop: TraceHop,
 }
 
+/// Progress sink for nested NS-resolution sub-traces (not part of the session tree).
+struct SilentProgress;
+
+impl TraceProgress for SilentProgress {
+    fn hop(&mut self, _hop: &TraceHop, _path: &NodePath) {}
+    fn message(&mut self, _message: &str) {}
+}
+
 pub fn run(config: &TraceConfig, progress: &mut dyn TraceProgress) -> Result<TraceTree> {
-    let mut qname = config.qname.clone();
-    let mut alias_visited = HashSet::new();
+    let original_qname = config.qname.clone();
     let started_at = now_rfc3339();
+    let mut budget = QueryBudget::new(config.max_queries_per_action);
+    let mut alias_visited = HashSet::new();
 
     if start_servers(config).is_empty() {
         return Err(ResolveError::NoReachableNameserver { zone: ".".into() });
     }
 
-    'restart: loop {
-        let mut budget = QueryBudget::new(config.max_queries_per_action);
-        let root_zone = DomainName::parse(".").expect("root zone");
+    let defer_terminal_expansion =
+        config.follow_aliases && config.expansion_policy == ExpansionPolicy::Last;
 
-        let root = match config.expansion_policy {
-            ExpansionPolicy::None => trace_linear(
+    let mut root = trace_leg(
+        config,
+        &mut budget,
+        progress,
+        config.qname.clone(),
+        defer_terminal_expansion,
+    )?;
+
+    if config.follow_aliases {
+        loop {
+            let Some(alias) = alias_target_from_tree(&root, config.qtype) else {
+                if defer_terminal_expansion {
+                    expand_last_on_combined_tree(config, &mut budget, progress, &mut root)?;
+                }
+                break;
+            };
+
+            if alias_visited.len() >= config.max_alias_depth {
+                return Err(ResolveError::MaxAliasDepth {
+                    max: config.max_alias_depth,
+                });
+            }
+            if !alias_visited.insert(alias.clone()) {
+                return Err(ResolveError::AliasLoop { name: alias });
+            }
+
+            progress.message(&format!("following alias to {alias}"));
+            let alias_qname = DomainName::parse(&alias).map_err(ResolveError::Core)?;
+            let alias_leg = trace_leg(
                 config,
                 &mut budget,
                 progress,
-                &NodePath::root(0),
-                start_servers(config),
-                qname.clone(),
-                root_zone,
-                &mut HashSet::new(),
-            )?,
-            ExpansionPolicy::Last => {
-                trace_last_policy(config, &mut budget, progress, qname.clone(), root_zone)?
-            }
-            ExpansionPolicy::All => trace_all_policy(
-                config,
-                &mut budget,
-                progress,
-                &NodePath::root(0),
-                start_servers(config),
-                qname.clone(),
-                root_zone,
-                &mut HashSet::new(),
-                false,
-            )?,
-        };
-
-        if config.follow_aliases {
-            if let Some(alias) = alias_target_from_tree(&root, config.qtype) {
-                if alias_visited.len() >= config.max_alias_depth {
-                    return Err(ResolveError::MaxAliasDepth {
-                        max: config.max_alias_depth,
-                    });
-                }
-                if !alias_visited.insert(alias.clone()) {
-                    return Err(ResolveError::AliasLoop { name: alias });
-                }
-                progress.message(&format!("following alias to {alias}"));
-                qname = DomainName::parse(&alias).map_err(ResolveError::Core)?;
-                continue 'restart;
-            }
+                alias_qname,
+                defer_terminal_expansion,
+            )?;
+            attach_alias_leg(&mut root, alias_leg);
         }
-
-        return Ok(TraceTree {
-            request: TraceTreeRequest {
-                qname: qname.to_string(),
-                qtype: record_type_name(config.qtype),
-                started_at: started_at.clone(),
-            },
-            root,
-            budget_truncated: budget.truncated,
-        });
     }
+
+    Ok(TraceTree {
+        request: TraceTreeRequest {
+            qname: original_qname.to_string(),
+            qtype: record_type_name(config.qtype),
+            started_at,
+        },
+        root,
+        budget_truncated: budget.truncated,
+    })
+}
+
+fn trace_leg(
+    config: &TraceConfig,
+    budget: &mut QueryBudget,
+    progress: &mut dyn TraceProgress,
+    qname: DomainName,
+    defer_terminal_expansion: bool,
+) -> Result<TraceNode> {
+    let root_zone = DomainName::parse(".").expect("root zone");
+    match config.expansion_policy {
+        ExpansionPolicy::None => trace_linear(
+            config,
+            budget,
+            progress,
+            &NodePath::root(0),
+            start_servers(config),
+            qname,
+            root_zone,
+            &mut HashSet::new(),
+        ),
+        ExpansionPolicy::Last => trace_last_policy(
+            config,
+            budget,
+            progress,
+            qname,
+            root_zone,
+            defer_terminal_expansion,
+        ),
+        ExpansionPolicy::All => trace_all_policy(
+            config,
+            budget,
+            progress,
+            &NodePath::root(0),
+            start_servers(config),
+            qname,
+            root_zone,
+            &mut HashSet::new(),
+            false,
+        ),
+    }
+}
+
+fn attach_alias_leg(root: &mut TraceNode, leg: TraceNode) {
+    primary_leaf_mut(root).children.push(leg);
+}
+
+fn primary_leaf_mut(node: &mut TraceNode) -> &mut TraceNode {
+    let mut current = node;
+    loop {
+        if current.children.is_empty() {
+            return current;
+        }
+        current = &mut current.children[0];
+    }
+}
+
+fn is_root_zone(zone: &str) -> bool {
+    zone.trim_end_matches('.').is_empty()
+}
+
+fn find_final_leg_indices(root: &TraceNode) -> Vec<usize> {
+    let mut path = Vec::new();
+    let mut current = root;
+    while let Some(first) = current.children.first() {
+        if is_root_zone(&first.hop.zone) {
+            path.push(0);
+            return path;
+        }
+        path.push(0);
+        current = first;
+    }
+    Vec::new()
+}
+
+fn resolve_mut<'a>(root: &'a mut TraceNode, path: &[usize]) -> &'a mut TraceNode {
+    let mut node = root;
+    for &index in path {
+        node = &mut node.children[index];
+    }
+    node
+}
+
+fn clone_primary_chain(node: &TraceNode) -> Vec<TraceNode> {
+    let mut chain = vec![TraceNode {
+        hop: node.hop.clone(),
+        origin: node.origin.clone(),
+        children: Vec::new(),
+    }];
+    let mut current = node;
+    while let Some(first) = current.children.first() {
+        if is_root_zone(&first.hop.zone) {
+            break;
+        }
+        chain.push(TraceNode {
+            hop: first.hop.clone(),
+            origin: first.origin.clone(),
+            children: Vec::new(),
+        });
+        current = first;
+    }
+    chain
+}
+
+fn expand_last_on_combined_tree(
+    config: &TraceConfig,
+    budget: &mut QueryBudget,
+    progress: &mut dyn TraceProgress,
+    root: &mut TraceNode,
+) -> Result<()> {
+    let leg_indices = find_final_leg_indices(root);
+    let leg_root = resolve_mut(root, &leg_indices);
+    let chain = clone_primary_chain(leg_root);
+    if chain.len() < 2 {
+        return Ok(());
+    }
+
+    let leaf = chain.last().expect("chain length checked").hop.clone();
+    if leaf.outcome != HopOutcome::Answered {
+        return Ok(());
+    }
+
+    let parent = chain[chain.len() - 2].hop.clone();
+    let parent_zone = DomainName::parse(&parent.zone).map_err(ResolveError::Core)?;
+    let current_zone = DomainName::parse(&leaf.zone).map_err(ResolveError::Core)?;
+    let qname = DomainName::parse(&leaf.qname).map_err(ResolveError::Core)?;
+    let parent_response =
+        dns_response_from_stored(&parent).ok_or_else(|| ResolveError::NoReachableNameserver {
+            zone: parent.zone.clone(),
+        })?;
+
+    let path_prefix: Vec<usize> = std::iter::repeat_n(0, chain.len().saturating_sub(1)).collect();
+    let chain_len = chain.len();
+    let mut chain: Vec<TraceNode> = chain
+        .into_iter()
+        .take(chain_len.saturating_sub(1))
+        .collect();
+
+    let server = server_target_from_hop(&leaf)?;
+    let query_result = query_result_from_hop(&leaf, server.address)?;
+    let expansion_servers = expansion_targets_for_cut(
+        Some(&parent_response),
+        &parent_zone,
+        &[],
+        config,
+        budget,
+        progress,
+    )?;
+
+    expand_cut(
+        config,
+        budget,
+        progress,
+        &mut chain,
+        &path_prefix,
+        &expansion_servers,
+        &current_zone,
+        &qname,
+        true,
+        Some(PrimaryAttempt {
+            server,
+            query_result,
+            hop: leaf,
+        }),
+    )?;
+
+    *leg_root = link_chain(chain);
+    Ok(())
+}
+
+fn server_target_from_hop(hop: &TraceHop) -> Result<ServerTarget> {
+    let address: IpAddr = hop
+        .server
+        .parse()
+        .map_err(|_| ResolveError::NameserverResolution {
+            name: hop.server.clone(),
+            reason: "invalid server address in hop".into(),
+        })?;
+    Ok(ServerTarget::with_name(
+        address,
+        hop.server_name.clone().unwrap_or_default(),
+    ))
+}
+
+fn query_result_from_hop(hop: &TraceHop, server: IpAddr) -> Result<dns_core::QueryResult> {
+    let response =
+        dns_response_from_stored(hop).ok_or_else(|| ResolveError::NameserverResolution {
+            name: hop.qname.clone(),
+            reason: "missing stored response on hop".into(),
+        })?;
+    let transport = match hop.transport.to_ascii_lowercase().as_str() {
+        "tcp" => dns_core::Transport::Tcp,
+        _ => dns_core::Transport::Udp,
+    };
+    Ok(dns_core::QueryResult {
+        server,
+        transport,
+        qname: DomainName::parse(&hop.qname).map_err(ResolveError::Core)?,
+        qtype: hop.qtype.clone(),
+        rtt: std::time::Duration::from_millis(hop.rtt_ms),
+        response,
+        from_cache: hop.from_cache,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_terminal_answer(
+    config: &TraceConfig,
+    budget: &mut QueryBudget,
+    progress: &mut dyn TraceProgress,
+    chain: &mut Vec<TraceNode>,
+    path_prefix: &[usize],
+    parent_delegation: Option<&DnsResponse>,
+    parent_delegation_zone: &DomainName,
+    servers: &[ServerTarget],
+    current_zone: &DomainName,
+    current_qname: &DomainName,
+    defer_terminal_expansion: bool,
+    primary_server: ServerTarget,
+    query_result: dns_core::QueryResult,
+    hop: TraceHop,
+) -> Result<TraceNode> {
+    if defer_terminal_expansion {
+        let path = node_path(0, path_prefix);
+        progress.hop(&hop, &path);
+        chain.push(TraceNode {
+            hop,
+            origin: NodeOrigin::Trace,
+            children: Vec::new(),
+        });
+        return Ok(link_chain(std::mem::take(chain)));
+    }
+
+    let expansion_servers = expansion_targets_for_cut(
+        parent_delegation,
+        parent_delegation_zone,
+        servers,
+        config,
+        budget,
+        progress,
+    )?;
+    expand_cut(
+        config,
+        budget,
+        progress,
+        chain,
+        path_prefix,
+        &expansion_servers,
+        current_zone,
+        current_qname,
+        true,
+        Some(PrimaryAttempt {
+            server: primary_server,
+            query_result,
+            hop,
+        }),
+    )?;
+    Ok(link_chain(std::mem::take(chain)))
 }
 
 fn alias_target_from_tree(root: &TraceNode, qtype: RecordType) -> Option<String> {
@@ -137,6 +398,7 @@ fn trace_last_policy(
     progress: &mut dyn TraceProgress,
     qname: DomainName,
     root_zone: DomainName,
+    defer_terminal_expansion: bool,
 ) -> Result<TraceNode> {
     let mut visited_zones = HashSet::new();
     let mut chain: Vec<TraceNode> = Vec::new();
@@ -181,31 +443,22 @@ fn trace_last_policy(
                 glue.iter().map(ToString::to_string).collect(),
                 HopOutcome::Answered,
             );
-            let expansion_servers = expansion_targets_for_cut(
-                parent_delegation.as_ref(),
-                &parent_delegation_zone,
-                &servers,
-                config,
-                budget,
-                progress,
-            )?;
-            expand_cut(
+            return finish_terminal_answer(
                 config,
                 budget,
                 progress,
                 &mut chain,
                 &path_prefix,
-                &expansion_servers,
+                parent_delegation.as_ref(),
+                &parent_delegation_zone,
+                &servers,
                 &current_zone,
                 &current_qname,
-                true,
-                Some(PrimaryAttempt {
-                    server: primary_server,
-                    query_result,
-                    hop,
-                }),
-            )?;
-            return Ok(link_chain(chain));
+                defer_terminal_expansion,
+                primary_server,
+                query_result,
+                hop,
+            );
         }
 
         let Some(next_zone) = query_result.response.referral_zone(&current_qname) else {
@@ -227,31 +480,22 @@ fn trace_last_policy(
                 glue.iter().map(ToString::to_string).collect(),
                 HopOutcome::Answered,
             );
-            let expansion_servers = expansion_targets_for_cut(
-                parent_delegation.as_ref(),
-                &parent_delegation_zone,
-                &servers,
-                config,
-                budget,
-                progress,
-            )?;
-            expand_cut(
+            return finish_terminal_answer(
                 config,
                 budget,
                 progress,
                 &mut chain,
                 &path_prefix,
-                &expansion_servers,
+                parent_delegation.as_ref(),
+                &parent_delegation_zone,
+                &servers,
                 &current_zone,
                 &current_qname,
-                true,
-                Some(PrimaryAttempt {
-                    server: primary_server,
-                    query_result,
-                    hop,
-                }),
-            )?;
-            return Ok(link_chain(chain));
+                defer_terminal_expansion,
+                primary_server,
+                query_result,
+                hop,
+            );
         };
 
         let hop = hop_from_query(
@@ -1091,7 +1335,7 @@ fn resolve_nameserver(
     sub_config.expansion_policy = ExpansionPolicy::None;
     sub_config.ns_resolution_active.insert(ns_name.to_string());
 
-    let sub_trace = run(&sub_config, progress)?;
+    let sub_trace = run(&sub_config, &mut SilentProgress)?;
     if let Some(hop) = sub_trace.answering_hop() {
         let parsed = hop
             .response
@@ -1376,7 +1620,8 @@ mod tests {
 
         let tree = run(&config, &mut SilentProgress).expect("trace");
         assert_eq!(calls.load(Ordering::SeqCst), 2);
-        assert_eq!(tree.request.qname, "cdn.example.com.");
+        assert_eq!(tree.request.qname, "www.example.com.");
+        assert!(tree.node_count() >= 2);
     }
 
     #[test]
