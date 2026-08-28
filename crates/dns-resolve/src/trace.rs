@@ -1624,6 +1624,245 @@ mod tests {
         assert!(tree.node_count() >= 2);
     }
 
+    fn find_hop_nodes<'a>(root: &'a TraceNode, qname: &str) -> Vec<&'a TraceNode> {
+        let mut matches = Vec::new();
+        collect_hop_nodes(root, qname, &mut matches);
+        matches
+    }
+
+    fn collect_hop_nodes<'a>(node: &'a TraceNode, qname: &str, matches: &mut Vec<&'a TraceNode>) {
+        let target = qname.trim_end_matches('.').to_ascii_lowercase();
+        let hop_qname = node.hop.qname.trim_end_matches('.').to_ascii_lowercase();
+        if hop_qname == target {
+            matches.push(node);
+        }
+        for child in &node.children {
+            collect_hop_nodes(child, qname, matches);
+        }
+    }
+
+    fn count_root_zone_starts(root: &TraceNode, qname: &str) -> usize {
+        let target = qname.trim_end_matches('.').to_ascii_lowercase();
+        fn walk(node: &TraceNode, qname: &str) -> usize {
+            let mut count = 0;
+            if node.hop.zone.trim_end_matches('.').is_empty()
+                && node
+                    .hop
+                    .qname
+                    .trim_end_matches('.')
+                    .eq_ignore_ascii_case(qname)
+            {
+                count += 1;
+            }
+            for child in &node.children {
+                count += walk(child, qname);
+            }
+            count
+        }
+        walk(root, &target)
+    }
+
+    #[test]
+    fn last_policy_with_follow_preserves_original_qname() {
+        let qname = DomainName::parse("www.example.com.").expect("qname");
+        let mut config = TraceConfig::new(qname, RecordType::A);
+        config.follow_aliases = true;
+        config.expansion_policy = ExpansionPolicy::Last;
+        config.start_servers = Some(vec![IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9))]);
+        config.exchange = Arc::new(MultiNsDelegatingExchange);
+
+        let tree = run(&config, &mut SilentProgress).expect("trace");
+        assert_eq!(tree.request.qname, "www.example.com.");
+    }
+
+    fn find_first_leg_terminal(root: &TraceNode) -> Option<&TraceNode> {
+        let mut current = root;
+        loop {
+            let first = current.children.first()?;
+            if is_root_zone(&first.hop.zone) {
+                return Some(current);
+            }
+            current = first;
+        }
+    }
+
+    fn answered_hops_at_zone<'a>(
+        root: &'a TraceNode,
+        qname: &str,
+        zone: &str,
+    ) -> Vec<&'a TraceNode> {
+        let target_qname = qname.trim_end_matches('.').to_ascii_lowercase();
+        let target_zone = zone.trim_end_matches('.').to_ascii_lowercase();
+        find_hop_nodes(root, qname)
+            .into_iter()
+            .filter(|node| {
+                node.hop.outcome == HopOutcome::Answered
+                    && node.hop.zone.trim_end_matches('.').to_ascii_lowercase() == target_zone
+                    && node.hop.qname.trim_end_matches('.').to_ascii_lowercase() == target_qname
+            })
+            .collect()
+    }
+
+    #[test]
+    fn last_policy_with_follow_defers_expansion_on_cname_leg() {
+        let qname = DomainName::parse("www.example.com.").expect("qname");
+        let mut config = TraceConfig::new(qname, RecordType::A);
+        config.follow_aliases = true;
+        config.expansion_policy = ExpansionPolicy::Last;
+        config.start_servers = Some(vec![IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9))]);
+        config.exchange = Arc::new(MultiNsDelegatingExchange);
+
+        let tree = run(&config, &mut SilentProgress).expect("trace");
+
+        let terminal = find_first_leg_terminal(&tree.root).expect("first-leg terminal hop");
+        assert_eq!(
+            terminal.hop.zone.trim_end_matches('.'),
+            "example.com",
+            "alias terminal hop should be at the authoritative example.com zone cut"
+        );
+        assert_eq!(
+            terminal.children.len(),
+            1,
+            "alias leg should attach as a single subtree (no sibling fan-out on CNAME leg)"
+        );
+        assert!(
+            is_root_zone(&terminal.children[0].hop.zone),
+            "alias leg should restart at the root zone"
+        );
+        assert_eq!(
+            answered_hops_at_zone(&tree.root, "www.example.com.", "example.com").len(),
+            1,
+            "only one terminal answered hop for www at the example.com zone cut"
+        );
+    }
+
+    #[test]
+    fn last_policy_with_follow_stores_cname_on_terminal_hop() {
+        let qname = DomainName::parse("www.example.com.").expect("qname");
+        let mut config = TraceConfig::new(qname, RecordType::A);
+        config.follow_aliases = true;
+        config.expansion_policy = ExpansionPolicy::Last;
+        config.start_servers = Some(vec![IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9))]);
+        config.exchange = Arc::new(MultiNsDelegatingExchange);
+
+        let tree = run(&config, &mut SilentProgress).expect("trace");
+        let terminal = find_first_leg_terminal(&tree.root).expect("first-leg terminal hop");
+        assert!(
+            terminal
+                .hop
+                .response
+                .answers
+                .iter()
+                .any(|record| record.rtype == "CNAME" && record.rdata == "example.com."),
+            "terminal hop on the alias leg should retain the CNAME answer"
+        );
+    }
+
+    #[test]
+    fn last_policy_with_follow_expands_only_final_leg() {
+        let qname = DomainName::parse("www.example.com.").expect("qname");
+        let mut config = TraceConfig::new(qname, RecordType::A);
+        config.follow_aliases = true;
+        config.expansion_policy = ExpansionPolicy::Last;
+        config.start_servers = Some(vec![IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9))]);
+        config.exchange = Arc::new(MultiNsDelegatingExchange);
+
+        let tree = run(&config, &mut SilentProgress).expect("trace");
+
+        let path = tree.primary_path();
+        let parent = path.iter().rev().nth(1).expect("terminal delegation hop");
+        assert_eq!(
+            parent.children.len(),
+            3,
+            "terminal cut on the final alias leg should expand all parent-referral NS"
+        );
+    }
+
+    #[test]
+    fn last_policy_with_follow_traces_final_leg_once() {
+        let qname = DomainName::parse("www.example.com.").expect("qname");
+        let mut config = TraceConfig::new(qname, RecordType::A);
+        config.follow_aliases = true;
+        config.expansion_policy = ExpansionPolicy::Last;
+        config.start_servers = Some(vec![IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9))]);
+        config.exchange = Arc::new(MultiNsDelegatingExchange);
+
+        let tree = run(&config, &mut SilentProgress).expect("trace");
+
+        assert_eq!(
+            count_root_zone_starts(&tree.root, "example.com."),
+            1,
+            "following a CNAME must not restart the alias target delegation twice"
+        );
+    }
+
+    struct RecordingProgress {
+        hops: Arc<AtomicUsize>,
+    }
+
+    impl crate::TraceProgress for RecordingProgress {
+        fn hop(&mut self, _hop: &crate::TraceHop, _path: &NodePath) {
+            self.hops.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn message(&mut self, _message: &str) {}
+    }
+
+    #[test]
+    fn nameserver_subtrace_does_not_emit_live_hops() {
+        let referral = DnsResponse {
+            id: 1,
+            rcode: 0,
+            rcode_text: "NOERROR".into(),
+            authoritative: false,
+            truncated: false,
+            recursion_desired: false,
+            recursion_available: false,
+            authentic_data: false,
+            checking_disabled: false,
+            answers: vec![],
+            authorities: vec![DnsRecord {
+                name: DomainName::parse("example.com.").expect("zone"),
+                rtype: "NS".into(),
+                rclass: "IN".into(),
+                ttl: 3600,
+                rdata: "ns.outside.example.".into(),
+            }],
+            additionals: vec![],
+            edns: EdnsMeta::default(),
+        };
+        let parent_zone = DomainName::parse("com.").expect("zone");
+        let ns_name = DomainName::parse("ns.outside.example.").expect("ns");
+        let mut config = TraceConfig::new(
+            DomainName::parse("example.com.").expect("qname"),
+            RecordType::A,
+        );
+        config.exchange = Arc::new(AuthoritativeExchange);
+        let mut budget = QueryBudget::new(64);
+        let hops = Arc::new(AtomicUsize::new(0));
+        let mut progress = RecordingProgress { hops: hops.clone() };
+
+        let addresses = resolve_nameserver(
+            &ns_name,
+            &referral,
+            &[ServerTarget::from_address(IpAddr::V4(Ipv4Addr::new(
+                1, 1, 1, 1,
+            )))],
+            &config,
+            &mut budget,
+            &parent_zone,
+            &mut progress,
+        )
+        .expect("addresses");
+
+        assert!(!addresses.is_empty());
+        assert_eq!(
+            hops.load(Ordering::SeqCst),
+            0,
+            "nested NS-resolution traces must not emit hops on the caller progress sink"
+        );
+    }
+
     #[test]
     fn query_all_records_each_server() {
         let servers = vec![
@@ -1984,105 +2223,118 @@ mod tests {
                 IpAddr::V4(v4)
                     if matches!(v4.octets(), [1, 0, 0, 1] | [2, 0, 0, 2] | [3, 0, 0, 3])
             );
-            let (authoritative, answers, authorities, additionals) = if qname == "example.com."
-                && is_example_zone_ns
-            {
-                (
-                    true,
-                    vec![DnsRecord {
-                        name: options.qname.clone(),
-                        rtype: "A".into(),
-                        rclass: "IN".into(),
-                        ttl: 300,
-                        rdata: "93.184.216.34".into(),
-                    }],
-                    vec![],
-                    vec![],
-                )
-            } else if qname == "example.com." && server == IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)) {
-                (
-                    false,
-                    vec![],
-                    vec![DnsRecord {
-                        name: DomainName::parse("com.").expect("zone"),
-                        rtype: "NS".into(),
-                        rclass: "IN".into(),
-                        ttl: 3600,
-                        rdata: "ns.com.".into(),
-                    }],
-                    vec![DnsRecord {
-                        name: DomainName::parse("ns.com.").expect("ns"),
-                        rtype: "A".into(),
-                        rclass: "IN".into(),
-                        ttl: 300,
-                        rdata: "192.41.162.30".into(),
-                    }],
-                )
-            } else if qname == "example.com." {
-                (
-                    false,
-                    vec![],
-                    vec![
-                        DnsRecord {
-                            name: DomainName::parse("example.com.").expect("zone"),
-                            rtype: "NS".into(),
+            let is_example_qname = qname == "example.com." || qname == "www.example.com.";
+            let (authoritative, answers, authorities, additionals) =
+                if qname == "www.example.com." && is_example_zone_ns {
+                    (
+                        true,
+                        vec![DnsRecord {
+                            name: options.qname.clone(),
+                            rtype: "CNAME".into(),
                             rclass: "IN".into(),
-                            ttl: 3600,
-                            rdata: "ns1.example.com.".into(),
-                        },
-                        DnsRecord {
-                            name: DomainName::parse("example.com.").expect("zone"),
-                            rtype: "NS".into(),
-                            rclass: "IN".into(),
-                            ttl: 3600,
-                            rdata: "ns2.example.com.".into(),
-                        },
-                        DnsRecord {
-                            name: DomainName::parse("example.com.").expect("zone"),
-                            rtype: "NS".into(),
-                            rclass: "IN".into(),
-                            ttl: 3600,
-                            rdata: "ns3.example.com.".into(),
-                        },
-                    ],
-                    vec![
-                        DnsRecord {
-                            name: DomainName::parse("ns1.example.com.").expect("ns"),
+                            ttl: 300,
+                            rdata: "example.com.".into(),
+                        }],
+                        vec![],
+                        vec![],
+                    )
+                } else if qname == "example.com." && is_example_zone_ns {
+                    (
+                        true,
+                        vec![DnsRecord {
+                            name: options.qname.clone(),
                             rtype: "A".into(),
                             rclass: "IN".into(),
                             ttl: 300,
-                            rdata: "1.0.0.1".into(),
-                        },
-                        DnsRecord {
-                            name: DomainName::parse("ns2.example.com.").expect("ns"),
+                            rdata: "93.184.216.34".into(),
+                        }],
+                        vec![],
+                        vec![],
+                    )
+                } else if is_example_qname && server == IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)) {
+                    (
+                        false,
+                        vec![],
+                        vec![DnsRecord {
+                            name: DomainName::parse("com.").expect("zone"),
+                            rtype: "NS".into(),
+                            rclass: "IN".into(),
+                            ttl: 3600,
+                            rdata: "ns.com.".into(),
+                        }],
+                        vec![DnsRecord {
+                            name: DomainName::parse("ns.com.").expect("ns"),
                             rtype: "A".into(),
                             rclass: "IN".into(),
                             ttl: 300,
-                            rdata: "2.0.0.2".into(),
-                        },
-                        DnsRecord {
-                            name: DomainName::parse("ns3.example.com.").expect("ns"),
-                            rtype: "A".into(),
+                            rdata: "192.41.162.30".into(),
+                        }],
+                    )
+                } else if is_example_qname {
+                    (
+                        false,
+                        vec![],
+                        vec![
+                            DnsRecord {
+                                name: DomainName::parse("example.com.").expect("zone"),
+                                rtype: "NS".into(),
+                                rclass: "IN".into(),
+                                ttl: 3600,
+                                rdata: "ns1.example.com.".into(),
+                            },
+                            DnsRecord {
+                                name: DomainName::parse("example.com.").expect("zone"),
+                                rtype: "NS".into(),
+                                rclass: "IN".into(),
+                                ttl: 3600,
+                                rdata: "ns2.example.com.".into(),
+                            },
+                            DnsRecord {
+                                name: DomainName::parse("example.com.").expect("zone"),
+                                rtype: "NS".into(),
+                                rclass: "IN".into(),
+                                ttl: 3600,
+                                rdata: "ns3.example.com.".into(),
+                            },
+                        ],
+                        vec![
+                            DnsRecord {
+                                name: DomainName::parse("ns1.example.com.").expect("ns"),
+                                rtype: "A".into(),
+                                rclass: "IN".into(),
+                                ttl: 300,
+                                rdata: "1.0.0.1".into(),
+                            },
+                            DnsRecord {
+                                name: DomainName::parse("ns2.example.com.").expect("ns"),
+                                rtype: "A".into(),
+                                rclass: "IN".into(),
+                                ttl: 300,
+                                rdata: "2.0.0.2".into(),
+                            },
+                            DnsRecord {
+                                name: DomainName::parse("ns3.example.com.").expect("ns"),
+                                rtype: "A".into(),
+                                rclass: "IN".into(),
+                                ttl: 300,
+                                rdata: "3.0.0.3".into(),
+                            },
+                        ],
+                    )
+                } else {
+                    (
+                        false,
+                        vec![],
+                        vec![DnsRecord {
+                            name: DomainName::parse("com.").expect("zone"),
+                            rtype: "NS".into(),
                             rclass: "IN".into(),
-                            ttl: 300,
-                            rdata: "3.0.0.3".into(),
-                        },
-                    ],
-                )
-            } else {
-                (
-                    false,
-                    vec![],
-                    vec![DnsRecord {
-                        name: DomainName::parse("com.").expect("zone"),
-                        rtype: "NS".into(),
-                        rclass: "IN".into(),
-                        ttl: 3600,
-                        rdata: "ns.com.".into(),
-                    }],
-                    vec![],
-                )
-            };
+                            ttl: 3600,
+                            rdata: "ns.com.".into(),
+                        }],
+                        vec![],
+                    )
+                };
 
             Ok(dns_core::QueryResult {
                 server,
