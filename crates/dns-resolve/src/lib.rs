@@ -15,6 +15,7 @@ use thiserror::Error;
 use time::OffsetDateTime;
 
 pub mod budget;
+pub mod job_queue;
 pub mod root_hints;
 pub mod trace;
 pub mod tree;

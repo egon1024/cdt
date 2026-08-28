@@ -105,16 +105,7 @@ fn trace_leg(
 ) -> Result<TraceNode> {
     let root_zone = DomainName::parse(".").expect("root zone");
     match config.expansion_policy {
-        ExpansionPolicy::None => trace_linear(
-            config,
-            budget,
-            progress,
-            &NodePath::root(0),
-            start_servers(config),
-            qname,
-            root_zone,
-            &mut HashSet::new(),
-        ),
+        ExpansionPolicy::None => crate::job_queue::run_none_policy(config, budget, progress, qname),
         ExpansionPolicy::Last => trace_last_policy(
             config,
             budget,
@@ -1092,7 +1083,7 @@ fn error_kind(error: &ResolveError) -> String {
     }
 }
 
-fn start_servers(config: &TraceConfig) -> Vec<ServerTarget> {
+pub(crate) fn start_servers(config: &TraceConfig) -> Vec<ServerTarget> {
     let mut servers = config
         .start_servers
         .clone()
@@ -1225,7 +1216,7 @@ fn server_matches_primary(server: &ServerTarget, primary: &PrimaryAttempt) -> bo
     }
 }
 
-fn resolve_nameservers_from_referral(
+pub(crate) fn resolve_nameservers_from_referral(
     referral: &DnsResponse,
     current_servers: &[ServerTarget],
     config: &TraceConfig,
@@ -1359,14 +1350,18 @@ fn resolve_nameserver(
     })
 }
 
-fn collect_glue(response: &DnsResponse, ns_names: &[DomainName]) -> Vec<IpAddr> {
+pub(crate) fn collect_glue(response: &DnsResponse, ns_names: &[DomainName]) -> Vec<IpAddr> {
     ns_names
         .iter()
         .flat_map(|ns| response.glue_for(ns))
         .collect()
 }
 
-fn is_authoritative_answer(response: &DnsResponse, qname: &DomainName, qtype: RecordType) -> bool {
+pub(crate) fn is_authoritative_answer(
+    response: &DnsResponse,
+    qname: &DomainName,
+    qtype: RecordType,
+) -> bool {
     if response.authoritative {
         return true;
     }
