@@ -344,18 +344,16 @@ impl<'a> Coordinator<'a> {
             return self.handle_terminal_answer(job, hop, query_result);
         };
 
-        if self.config.expansion_policy == ExpansionPolicy::All
-            && !self.visited_zones.insert(next_zone.to_string())
-        {
-            hop.outcome = HopOutcome::Failed {
-                kind: "delegation_loop".into(),
-                detail: next_zone.to_string(),
-            };
-            self.store_completed_node(&job.path, hop);
-            return Ok(());
-        }
-
-        if !self.visited_zones.insert(next_zone.to_string()) {
+        if self.config.expansion_policy == ExpansionPolicy::All {
+            if !self.visited_zones.insert(next_zone.to_string()) {
+                hop.outcome = HopOutcome::Failed {
+                    kind: "delegation_loop".into(),
+                    detail: next_zone.to_string(),
+                };
+                self.store_completed_node(&job.path, hop);
+                return Ok(());
+            }
+        } else if !self.visited_zones.insert(next_zone.to_string()) {
             return Err(ResolveError::DelegationLoop {
                 zone: next_zone.to_string(),
             });
@@ -968,6 +966,22 @@ mod tests {
         assert!(
             !source.contains("TraceProgress"),
             "workers must not call TraceProgress directly"
+        );
+    }
+
+    #[test]
+    fn all_policy_follows_first_shared_referral_zone() {
+        let mut config = test_config("example.com.", Arc::new(MultiCutExchange));
+        config.expansion_policy = ExpansionPolicy::All;
+        config.max_parallel_queries = 4;
+        config.start_servers = Some(vec![IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9))]);
+        let mut budget = QueryBudget::new(64);
+        let qname = DomainName::parse("example.com.").expect("qname");
+        let tree =
+            run_policy(&config, &mut budget, &mut SilentProgress, qname, false).expect("trace");
+        assert!(
+            !tree.children.is_empty(),
+            "expected trace to continue past root referral"
         );
     }
 
