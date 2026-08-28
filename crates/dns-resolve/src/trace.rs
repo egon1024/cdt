@@ -7,13 +7,15 @@ use dns_core::response::DnsResponse;
 use hickory_proto::rr::RecordType;
 
 use crate::root_hints::{root_server_names, root_servers};
-use crate::{FinalAnswer, ServerTarget, StoredDnsMessage, now_rfc3339};
 use crate::{
-    ResolveError, Result, TraceConfig, TraceProgress, TraceResult, filter_addresses,
-    hop_from_query, query_server,
+    HopOutcome, ServerTarget, TraceTree, TraceTreeRequest, build_linear_tree, now_rfc3339,
+};
+use crate::{
+    ResolveError, Result, TraceConfig, TraceProgress, filter_addresses, hop_from_query,
+    query_server,
 };
 
-pub fn run(config: &TraceConfig, progress: &mut dyn TraceProgress) -> Result<TraceResult> {
+pub fn run(config: &TraceConfig, progress: &mut dyn TraceProgress) -> Result<TraceTree> {
     let mut qname = config.qname.clone();
     let mut alias_visited = HashSet::new();
     let mut hops = Vec::new();
@@ -39,12 +41,13 @@ pub fn run(config: &TraceConfig, progress: &mut dyn TraceProgress) -> Result<Tra
                 server_name.clone(),
                 referral_ns.iter().map(ToString::to_string).collect(),
                 glue.iter().map(ToString::to_string).collect(),
+                HopOutcome::Referral,
             );
             progress.hop(&hop);
             hops.push(hop);
 
             if config.follow_aliases {
-                if let Some(alias) = query_result.response.alias_target(&qname) {
+                if let Some(alias) = query_result.response.alias_target(&qname, config.qtype) {
                     if alias_visited.len() >= config.max_alias_depth {
                         return Err(ResolveError::MaxAliasDepth {
                             max: config.max_alias_depth,
@@ -61,33 +64,31 @@ pub fn run(config: &TraceConfig, progress: &mut dyn TraceProgress) -> Result<Tra
             }
 
             if is_authoritative_answer(&query_result.response, &qname, config.qtype) {
-                return Ok(TraceResult {
-                    qname: qname.to_string(),
-                    qtype: record_type_name(config.qtype),
-                    started_at: now_rfc3339(),
+                if let Some(last) = hops.last_mut() {
+                    last.outcome = HopOutcome::Answered;
+                }
+                return Ok(build_linear_tree(
                     hops,
-                    final_response: Some(final_answer_from_query(
-                        &query_result,
-                        server_name,
-                        &qname,
-                        config.qtype,
-                    )),
-                });
+                    TraceTreeRequest {
+                        qname: qname.to_string(),
+                        qtype: record_type_name(config.qtype),
+                        started_at: now_rfc3339(),
+                    },
+                ));
             }
 
             let Some(next_zone) = query_result.response.referral_zone(&qname) else {
-                return Ok(TraceResult {
-                    qname: qname.to_string(),
-                    qtype: record_type_name(config.qtype),
-                    started_at: now_rfc3339(),
+                if let Some(last) = hops.last_mut() {
+                    last.outcome = HopOutcome::Answered;
+                }
+                return Ok(build_linear_tree(
                     hops,
-                    final_response: Some(final_answer_from_query(
-                        &query_result,
-                        server_name,
-                        &qname,
-                        config.qtype,
-                    )),
-                });
+                    TraceTreeRequest {
+                        qname: qname.to_string(),
+                        qtype: record_type_name(config.qtype),
+                        started_at: now_rfc3339(),
+                    },
+                ));
             };
 
             if !visited_zones.insert(next_zone.to_string()) {
@@ -307,12 +308,13 @@ fn resolve_nameserver(
     sub_config.ns_resolution_active.insert(ns_name.to_string());
 
     let sub_trace = run(&sub_config, progress)?;
-    if let Some(answer) = sub_trace.final_response {
-        let parsed = answer
-            .records
+    if let Some(hop) = sub_trace.answering_hop() {
+        let parsed = hop
+            .response
+            .answers
             .iter()
-            .filter_map(|record| record.split_whitespace().last())
-            .filter_map(|addr| addr.parse().ok())
+            .filter(|record| record.rtype == "A" || record.rtype == "AAAA")
+            .filter_map(|record| record.rdata.parse().ok())
             .collect::<Vec<_>>();
         addresses = filter_addresses(&parsed, config.ipv4_only, config.ipv6_only);
         if !addresses.is_empty() {
@@ -345,32 +347,6 @@ fn is_authoritative_answer(response: &DnsResponse, qname: &DomainName, qtype: Re
     response.answers.iter().any(|record| {
         record.name.as_str().eq_ignore_ascii_case(qname.as_str()) && record.rtype == qtype
     })
-}
-
-fn final_answer_from_query(
-    query: &dns_core::QueryResult,
-    server_name: Option<String>,
-    qname: &DomainName,
-    qtype: RecordType,
-) -> FinalAnswer {
-    FinalAnswer {
-        server: query.server.to_string(),
-        server_name,
-        rtt_ms: query.rtt.as_millis() as u64,
-        rcode: query.response.rcode_text.clone(),
-        records: query
-            .response
-            .answers
-            .iter()
-            .map(|record| format!("{} {} {}", record.name, record.ttl, record.rdata))
-            .collect(),
-        nsid: query.response.edns.nsid().map(str::to_owned),
-        qname: qname.to_string(),
-        qtype: record_type_name(qtype),
-        transport: query.transport.to_string(),
-        response: StoredDnsMessage::from_response(&query.response),
-        from_cache: query.from_cache,
-    }
 }
 
 #[cfg(test)]
@@ -524,5 +500,82 @@ mod tests {
         };
         let qname = DomainName::parse("example.com.").expect("qname");
         assert!(is_authoritative_answer(&response, &qname, RecordType::A));
+    }
+
+    struct CnameOnlyExchange {
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl crate::DnsExchange for CnameOnlyExchange {
+        fn exchange(
+            &self,
+            server: IpAddr,
+            _port: u16,
+            options: &dns_core::QueryOptions,
+        ) -> dns_core::Result<dns_core::QueryResult> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(dns_core::QueryResult {
+                server,
+                transport: options.transport,
+                qname: options.qname.clone(),
+                qtype: options.qtype.to_string(),
+                rtt: std::time::Duration::from_millis(1),
+                response: DnsResponse {
+                    id: 1,
+                    rcode: 0,
+                    rcode_text: "NOERROR".into(),
+                    authoritative: true,
+                    truncated: false,
+                    recursion_desired: false,
+                    recursion_available: false,
+                    authentic_data: false,
+                    checking_disabled: false,
+                    answers: vec![DnsRecord {
+                        name: options.qname.clone(),
+                        rtype: "CNAME".into(),
+                        rclass: "IN".into(),
+                        ttl: 300,
+                        rdata: "cdn.example.com.".into(),
+                    }],
+                    authorities: vec![],
+                    additionals: vec![],
+                    edns: EdnsMeta::default(),
+                },
+                from_cache: false,
+            })
+        }
+    }
+
+    #[test]
+    fn cname_query_with_follow_stops_at_cname_owner() {
+        let qname = DomainName::parse("www.example.com.").expect("qname");
+        let mut config = TraceConfig::new(qname, RecordType::CNAME);
+        config.follow_aliases = true;
+        config.start_servers = Some(vec![IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))]);
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        config.exchange = std::sync::Arc::new(CnameOnlyExchange {
+            calls: calls.clone(),
+        });
+
+        let tree = run(&config, &mut SilentProgress).expect("trace");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(tree.node_count(), 1);
+        assert_eq!(tree.leaf().hop.qtype, "CNAME");
+    }
+
+    #[test]
+    fn a_query_with_follow_continues_past_cname() {
+        let qname = DomainName::parse("www.example.com.").expect("qname");
+        let mut config = TraceConfig::new(qname, RecordType::A);
+        config.follow_aliases = true;
+        config.start_servers = Some(vec![IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))]);
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        config.exchange = std::sync::Arc::new(CnameOnlyExchange {
+            calls: calls.clone(),
+        });
+
+        let tree = run(&config, &mut SilentProgress).expect("trace");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(tree.request.qname, "cdn.example.com.");
     }
 }

@@ -1,11 +1,11 @@
-use dns_resolve::{TraceProgress, TraceResult};
+use dns_resolve::{TraceProgress, TraceTree};
 
 use crate::progress::StderrProgress;
 use crate::session::SessionDocument;
 
 pub fn replay_session(document: &SessionDocument, events: bool) {
     let mut progress = StderrProgress::new(events);
-    for hop in &document.result.hops {
+    for hop in document.result.primary_hops() {
         progress.hop(hop);
     }
 
@@ -28,16 +28,16 @@ pub fn replay_session(document: &SessionDocument, events: bool) {
     print_final_answer(&document.result);
 }
 
-pub fn print_final_answer(result: &TraceResult) {
-    if let Some(answer) = &result.final_response {
+pub fn print_final_answer(result: &TraceTree) {
+    if let Some(hop) = result.answering_hop() {
         eprintln!(
             "final answer from {} in {}ms ({})",
-            answer.server, answer.rtt_ms, answer.rcode
+            hop.server, hop.rtt_ms, hop.rcode
         );
-        for record in &answer.records {
-            eprintln!("  {record}");
+        for record in &hop.response.answers {
+            eprintln!("  {} {} {}", record.name, record.ttl, record.rdata);
         }
-        if let Some(nsid) = &answer.nsid {
+        if let Some(nsid) = &hop.nsid {
             eprintln!("  NSID: {nsid}");
         }
     }

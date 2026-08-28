@@ -14,7 +14,7 @@ use ratatui::widgets::block::BorderType;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use super::dig_view::{final_detail_styled, hop_detail_styled};
+use super::dig_view::hop_detail_styled;
 use super::terminal::{cache_source_legend, cache_source_symbol};
 use super::theme::Theme;
 use super::tree::{ExploreNode, ExploreTree};
@@ -32,7 +32,6 @@ enum NodeRef {
     Delegation { hop_index: usize, path: Vec<usize> },
     Resolve { target: String, path: Vec<usize> },
     Hop { hop_index: usize },
-    Final,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -350,29 +349,6 @@ fn tree_line(
             Span::styled("resolve ", theme.accent()),
             Span::raw(target.clone()),
         ]),
-        NodeRef::Final => {
-            let answer = tree.trace().final_response.as_ref();
-            Line::from(vec![
-                Span::raw(format!("{indent}{marker}")),
-                Span::styled(
-                    format!("{} {}  ", tree.qname, tree.qtype),
-                    theme.accent_bold(),
-                ),
-                Span::styled(
-                    answer
-                        .map(|a| a.rcode.clone())
-                        .unwrap_or_else(|| "—".into()),
-                    theme.rcode(answer.map(|a| a.rcode.as_str()).unwrap_or("")),
-                ),
-                Span::styled(
-                    format!(
-                        "  {}",
-                        cache_source_symbol(answer.is_some_and(|a| a.from_cache), theme.symbols)
-                    ),
-                    theme.cache_source(answer.is_some_and(|a| a.from_cache)),
-                ),
-            ])
-        }
     }
 }
 
@@ -420,17 +396,6 @@ fn detail_content(
                 Span::raw(target.clone()),
             ]),
         ],
-        NodeRef::Final => tree
-            .trace()
-            .final_response
-            .as_ref()
-            .map(|answer| final_detail_styled(answer, theme))
-            .unwrap_or_else(|| {
-                vec![Line::from(Span::styled(
-                    "No final answer recorded.",
-                    theme.meta(),
-                ))]
-            }),
     }
 }
 
@@ -557,7 +522,7 @@ fn collect_expandable_paths(node: &ExploreNode, path: Vec<usize>, paths: &mut Ve
                     collect_expandable_paths(child, child_path, paths);
                 }
             }
-            ExploreNode::Hop { .. } | ExploreNode::Final => {}
+            ExploreNode::Hop { .. } => {}
         }
     }
 }
@@ -566,7 +531,7 @@ fn has_children(node: &ExploreNode) -> bool {
     match node {
         ExploreNode::Delegation { children, .. } => !children.is_empty(),
         ExploreNode::Resolve { children, .. } => !children.is_empty(),
-        ExploreNode::Hop { .. } | ExploreNode::Final => false,
+        ExploreNode::Hop { .. } => false,
     }
 }
 
@@ -584,7 +549,7 @@ fn toggle_path(expanded_paths: &mut Vec<Vec<usize>>, node_ref: &NodeRef) {
 fn node_path(node_ref: &NodeRef) -> Option<Vec<usize>> {
     match node_ref {
         NodeRef::Delegation { path, .. } | NodeRef::Resolve { path, .. } => Some(path.clone()),
-        NodeRef::Hop { .. } | NodeRef::Final => None,
+        NodeRef::Hop { .. } => None,
     }
 }
 
@@ -618,7 +583,6 @@ fn append_visible_node(
         ExploreNode::Hop { hop_index } => NodeRef::Hop {
             hop_index: *hop_index,
         },
-        ExploreNode::Final => NodeRef::Final,
     };
 
     visible.push(VisibleNode {
@@ -636,7 +600,7 @@ fn append_visible_node(
         ExploreNode::Delegation { children, .. } | ExploreNode::Resolve { children, .. } => {
             children
         }
-        ExploreNode::Hop { .. } | ExploreNode::Final => return,
+        ExploreNode::Hop { .. } => return,
     };
 
     for (index, child) in children.iter().enumerate() {

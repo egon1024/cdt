@@ -1,24 +1,8 @@
 use std::net::IpAddr;
 
-use dns_resolve::{FinalAnswer, TraceHop};
+use dns_resolve::TraceHop;
 
 use super::terminal::{UiSymbols, cache_source_symbol};
-
-pub fn final_summary_line(
-    qname: &str,
-    qtype: &str,
-    answer: Option<&FinalAnswer>,
-    symbols: UiSymbols,
-) -> String {
-    match answer {
-        Some(answer) => format!(
-            "{qname} {qtype}  {}  {}",
-            answer.rcode,
-            cache_source_symbol(answer.from_cache, symbols)
-        ),
-        None => format!("{qname} {qtype}"),
-    }
-}
 
 pub fn hop_summary_line(hop: &TraceHop, symbols: UiSymbols) -> String {
     format!(
@@ -78,16 +62,6 @@ pub fn hop_detail_lines(hop: &TraceHop, symbols: UiSymbols) -> Vec<String> {
     legacy_hop_detail_lines(hop, symbols)
 }
 
-pub fn final_detail_lines(answer: &FinalAnswer, symbols: UiSymbols) -> Vec<String> {
-    if answer.response.is_stored() {
-        return super::dig_view::final_detail_plain(answer, symbols)
-            .lines()
-            .map(str::to_owned)
-            .collect();
-    }
-    legacy_final_detail_lines(answer, symbols)
-}
-
 pub(crate) fn legacy_hop_detail_lines(hop: &TraceHop, symbols: UiSymbols) -> Vec<String> {
     let mut lines = vec![
         format!("zone: {}", hop.zone),
@@ -106,31 +80,6 @@ pub(crate) fn legacy_hop_detail_lines(hop: &TraceHop, symbols: UiSymbols) -> Vec
     }
     append_yaml_list_lines(&mut lines, "referral NS", &hop.referral_ns);
     append_yaml_list_lines(&mut lines, "glue", &hop.glue);
-    lines
-}
-
-pub(crate) fn legacy_final_detail_lines(answer: &FinalAnswer, symbols: UiSymbols) -> Vec<String> {
-    let mut lines = vec![
-        format_server_line(
-            &answer.server,
-            answer.server_name.as_deref(),
-            if answer.transport.is_empty() {
-                "udp"
-            } else {
-                answer.transport.as_str()
-            },
-        ),
-        format_query_response_time_line(answer.rtt_ms),
-        format!("rcode: {}", answer.rcode),
-        format!(
-            "source: {}",
-            cache_source_symbol(answer.from_cache, symbols)
-        ),
-    ];
-    if let Some(nsid) = &answer.nsid {
-        lines.push(format!("nsid: {nsid}"));
-    }
-    append_yaml_list_lines(&mut lines, "records", &answer.records);
     lines
 }
 
@@ -167,6 +116,7 @@ mod tests {
             server_name: None,
             response: Default::default(),
             from_cache: false,
+            outcome: Default::default(),
         };
         let detail = hop_detail_lines(&hop, UNICODE).join("\n");
         assert!(detail.contains("referral NS:\n  - ns1.example.com.\n  - ns2.example.com."));

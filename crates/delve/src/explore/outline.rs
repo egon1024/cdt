@@ -1,7 +1,4 @@
-use super::detail::{
-    final_detail_lines, final_summary_line, hop_detail_lines, hop_summary_line,
-    render_indented_block,
-};
+use super::detail::{hop_detail_lines, hop_summary_line, render_indented_block};
 use super::terminal::UiSymbols;
 use super::tree::{ExploreNode, ExploreTree};
 
@@ -69,25 +66,6 @@ fn render_node(
                 &detail_indent,
             ));
         }
-        ExploreNode::Final => {
-            output.push_str(&format!(
-                "{prefix}{branch}{}\n",
-                final_summary_line(
-                    &tree.qname,
-                    &tree.qtype,
-                    tree.trace().final_response.as_ref(),
-                    symbols,
-                )
-            ));
-            if let Some(answer) = tree.trace().final_response.as_ref() {
-                output.push_str(&render_indented_block(
-                    &final_detail_lines(answer, symbols),
-                    &detail_indent,
-                ));
-            } else {
-                output.push_str(&format!("{detail_indent}{}\n", symbols.missing));
-            }
-        }
     }
 }
 
@@ -110,14 +88,11 @@ mod tests {
     use super::*;
     use crate::explore::terminal::UNICODE;
     use crate::explore::tree::build_explore_tree;
-    use dns_resolve::{FinalAnswer, TraceHop, TraceResult};
+    use dns_resolve::{HopOutcome, TraceHop, TraceTreeRequest, build_linear_tree};
 
-    fn sample_trace() -> TraceResult {
-        TraceResult {
-            qname: "example.com.".into(),
-            qtype: "A".into(),
-            started_at: "2026-08-25T00:00:00Z".into(),
-            hops: vec![TraceHop {
+    fn sample_trace() -> dns_resolve::TraceTree {
+        build_linear_tree(
+            vec![TraceHop {
                 zone: ".".into(),
                 server: "198.41.0.4".into(),
                 server_name: None,
@@ -133,21 +108,14 @@ mod tests {
                 glue: vec![],
                 response: Default::default(),
                 from_cache: false,
+                outcome: HopOutcome::Answered,
             }],
-            final_response: Some(FinalAnswer {
-                server: "93.184.216.34".into(),
-                server_name: None,
-                rtt_ms: 5,
-                rcode: "NOERROR".into(),
-                records: vec!["example.com. 300 93.184.216.34".into()],
-                nsid: None,
-                qname: String::new(),
-                qtype: String::new(),
-                transport: String::new(),
-                response: Default::default(),
-                from_cache: false,
-            }),
-        }
+            TraceTreeRequest {
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                started_at: "2026-08-25T00:00:00Z".into(),
+            },
+        )
     }
 
     #[test]
@@ -157,7 +125,5 @@ mod tests {
         assert!(outline.starts_with("example.com. A\n"));
         assert!(outline.contains("referral NS:\n"));
         assert!(outline.contains("  - a.gtld-servers.net."));
-        assert!(outline.contains("records:\n"));
-        assert!(outline.contains("  - example.com. 300 93.184.216.34"));
     }
 }

@@ -407,17 +407,21 @@ fn print_session(document: &SessionDocument, json: bool) {
         println!("pinned: yes");
     }
     println!("started: {}", document.created_at);
-    println!("query: {} {}", document.result.qname, document.result.qtype);
-    for hop in &document.result.hops {
+    println!(
+        "query: {} {}",
+        document.result.qname(),
+        document.result.qtype()
+    );
+    for hop in document.result.primary_hops() {
         print_hop_human(hop);
     }
-    if let Some(answer) = &document.result.final_response {
+    if let Some(hop) = document.result.answering_hop() {
         eprintln!(
             "final answer from {} in {}ms ({})",
-            answer.server, answer.rtt_ms, answer.rcode
+            hop.server, hop.rtt_ms, hop.rcode
         );
-        for record in &answer.records {
-            eprintln!("  {record}");
+        for record in &hop.response.answers {
+            eprintln!("  {} {} {}", record.name, record.ttl, record.rdata);
         }
     }
 }

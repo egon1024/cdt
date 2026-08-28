@@ -1,4 +1,4 @@
-use dns_resolve::TraceResult;
+use dns_resolve::TraceTree;
 use thiserror::Error;
 
 use crate::config::SessionRetention;
@@ -32,7 +32,7 @@ pub enum SessionError {
 }
 
 pub trait SessionStore: Send {
-    fn save(&mut self, result: &TraceResult, request: &TraceRequest) -> Result<String>;
+    fn save(&mut self, result: &TraceTree, request: &TraceRequest) -> Result<String>;
     fn get(&self, id: &str) -> Result<SessionDocument>;
     fn list(&self) -> Result<Vec<SessionSummary>>;
     fn remove(&mut self, id: &str) -> Result<()>;
@@ -50,7 +50,7 @@ pub struct OpenSessionStore {
 }
 
 impl SessionStore for OpenSessionStore {
-    fn save(&mut self, result: &TraceResult, request: &TraceRequest) -> Result<String> {
+    fn save(&mut self, result: &TraceTree, request: &TraceRequest) -> Result<String> {
         self.inner.save(result, request)
     }
 

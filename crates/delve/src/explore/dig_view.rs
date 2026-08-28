@@ -1,10 +1,9 @@
 use dns_core::response::DnsRecord;
-use dns_resolve::{FinalAnswer, StoredDnsMessage, TraceHop};
+use dns_resolve::{StoredDnsMessage, TraceHop};
 use ratatui::text::{Line, Span};
 
 use super::detail::{
-    format_query_response_time_line, format_server_endpoint, legacy_final_detail_lines,
-    legacy_hop_detail_lines,
+    format_query_response_time_line, format_server_endpoint, legacy_hop_detail_lines,
 };
 use super::flags::{format_flags_plain, format_flags_spans};
 use super::terminal::{UiSymbols, cache_source_symbol};
@@ -23,7 +22,6 @@ struct DigView<'a> {
     ede_text: Option<&'a str>,
     zone: &'a str,
     message: &'a StoredDnsMessage,
-    is_final: bool,
     from_cache: bool,
     symbols: UiSymbols,
 }
@@ -43,42 +41,7 @@ impl<'a> DigView<'a> {
             ede_text: hop.ede_text.as_deref(),
             zone: &hop.zone,
             message: &hop.response,
-            is_final: false,
             from_cache: hop.from_cache,
-            symbols,
-        }
-    }
-
-    fn from_final(answer: &'a FinalAnswer, symbols: UiSymbols) -> Self {
-        let qname = if answer.qname.is_empty() {
-            "."
-        } else {
-            answer.qname.as_str()
-        };
-        let qtype = if answer.qtype.is_empty() {
-            "A"
-        } else {
-            answer.qtype.as_str()
-        };
-        Self {
-            qname,
-            qtype,
-            server: &answer.server,
-            server_name: answer.server_name.as_deref(),
-            transport: if answer.transport.is_empty() {
-                "udp"
-            } else {
-                answer.transport.as_str()
-            },
-            rtt_ms: answer.rtt_ms,
-            rcode: &answer.rcode,
-            nsid: answer.nsid.as_deref(),
-            ede_code: None,
-            ede_text: None,
-            zone: qname,
-            message: &answer.response,
-            is_final: true,
-            from_cache: answer.from_cache,
             symbols,
         }
     }
@@ -114,11 +77,7 @@ impl<'a> DigView<'a> {
     }
 
     fn push_meta_plain(&self, lines: &mut Vec<String>) {
-        if self.is_final {
-            lines.push(format!("query: {} {}", self.qname, self.qtype));
-        } else {
-            lines.push(format!("zone: {}", self.zone));
-        }
+        lines.push(format!("zone: {}", self.zone));
         lines.push(format!(
             "server: {} ({})",
             format_server_endpoint(self.server, self.server_name),
@@ -141,19 +100,11 @@ impl<'a> DigView<'a> {
 
     fn meta_styled(&self, theme: &Theme) -> Vec<Line<'static>> {
         let server = format_server_endpoint(self.server, self.server_name);
-        let context_line = if self.is_final {
-            Line::from(vec![
-                Span::styled("query: ", theme.label()),
-                Span::styled(format!("{} {}", self.qname, self.qtype), theme.zone()),
-            ])
-        } else {
+        let mut lines = vec![
             Line::from(vec![
                 Span::styled("zone: ", theme.label()),
                 Span::styled(self.zone.to_string(), theme.zone()),
-            ])
-        };
-        let mut lines = vec![
-            context_line,
+            ]),
             Line::from(vec![
                 Span::styled("server: ", theme.label()),
                 Span::raw(format!("{server} ({}) ", self.transport)),
@@ -258,10 +209,6 @@ pub fn hop_has_dig_view(hop: &TraceHop) -> bool {
     hop.response.is_stored()
 }
 
-pub fn final_has_dig_view(answer: &FinalAnswer) -> bool {
-    answer.response.is_stored()
-}
-
 pub fn hop_detail_plain(hop: &TraceHop, symbols: UiSymbols) -> String {
     if hop_has_dig_view(hop) {
         DigView::from_hop(hop, symbols).to_plain()
@@ -270,27 +217,11 @@ pub fn hop_detail_plain(hop: &TraceHop, symbols: UiSymbols) -> String {
     }
 }
 
-pub fn final_detail_plain(answer: &FinalAnswer, symbols: UiSymbols) -> String {
-    if final_has_dig_view(answer) {
-        DigView::from_final(answer, symbols).to_plain()
-    } else {
-        legacy_final_detail_lines(answer, symbols).join("\n")
-    }
-}
-
 pub fn hop_detail_styled(hop: &TraceHop, theme: &Theme) -> Vec<Line<'static>> {
     if hop_has_dig_view(hop) {
         DigView::from_hop(hop, theme.symbols).to_styled(theme)
     } else {
         legacy_hop_lines(hop, theme)
-    }
-}
-
-pub fn final_detail_styled(answer: &FinalAnswer, theme: &Theme) -> Vec<Line<'static>> {
-    if final_has_dig_view(answer) {
-        DigView::from_final(answer, theme.symbols).to_styled(theme)
-    } else {
-        legacy_final_lines(answer, theme)
     }
 }
 
@@ -329,13 +260,6 @@ fn record_styled(record: &DnsRecord, theme: &Theme) -> Line<'static> {
 
 fn legacy_hop_lines(hop: &TraceHop, theme: &Theme) -> Vec<Line<'static>> {
     legacy_hop_detail_lines(hop, theme.symbols)
-        .into_iter()
-        .map(|line| styled_plain_line(&line, theme))
-        .collect()
-}
-
-fn legacy_final_lines(answer: &FinalAnswer, theme: &Theme) -> Vec<Line<'static>> {
-    legacy_final_detail_lines(answer, theme.symbols)
         .into_iter()
         .map(|line| styled_plain_line(&line, theme))
         .collect()
@@ -400,6 +324,7 @@ mod tests {
             glue: vec![],
             response: sample_message(),
             from_cache: false,
+            outcome: Default::default(),
         }
     }
 

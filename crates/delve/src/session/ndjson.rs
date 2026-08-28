@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use dns_resolve::TraceResult;
+use dns_resolve::TraceTree;
 use time::OffsetDateTime;
 
 use crate::config::SessionRetention;
@@ -38,7 +38,7 @@ impl NdjsonSessionStore {
 }
 
 impl SessionStore for NdjsonSessionStore {
-    fn save(&mut self, result: &TraceResult, request: &TraceRequest) -> Result<String> {
+    fn save(&mut self, result: &TraceTree, request: &TraceRequest) -> Result<String> {
         if let Some(reason) = &self.disabled_reason {
             return Err(SessionError::Store(reason.clone()));
         }
@@ -179,16 +179,34 @@ impl SessionStore for NdjsonSessionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dns_resolve::TraceResult;
+    use dns_resolve::{HopOutcome, TraceHop, TraceTreeRequest, build_linear_tree};
 
-    fn sample_result() -> TraceResult {
-        TraceResult {
-            qname: "example.com.".into(),
-            qtype: "A".into(),
-            started_at: "2026-08-25T00:00:00Z".into(),
-            hops: vec![],
-            final_response: None,
-        }
+    fn sample_result() -> TraceTree {
+        build_linear_tree(
+            vec![TraceHop {
+                zone: ".".into(),
+                server: "1.1.1.1".into(),
+                server_name: None,
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                transport: "udp".into(),
+                rtt_ms: 10,
+                rcode: "NOERROR".into(),
+                nsid: None,
+                ede_code: None,
+                ede_text: None,
+                referral_ns: vec![],
+                glue: vec![],
+                response: Default::default(),
+                from_cache: false,
+                outcome: HopOutcome::Answered,
+            }],
+            TraceTreeRequest {
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                started_at: "2026-08-25T00:00:00Z".into(),
+            },
+        )
     }
 
     fn sample_request() -> TraceRequest {
@@ -206,6 +224,6 @@ mod tests {
             .save(&sample_result(), &sample_request())
             .expect("save");
         let loaded = store.get(&id).expect("get");
-        assert_eq!(loaded.result.qname, "example.com.");
+        assert_eq!(loaded.result.qname(), "example.com.");
     }
 }

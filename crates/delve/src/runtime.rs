@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use dns_cache::{ResponseCache, SqliteCache};
-use dns_resolve::TraceResult;
+use dns_resolve::TraceTree;
 
 use crate::config::DelveConfig;
 use crate::last_session::{clear_last_session, read_last_session, write_last_session};
@@ -86,7 +86,7 @@ impl Runtime {
 
     pub fn save_session(
         &self,
-        result: &TraceResult,
+        result: &TraceTree,
         request: &TraceRequest,
     ) -> Result<String, SessionError> {
         self.sessions
@@ -176,7 +176,35 @@ mod degradation_tests {
     use super::*;
     use crate::session::SessionStore;
     use crate::trace_request::TraceRequest;
-    use dns_resolve::TraceResult;
+    use dns_resolve::{HopOutcome, TraceHop, TraceTree, TraceTreeRequest, build_linear_tree};
+
+    fn empty_tree(started_at: &str) -> TraceTree {
+        build_linear_tree(
+            vec![TraceHop {
+                zone: ".".into(),
+                server: "1.1.1.1".into(),
+                server_name: None,
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                transport: "udp".into(),
+                rtt_ms: 1,
+                rcode: "NOERROR".into(),
+                nsid: None,
+                ede_code: None,
+                ede_text: None,
+                referral_ns: vec![],
+                glue: vec![],
+                response: Default::default(),
+                from_cache: false,
+                outcome: HopOutcome::Answered,
+            }],
+            TraceTreeRequest {
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                started_at: started_at.into(),
+            },
+        )
+    }
 
     fn sample_request() -> TraceRequest {
         TraceRequest::from_options(&crate::dig_options::TraceOptions {
@@ -197,16 +225,7 @@ mod degradation_tests {
         assert!(report.fallback_warning.is_some());
         let mut store = report.store;
         let id = store
-            .save(
-                &TraceResult {
-                    qname: "example.com.".into(),
-                    qtype: "A".into(),
-                    started_at: "2026-08-25T00:00:00Z".into(),
-                    hops: vec![],
-                    final_response: None,
-                },
-                &sample_request(),
-            )
+            .save(&empty_tree("2026-08-25T00:00:00Z"), &sample_request())
             .expect("save via ndjson");
         assert!(store.get(&id).is_ok());
     }
@@ -233,30 +252,11 @@ mod degradation_tests {
         let paths = DelvePaths::from_root(dir.path());
         let runtime = Runtime::open(paths);
         let request = sample_request();
-        let result = TraceResult {
-            qname: "example.com.".into(),
-            qtype: "A".into(),
-            started_at: "2026-08-25T00:00:00Z".into(),
-            hops: vec![],
-            final_response: None,
-        };
         let first = runtime
-            .save_session(
-                &TraceResult {
-                    started_at: "2026-08-25T00:00:00Z".into(),
-                    ..result.clone()
-                },
-                &request,
-            )
+            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request)
             .expect("first");
         let second = runtime
-            .save_session(
-                &TraceResult {
-                    started_at: "2026-08-25T01:00:00Z".into(),
-                    ..result
-                },
-                &request,
-            )
+            .save_session(&empty_tree("2026-08-25T01:00:00Z"), &request)
             .expect("second");
         let matched = runtime
             .find_matching_session(&request)

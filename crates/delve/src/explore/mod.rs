@@ -56,7 +56,7 @@ pub enum ExploreError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dns_resolve::{FinalAnswer, TraceHop, TraceResult};
+    use dns_resolve::{HopOutcome, TraceHop, TraceTreeRequest, build_linear_tree};
 
     #[test]
     fn run_outline_writes_tree() {
@@ -66,11 +66,8 @@ mod tests {
             created_at: "2026-08-25T12:00:00Z".into(),
             pinned: false,
             request: None,
-            result: TraceResult {
-                qname: "example.com.".into(),
-                qtype: "A".into(),
-                started_at: "2026-08-25T12:00:00Z".into(),
-                hops: vec![
+            result: build_linear_tree(
+                vec![
                     TraceHop {
                         zone: ".".into(),
                         server: "198.41.0.4".into(),
@@ -87,6 +84,7 @@ mod tests {
                         glue: vec![],
                         response: Default::default(),
                         from_cache: false,
+                        outcome: HopOutcome::Referral,
                     },
                     TraceHop {
                         zone: "com.".into(),
@@ -104,30 +102,21 @@ mod tests {
                         glue: vec![],
                         response: Default::default(),
                         from_cache: false,
+                        outcome: HopOutcome::Answered,
                     },
                 ],
-                final_response: Some(FinalAnswer {
-                    server: "93.184.216.34".into(),
-                    server_name: None,
-                    rtt_ms: 8,
-                    rcode: "NOERROR".into(),
-                    records: vec!["example.com. 300 93.184.216.34".into()],
-                    nsid: None,
-                    qname: String::new(),
-                    qtype: String::new(),
-                    transport: String::new(),
-                    response: Default::default(),
-                    from_cache: false,
-                }),
-            },
+                TraceTreeRequest {
+                    qname: "example.com.".into(),
+                    qtype: "A".into(),
+                    started_at: "2026-08-25T12:00:00Z".into(),
+                },
+            ),
         };
 
         let tree = build_explore_tree(&document.result);
         let outline = render_outline(&tree, ui_symbols());
         assert!(outline.contains("example.com. A"));
         assert!(outline.contains("query response time: 11ms"));
-        assert!(outline.contains("records:\n"));
-        assert!(outline.contains("  - example.com. 300 93.184.216.34"));
 
         let json = render_tree_json(&tree, &document.id);
         assert!(json.contains("\"event\":\"explore_tree\""));

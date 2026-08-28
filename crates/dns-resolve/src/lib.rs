@@ -16,6 +16,12 @@ use time::OffsetDateTime;
 
 pub mod root_hints;
 pub mod trace;
+pub mod tree;
+
+pub use tree::{
+    BranchIntent, HopOutcome, NodeOrigin, NodePath, TraceNode, TraceTree, TraceTreeRequest,
+    build_linear_tree,
+};
 
 #[derive(Debug, Error)]
 pub enum ResolveError {
@@ -216,37 +222,8 @@ pub struct TraceHop {
     /// True when this hop was served from the response cache.
     #[serde(default)]
     pub from_cache: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TraceResult {
-    pub qname: String,
-    pub qtype: String,
-    pub started_at: String,
-    pub hops: Vec<TraceHop>,
-    pub final_response: Option<FinalAnswer>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct FinalAnswer {
-    pub server: String,
     #[serde(default)]
-    pub server_name: Option<String>,
-    pub rtt_ms: u64,
-    pub rcode: String,
-    pub records: Vec<String>,
-    pub nsid: Option<String>,
-    #[serde(default)]
-    pub qname: String,
-    #[serde(default)]
-    pub qtype: String,
-    #[serde(default)]
-    pub transport: String,
-    #[serde(default)]
-    pub response: StoredDnsMessage,
-    /// True when the final answer was served from the response cache.
-    #[serde(default)]
-    pub from_cache: bool,
+    pub outcome: HopOutcome,
 }
 
 pub trait TraceProgress: Send {
@@ -254,7 +231,7 @@ pub trait TraceProgress: Send {
     fn message(&mut self, message: &str);
 }
 
-pub fn run_trace(config: &TraceConfig, progress: &mut dyn TraceProgress) -> Result<TraceResult> {
+pub fn run_trace(config: &TraceConfig, progress: &mut dyn TraceProgress) -> Result<TraceTree> {
     trace::run(config, progress)
 }
 
@@ -331,6 +308,7 @@ pub(crate) fn hop_from_query(
     server_name: Option<String>,
     referral_ns: Vec<String>,
     glue: Vec<String>,
+    outcome: HopOutcome,
 ) -> TraceHop {
     TraceHop {
         zone: zone.to_string(),
@@ -352,6 +330,7 @@ pub(crate) fn hop_from_query(
         glue,
         response: StoredDnsMessage::from_response(&query.response),
         from_cache: query.from_cache,
+        outcome,
     }
 }
 

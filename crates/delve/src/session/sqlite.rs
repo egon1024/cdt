@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use crate::trace_request::TraceRequest;
-use dns_resolve::TraceResult;
+use dns_resolve::TraceTree;
 use rusqlite::{Connection, params};
 use time::OffsetDateTime;
 
@@ -48,7 +48,7 @@ impl SqliteSessionStore {
 }
 
 impl SessionStore for SqliteSessionStore {
-    fn save(&mut self, result: &TraceResult, request: &TraceRequest) -> Result<String> {
+    fn save(&mut self, result: &TraceTree, request: &TraceRequest) -> Result<String> {
         let id = new_session_id();
         let document = SessionDocument::new(id.clone(), request.clone(), result.clone());
         let body = serde_json::to_string(&document)
@@ -194,14 +194,11 @@ impl SessionStore for SqliteSessionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dns_resolve::{TraceHop, TraceResult};
+    use dns_resolve::{HopOutcome, TraceHop, TraceTreeRequest, build_linear_tree};
 
-    fn sample_result(started_at: &str) -> TraceResult {
-        TraceResult {
-            qname: "example.com.".into(),
-            qtype: "A".into(),
-            started_at: started_at.into(),
-            hops: vec![TraceHop {
+    fn sample_result(started_at: &str) -> TraceTree {
+        build_linear_tree(
+            vec![TraceHop {
                 zone: ".".into(),
                 server: "1.1.1.1".into(),
                 server_name: None,
@@ -217,9 +214,14 @@ mod tests {
                 glue: vec![],
                 response: Default::default(),
                 from_cache: false,
+                outcome: HopOutcome::Answered,
             }],
-            final_response: None,
-        }
+            TraceTreeRequest {
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                started_at: started_at.into(),
+            },
+        )
     }
 
     fn sample_request() -> TraceRequest {
@@ -238,7 +240,7 @@ mod tests {
             .save(&sample_result("2026-08-25T00:00:00Z"), &sample_request())
             .expect("save");
         let loaded = store.get(&id).expect("get");
-        assert_eq!(loaded.result.qname, "example.com.");
+        assert_eq!(loaded.result.qname(), "example.com.");
         assert!(!loaded.pinned);
     }
 

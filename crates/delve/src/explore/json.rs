@@ -34,10 +34,6 @@ fn json_value(tree: &ExploreTree, node: &ExploreNode) -> serde_json::Value {
             "kind": "hop",
             "hop": tree.hop(*hop_index),
         }),
-        ExploreNode::Final => serde_json::json!({
-            "kind": "final",
-            "answer": tree.trace().final_response,
-        }),
     }
 }
 
@@ -45,15 +41,12 @@ fn json_value(tree: &ExploreTree, node: &ExploreNode) -> serde_json::Value {
 mod tests {
     use super::*;
     use crate::explore::tree::build_explore_tree;
-    use dns_resolve::{TraceHop, TraceResult};
+    use dns_resolve::{HopOutcome, TraceHop, TraceTreeRequest, build_linear_tree};
 
     #[test]
     fn json_includes_session_and_tree() {
-        let trace = TraceResult {
-            qname: "example.com.".into(),
-            qtype: "A".into(),
-            started_at: "2026-08-25T00:00:00Z".into(),
-            hops: vec![TraceHop {
+        let trace = build_linear_tree(
+            vec![TraceHop {
                 zone: ".".into(),
                 server: "1.1.1.1".into(),
                 server_name: None,
@@ -69,9 +62,14 @@ mod tests {
                 glue: vec![],
                 response: Default::default(),
                 from_cache: false,
+                outcome: HopOutcome::Answered,
             }],
-            final_response: None,
-        };
+            TraceTreeRequest {
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                started_at: "2026-08-25T00:00:00Z".into(),
+            },
+        );
         let tree = build_explore_tree(&trace);
         let json = render_tree_json(&tree, "01JTEST");
         assert!(json.contains("\"event\":\"explore_tree\""));
