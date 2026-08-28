@@ -6,12 +6,12 @@ use hickory_proto::rr::RecordType;
 
 use crate::trace::{
     announce_multi_server_query, collect_glue, expansion_targets_for_cut, failed_hop,
-    is_authoritative_answer, resolve_nameservers_from_referral, server_matches_primary,
-    start_servers,
+    is_authoritative_answer, referral_key, resolve_nameservers_from_referral,
+    server_matches_primary, start_servers,
 };
 use crate::{
     ExpansionPolicy, HopOutcome, QueryBudget, ResolveError, Result, ServerTarget, TraceConfig,
-    TraceNode, TraceProgress, hop_from_query,
+    TraceHop, TraceNode, TraceProgress, hop_from_query,
 };
 
 use super::emitter::EmitScheduler;
@@ -20,6 +20,27 @@ use super::queue::WorkQueue;
 use super::result_store::ResultStore;
 use super::types::{JobId, JobKind, TraceJob};
 use super::worker::execute_job;
+
+/// Run a glueless nameserver resolution sub-batch through the job queue.
+pub(crate) fn run_ns_resolution_batch(
+    config: &TraceConfig,
+    budget: &mut QueryBudget,
+    ns_name: DomainName,
+) -> Result<TraceNode> {
+    let mut sub_config = config.clone();
+    sub_config.qname = ns_name.clone();
+    sub_config.qtype = RecordType::A;
+    sub_config.expansion_policy = ExpansionPolicy::None;
+    sub_config.ns_resolution_active.insert(ns_name.to_string());
+    run_policy(&sub_config, budget, &mut SilentNsProgress, ns_name, false)
+}
+
+struct SilentNsProgress;
+
+impl TraceProgress for SilentNsProgress {
+    fn hop(&mut self, _hop: &TraceHop, _path: &crate::NodePath) {}
+    fn message(&mut self, _message: &str) {}
+}
 
 /// Run a trace through the serial job queue for any expansion policy.
 pub fn run_policy(
@@ -60,6 +81,8 @@ pub struct Coordinator<'a> {
     emitter: EmitScheduler,
     visited_zones: HashSet<String>,
     referral_by_path: HashMap<Vec<usize>, DelegationInfo>,
+    seen_referrals: HashMap<Vec<usize>, HashSet<String>>,
+    single_path_subtrees: HashSet<Vec<usize>>,
     top_level_siblings: BTreeMap<usize, TraceNode>,
     next_job_id: u64,
 }
@@ -81,6 +104,8 @@ impl<'a> Coordinator<'a> {
             emitter: EmitScheduler::new(),
             visited_zones: HashSet::new(),
             referral_by_path: HashMap::new(),
+            seen_referrals: HashMap::new(),
+            single_path_subtrees: HashSet::new(),
             top_level_siblings: BTreeMap::new(),
             next_job_id: 1,
         }
@@ -267,6 +292,10 @@ impl<'a> Coordinator<'a> {
     }
 
     fn finalize_tree(&mut self) -> Result<TraceNode> {
+        if self.budget.truncated {
+            self.progress.budget_truncated(self.budget.cap());
+        }
+
         if self.config.expansion_policy == ExpansionPolicy::All {
             if let Some(mut root) = self.top_level_siblings.remove(&0) {
                 let siblings = std::mem::take(&mut self.top_level_siblings);
@@ -366,6 +395,17 @@ impl<'a> Coordinator<'a> {
             });
         }
 
+        if self.config.expansion_policy == ExpansionPolicy::All {
+            let cut_parent = parent_path(&job.path);
+            let ref_key = referral_key(&query_result.response, &job.qname, &next_zone);
+            let seen = self.seen_referrals.entry(cut_parent).or_default();
+            if !seen.insert(ref_key) {
+                hop.outcome = HopOutcome::Referral;
+                self.store_completed_node(&job.path, hop);
+                return Ok(());
+            }
+        }
+
         self.progress.message(&format!(
             "following delegation to zone {} via {:?}",
             next_zone,
@@ -423,7 +463,11 @@ impl<'a> Coordinator<'a> {
         self.store_completed_node(&job.path, hop);
 
         let child_path = child_path_for_policy(self.config.expansion_policy, &job.path);
-        self.enqueue_cut(next_servers, job.qname, next_zone, child_path)?;
+        if self.requires_single_path_subtree(&job.path) {
+            self.enqueue_single_server(next_servers, job.qname, next_zone, child_path)?;
+        } else {
+            self.enqueue_cut(next_servers, job.qname, next_zone, child_path)?;
+        }
         Ok(())
     }
 
@@ -478,6 +522,7 @@ impl<'a> Coordinator<'a> {
         for (index, server) in expansion_servers.iter().enumerate() {
             let mut sibling_path = parent_path.clone();
             sibling_path.push(index);
+            self.single_path_subtrees.insert(sibling_path.clone());
             // The linear-walk job already registered its path at enqueue time.
             if sibling_path != job.path {
                 self.emitter.register_path(sibling_path.clone());
@@ -502,6 +547,12 @@ impl<'a> Coordinator<'a> {
         }
 
         Ok(())
+    }
+
+    fn requires_single_path_subtree(&self, path: &[usize]) -> bool {
+        self.single_path_subtrees
+            .iter()
+            .any(|prefix| path.len() >= prefix.len() && path[..prefix.len()] == prefix[..])
     }
 
     fn store_completed_node(&mut self, path: &[usize], hop: crate::TraceHop) {
@@ -1066,5 +1117,203 @@ mod tests {
             .map(|node| node.hop.server.clone())
             .collect();
         assert_eq!(parent.children.len(), servers.len());
+    }
+
+    struct DivergentReferralExchange;
+
+    impl crate::DnsExchange for DivergentReferralExchange {
+        fn exchange(
+            &self,
+            server: IpAddr,
+            _port: u16,
+            options: &dns_core::QueryOptions,
+        ) -> dns_core::Result<dns_core::response::QueryResult> {
+            let qname = options.qname.to_string();
+            let response = if qname == "example.com." {
+                match server {
+                    IpAddr::V4(v4) if v4 == Ipv4Addr::new(1, 0, 0, 1) => {
+                        referral_response(&options.qname, "com.", "ns.com.", "2.0.0.2")
+                    }
+                    IpAddr::V4(v4) if v4 == Ipv4Addr::new(2, 0, 0, 2) => {
+                        referral_response(&options.qname, "org.", "ns.org.", "3.0.0.3")
+                    }
+                    IpAddr::V4(v4) if v4 == Ipv4Addr::new(1, 0, 0, 3) => {
+                        referral_response(&options.qname, "com.", "ns2.com.", "2.0.0.2")
+                    }
+                    _ => authoritative_a(&options.qname, "93.184.216.34"),
+                }
+            } else {
+                authoritative_a(&options.qname, "93.184.216.34")
+            };
+            Ok(dns_core::response::QueryResult {
+                server,
+                transport: options.transport,
+                qname: options.qname.clone(),
+                qtype: options.qtype.to_string(),
+                rtt: std::time::Duration::from_millis(1),
+                response,
+                from_cache: false,
+            })
+        }
+    }
+
+    fn referral_response(_qname: &DomainName, zone: &str, ns: &str, glue: &str) -> DnsResponse {
+        DnsResponse {
+            id: 1,
+            rcode: 0,
+            rcode_text: "NOERROR".into(),
+            authoritative: false,
+            truncated: false,
+            recursion_desired: false,
+            recursion_available: false,
+            authentic_data: false,
+            checking_disabled: false,
+            answers: vec![],
+            authorities: vec![DnsRecord {
+                name: DomainName::parse(zone).expect("zone"),
+                rtype: "NS".into(),
+                rclass: "IN".into(),
+                ttl: 3600,
+                rdata: format!("{ns}."),
+            }],
+            additionals: vec![DnsRecord {
+                name: DomainName::parse(&format!("{ns}.")).expect("ns"),
+                rtype: "A".into(),
+                rclass: "IN".into(),
+                ttl: 300,
+                rdata: glue.into(),
+            }],
+            edns: EdnsMeta::default(),
+        }
+    }
+
+    fn authoritative_a(qname: &DomainName, address: &str) -> DnsResponse {
+        DnsResponse {
+            id: 1,
+            rcode: 0,
+            rcode_text: "NOERROR".into(),
+            authoritative: true,
+            truncated: false,
+            recursion_desired: false,
+            recursion_available: false,
+            authentic_data: false,
+            checking_disabled: false,
+            answers: vec![DnsRecord {
+                name: qname.clone(),
+                rtype: "A".into(),
+                rclass: "IN".into(),
+                ttl: 300,
+                rdata: address.into(),
+            }],
+            authorities: vec![],
+            additionals: vec![],
+            edns: EdnsMeta::default(),
+        }
+    }
+
+    #[test]
+    fn all_policy_divergent_referrals_fan_out_to_distinct_subtrees() {
+        let mut config = test_config("example.com.", Arc::new(DivergentReferralExchange));
+        config.expansion_policy = ExpansionPolicy::All;
+        config.start_servers = Some(vec![
+            IpAddr::V4(Ipv4Addr::new(1, 0, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(2, 0, 0, 2)),
+        ]);
+        let mut budget = QueryBudget::new(64);
+        let qname = DomainName::parse("example.com.").expect("qname");
+        let tree =
+            run_policy(&config, &mut budget, &mut SilentProgress, qname, false).expect("trace");
+        let mut subtrees = vec![&tree];
+        subtrees.extend(tree.children.iter());
+        let continuing = subtrees
+            .iter()
+            .filter(|node| !node.children.is_empty())
+            .count();
+        assert_eq!(
+            continuing, 2,
+            "expected two distinct referral subtrees to continue tracing"
+        );
+    }
+
+    #[test]
+    fn all_policy_identical_referrals_are_traced_once() {
+        let mut config = test_config("example.com.", Arc::new(DivergentReferralExchange));
+        config.expansion_policy = ExpansionPolicy::All;
+        config.start_servers = Some(vec![
+            IpAddr::V4(Ipv4Addr::new(1, 0, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(1, 0, 0, 3)),
+        ]);
+        let mut budget = QueryBudget::new(64);
+        let qname = DomainName::parse("example.com.").expect("qname");
+        let tree =
+            run_policy(&config, &mut budget, &mut SilentProgress, qname, false).expect("trace");
+        let subtrees_with_children = tree
+            .children
+            .iter()
+            .filter(|child| !child.children.is_empty())
+            .count();
+        assert_eq!(
+            subtrees_with_children, 1,
+            "identical referrals should continue tracing once"
+        );
+    }
+
+    struct TruncatingProgress {
+        truncated: bool,
+    }
+
+    impl TraceProgress for TruncatingProgress {
+        fn hop(&mut self, _hop: &TraceHop, _path: &crate::NodePath) {}
+        fn message(&mut self, _message: &str) {}
+        fn budget_truncated(&mut self, _cap: usize) {
+            self.truncated = true;
+        }
+    }
+
+    #[test]
+    fn parallel_load_reports_budget_truncation() {
+        let mut config = test_config("example.com.", Arc::new(MultiCutExchange));
+        config.expansion_policy = ExpansionPolicy::All;
+        config.max_parallel_queries = 4;
+        config.start_servers = Some(vec![
+            IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)),
+            IpAddr::V4(Ipv4Addr::new(9, 9, 9, 10)),
+            IpAddr::V4(Ipv4Addr::new(9, 9, 9, 11)),
+        ]);
+        let mut budget = QueryBudget::new(3);
+        let mut progress = TruncatingProgress { truncated: false };
+        let qname = DomainName::parse("example.com.").expect("qname");
+        let tree = run_policy(&config, &mut budget, &mut progress, qname, false).expect("trace");
+        assert!(budget.truncated);
+        assert!(progress.truncated);
+        assert!(!tree.children.is_empty());
+    }
+
+    #[test]
+    fn last_policy_terminal_siblings_remain_single_path() {
+        let mut config = test_config("example.com.", Arc::new(MultiCutExchange));
+        config.expansion_policy = ExpansionPolicy::Last;
+        config.start_servers = Some(vec![IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9))]);
+        let mut budget = QueryBudget::new(64);
+        let qname = DomainName::parse("example.com.").expect("qname");
+        let tree =
+            run_policy(&config, &mut budget, &mut SilentProgress, qname, false).expect("trace");
+        let wrapped = crate::TraceTree {
+            request: crate::TraceTreeRequest {
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                started_at: "now".into(),
+            },
+            root: tree,
+            budget_truncated: false,
+        };
+        let path = wrapped.primary_path();
+        let parent = path.iter().rev().nth(1).expect("delegation hop");
+        for sibling in &parent.children {
+            assert!(
+                sibling.children.len() <= 1,
+                "terminal expansion subtrees must stay single-path under +expand=last"
+            );
+        }
     }
 }

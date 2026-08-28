@@ -25,14 +25,6 @@ struct PrimaryAttempt {
     hop: TraceHop,
 }
 
-/// Progress sink for nested NS-resolution sub-traces (not part of the session tree).
-struct SilentProgress;
-
-impl TraceProgress for SilentProgress {
-    fn hop(&mut self, _hop: &TraceHop, _path: &NodePath) {}
-    fn message(&mut self, _message: &str) {}
-}
-
 pub fn run(config: &TraceConfig, progress: &mut dyn TraceProgress) -> Result<TraceTree> {
     let original_qname = config.qname.clone();
     let started_at = now_rfc3339();
@@ -304,6 +296,15 @@ fn primary_leaf(node: &TraceNode) -> &TraceNode {
         current = child;
     }
     current
+}
+
+fn answering_hop_from_node(node: &TraceNode) -> Option<&TraceHop> {
+    let leaf = primary_leaf(node);
+    if matches!(leaf.hop.outcome, HopOutcome::Answered) {
+        Some(&leaf.hop)
+    } else {
+        None
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -704,7 +705,11 @@ fn expand_cut(
     Ok(())
 }
 
-fn referral_key(response: &DnsResponse, qname: &DomainName, next_zone: &DomainName) -> String {
+pub(crate) fn referral_key(
+    response: &DnsResponse,
+    qname: &DomainName,
+    next_zone: &DomainName,
+) -> String {
     let mut names = response.ns_names();
     names.sort_by_key(|name| name.to_string());
     format!(
@@ -1082,8 +1087,8 @@ fn resolve_nameserver(
     sub_config.expansion_policy = ExpansionPolicy::None;
     sub_config.ns_resolution_active.insert(ns_name.to_string());
 
-    let sub_trace = run(&sub_config, &mut SilentProgress)?;
-    if let Some(hop) = sub_trace.answering_hop() {
+    let subtree = crate::job_queue::run_ns_resolution_batch(&sub_config, budget, ns_name.clone())?;
+    if let Some(hop) = answering_hop_from_node(&subtree) {
         let parsed = hop
             .response
             .answers
