@@ -401,7 +401,10 @@ impl<'a> Coordinator<'a> {
         for (index, server) in expansion_servers.iter().enumerate() {
             let mut sibling_path = parent_path.clone();
             sibling_path.push(index);
-            self.emitter.register_path(sibling_path.clone());
+            // The linear-walk job already registered its path at enqueue time.
+            if sibling_path != job.path {
+                self.emitter.register_path(sibling_path.clone());
+            }
 
             if server_matches_primary(server, &primary_server, primary_result_server) {
                 self.store_completed_node(&sibling_path, hop.clone());
@@ -552,6 +555,17 @@ mod tests {
         fn message(&mut self, message: &str) {
             self.messages.push(message.to_string());
         }
+    }
+
+    struct HopRecordingProgress {
+        paths: Vec<Vec<usize>>,
+    }
+
+    impl TraceProgress for HopRecordingProgress {
+        fn hop(&mut self, _hop: &TraceHop, path: &crate::NodePath) {
+            self.paths.push(path.path.clone());
+        }
+        fn message(&mut self, _message: &str) {}
     }
 
     fn test_config(qname: &str, exchange: Arc<dyn crate::DnsExchange>) -> TraceConfig {
@@ -903,6 +917,22 @@ mod tests {
                 from_cache: false,
             })
         }
+    }
+
+    #[test]
+    fn terminal_last_emits_all_sibling_hops_in_order() {
+        let mut config = test_config("example.com.", Arc::new(MultiNsDelegatingExchange));
+        config.expansion_policy = ExpansionPolicy::Last;
+        config.start_servers = Some(vec![IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9))]);
+        let mut budget = QueryBudget::new(64);
+        let mut progress = HopRecordingProgress { paths: vec![] };
+        let qname = DomainName::parse("example.com.").expect("qname");
+        let _tree = run_policy(&config, &mut budget, &mut progress, qname, false).expect("trace");
+        assert!(
+            progress.paths.contains(&vec![0, 1]) && progress.paths.contains(&vec![0, 2]),
+            "expected terminal sibling hops to be emitted, got {:?}",
+            progress.paths
+        );
     }
 
     #[test]
