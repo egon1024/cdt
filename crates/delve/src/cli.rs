@@ -8,7 +8,7 @@ use thiserror::Error;
 use crate::dig_options::{ParseError, TraceOptions, parse_trace_args};
 use crate::expand_confirm::{ExpandConfirmOutcome, confirm_expand_all, expand_all_is_tty};
 use crate::explore::{ExploreError, run_events, run_explore, run_outline};
-use crate::hop_display::print_hop_human;
+use crate::hop_display::{HopDisplayState, print_hop_human};
 use crate::progress::StderrProgress;
 use crate::replay::{print_final_answer, print_reused_session_notice, replay_session};
 use crate::runtime::Runtime;
@@ -440,8 +440,11 @@ fn print_session(document: &SessionDocument, json: bool) {
         document.result.qname(),
         document.result.qtype()
     );
-    for (depth, hop) in document.result.primary_hops().iter().enumerate() {
-        print_hop_human(hop, depth);
+    let mut hop_display = HopDisplayState::new();
+    for path in document.result.display_order() {
+        if let Some(node) = document.result.resolve(&path) {
+            print_hop_human(&mut hop_display, &node.hop, &path);
+        }
     }
     if let Some(hop) = document.result.answering_hop() {
         eprintln!(

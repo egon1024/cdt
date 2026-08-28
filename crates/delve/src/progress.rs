@@ -1,14 +1,18 @@
 use dns_resolve::{NodePath, TraceHop, TraceProgress};
 
-use crate::hop_display::print_hop_human;
+use crate::hop_display::{HopDisplayState, print_hop_human};
 
 pub struct StderrProgress {
     events: bool,
+    hop_display: HopDisplayState,
 }
 
 impl StderrProgress {
     pub fn new(events: bool) -> Self {
-        Self { events }
+        Self {
+            events,
+            hop_display: HopDisplayState::new(),
+        }
     }
 }
 
@@ -28,7 +32,7 @@ impl TraceProgress for StderrProgress {
             return;
         }
 
-        print_hop_human(hop, path.path.len());
+        print_hop_human(&mut self.hop_display, hop, path);
     }
 
     fn message(&mut self, message: &str) {
