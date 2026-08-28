@@ -3,6 +3,7 @@ use serde::Deserialize;
 use crate::paths::DelvePaths;
 
 const DEFAULT_RETENTION: &str = "180d";
+const DEFAULT_MAX_QUERIES: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionRetention {
@@ -14,12 +15,18 @@ pub enum SessionRetention {
 #[derive(Debug, Clone)]
 pub struct DelveConfig {
     pub session_retention: SessionRetention,
+    pub trace_max_queries_per_action: usize,
+    /// Used by explore view-state persistence (Phase 5).
+    #[allow(dead_code)]
+    pub explore_persist_view_state: bool,
 }
 
 impl Default for DelveConfig {
     fn default() -> Self {
         Self {
             session_retention: parse_retention(DEFAULT_RETENTION).expect("default retention"),
+            trace_max_queries_per_action: DEFAULT_MAX_QUERIES,
+            explore_persist_view_state: true,
         }
     }
 }
@@ -28,11 +35,25 @@ impl Default for DelveConfig {
 struct DelveConfigFile {
     #[serde(default)]
     session: SessionSection,
+    #[serde(default)]
+    trace: TraceSection,
+    #[serde(default)]
+    explore: ExploreSection,
 }
 
 #[derive(Debug, Deserialize, Default)]
 struct SessionSection {
     retention: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct TraceSection {
+    max_queries_per_action: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ExploreSection {
+    persist_view_state: Option<bool>,
 }
 
 impl DelveConfig {
@@ -81,7 +102,27 @@ impl DelveConfig {
             }
         };
 
-        (Self { session_retention }, warnings)
+        let trace_max_queries_per_action = match parsed.trace.max_queries_per_action {
+            None => DEFAULT_MAX_QUERIES,
+            Some(0) => {
+                warnings.push(format!(
+                    "warning: invalid trace.max_queries_per_action 0; using {DEFAULT_MAX_QUERIES}"
+                ));
+                DEFAULT_MAX_QUERIES
+            }
+            Some(value) => value,
+        };
+
+        let explore_persist_view_state = parsed.explore.persist_view_state.unwrap_or(true);
+
+        (
+            Self {
+                session_retention,
+                trace_max_queries_per_action,
+                explore_persist_view_state,
+            },
+            warnings,
+        )
     }
 }
 
@@ -129,5 +170,15 @@ mod tests {
             SessionRetention::Never
         );
         assert_eq!(parse_retention("0").expect("zero"), SessionRetention::Never);
+    }
+
+    #[test]
+    fn default_max_queries_is_sixty_four() {
+        assert_eq!(DelveConfig::default().trace_max_queries_per_action, 64);
+    }
+
+    #[test]
+    fn default_persist_view_state_is_true() {
+        assert!(DelveConfig::default().explore_persist_view_state);
     }
 }

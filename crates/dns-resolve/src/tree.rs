@@ -65,6 +65,9 @@ pub struct TraceTreeRequest {
 pub struct TraceTree {
     pub request: TraceTreeRequest,
     pub root: TraceNode,
+    /// True when the per-action query cap stopped further fan-out.
+    #[serde(default)]
+    pub budget_truncated: bool,
 }
 
 impl TraceTree {
@@ -160,6 +163,7 @@ pub fn build_linear_tree(hops: Vec<TraceHop>, request: TraceTreeRequest) -> Trac
     TraceTree {
         request,
         root: current.expect("at least one hop"),
+        budget_truncated: false,
     }
 }
 
@@ -269,6 +273,7 @@ mod tests {
                     children: vec![],
                 }],
             },
+            budget_truncated: false,
         };
 
         let json = serde_json::to_vec(&tree).expect("serialize");
@@ -294,6 +299,7 @@ mod tests {
                     children: vec![],
                 }],
             },
+            budget_truncated: false,
         };
 
         assert!(tree.resolve(&NodePath::root(0)).is_some());
@@ -341,6 +347,7 @@ mod tests {
                     },
                 ],
             },
+            budget_truncated: false,
         };
 
         let order = tree.display_order();

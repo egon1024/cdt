@@ -3,9 +3,10 @@ use dns_resolve::TraceHop;
 use crate::explore::{cache_source_symbol, ui_symbols};
 
 /// Human-readable hop line(s) matching live trace stderr output.
-pub fn print_hop_human(hop: &TraceHop) {
+pub fn print_hop_human(hop: &TraceHop, depth: usize) {
+    let indent = "  ".repeat(depth);
     let mut line = format!(
-        "[{}] {} {} {} via {} in {}ms ({}) {}",
+        "{indent}[{}] {} {} {} via {} in {}ms ({}) {}",
         hop.zone,
         hop.qname,
         hop.qtype,
@@ -29,9 +30,9 @@ pub fn print_hop_human(hop: &TraceHop) {
     eprintln!("{line}");
 
     if !hop.referral_ns.is_empty() {
-        eprintln!("  referral NS: {}", hop.referral_ns.join(", "));
+        eprintln!("{indent}  referral NS: {}", hop.referral_ns.join(", "));
     }
     if !hop.glue.is_empty() {
-        eprintln!("  glue: {}", hop.glue.join(", "));
+        eprintln!("{indent}  glue: {}", hop.glue.join(", "));
     }
 }

@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use dns_core::parse_record_type;
+use dns_resolve::ExpansionPolicy;
 
 /// Printed after `delve trace --help` usage (options are dig-style, not clap flags).
 pub const TRACE_OPTIONS_HELP: &str = "\
@@ -28,6 +29,8 @@ DNS behavior:
   +dnssec / +nodnssec    Set or clear the DO bit (default: off)
   +nsid / +nonsid        Request EDNS NSID (default: on)
   +follow / +nofollow    Follow CNAME/DNAME alias chains (default: off)
+  +expand=last|all|none  Zone-cut expansion policy (default: last)
+  +expand=all+force      Skip full-expansion confirmation prompt
 
 Output and sessions:
   +events / +noevents    Emit NDJSON events on stdout (default: off)
@@ -73,6 +76,8 @@ pub struct TraceOptions {
     pub save_session: bool,
     pub events: bool,
     pub fresh: bool,
+    pub expansion: ExpansionPolicy,
+    pub expand_all_force: bool,
 }
 
 impl Default for TraceOptions {
@@ -95,6 +100,8 @@ impl Default for TraceOptions {
             save_session: true,
             events: false,
             fresh: false,
+            expansion: ExpansionPolicy::Last,
+            expand_all_force: false,
         }
     }
 }
@@ -228,6 +235,18 @@ fn apply_query_option(options: &mut TraceOptions, arg: &str) -> Result<(), Parse
         "save" => options.save_session = !negate,
         "fresh" => options.fresh = !negate,
         "follow" => options.follow_aliases = !negate,
+        "expand" => {
+            let Some(raw) = value else {
+                return Err(ParseError::MissingValue {
+                    option: "+expand".into(),
+                });
+            };
+            let (policy, force) = parse_expand_value(raw)?;
+            options.expansion = policy;
+            if force {
+                options.expand_all_force = true;
+            }
+        }
         other => return Err(ParseError::UnknownOption(format!("+{other}"))),
     }
 
@@ -263,6 +282,26 @@ fn parse_tries(raw: &str) -> Result<u8, ParseError> {
         value: raw.into(),
     })?;
     Ok((parsed.max(1)) as u8)
+}
+
+fn parse_expand_value(raw: &str) -> Result<(ExpansionPolicy, bool), ParseError> {
+    let (body, force) = if let Some(stem) = raw.strip_suffix("+force") {
+        (stem, true)
+    } else {
+        (raw, false)
+    };
+    let policy = match body {
+        "last" => ExpansionPolicy::Last,
+        "all" => ExpansionPolicy::All,
+        "none" => ExpansionPolicy::None,
+        other => {
+            return Err(ParseError::InvalidValue {
+                option: "+expand".into(),
+                value: other.into(),
+            });
+        }
+    };
+    Ok((policy, force))
 }
 
 #[cfg(test)]
@@ -371,5 +410,39 @@ mod tests {
 
         let options = parse_trace_args(&args(&["example.com", "+follow"])).expect("parse");
         assert!(options.follow_aliases);
+    }
+
+    #[test]
+    fn parses_expand_policy_default() {
+        let options = parse_trace_args(&args(&["example.com"])).expect("parse");
+        assert_eq!(options.expansion, ExpansionPolicy::Last);
+        assert!(!options.expand_all_force);
+    }
+
+    #[test]
+    fn parses_expand_values() {
+        let none = parse_trace_args(&args(&["example.com", "+expand=none"])).expect("parse");
+        assert_eq!(none.expansion, ExpansionPolicy::None);
+
+        let all = parse_trace_args(&args(&["example.com", "+expand=all"])).expect("parse");
+        assert_eq!(all.expansion, ExpansionPolicy::All);
+        assert!(!all.expand_all_force);
+
+        let forced = parse_trace_args(&args(&["example.com", "+expand=all+force"])).expect("parse");
+        assert_eq!(forced.expansion, ExpansionPolicy::All);
+        assert!(forced.expand_all_force);
+    }
+
+    #[test]
+    fn rejects_invalid_expand_value() {
+        let error =
+            parse_trace_args(&args(&["example.com", "+expand=wide"])).expect_err("invalid expand");
+        assert!(matches!(error, ParseError::InvalidValue { option, .. } if option == "+expand"));
+    }
+
+    #[test]
+    fn plain_expand_all_is_not_forced() {
+        let options = parse_trace_args(&args(&["example.com", "+expand=all"])).expect("parse");
+        assert!(!options.expand_all_force);
     }
 }

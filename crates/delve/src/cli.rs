@@ -2,10 +2,11 @@ use std::net::IpAddr;
 
 use clap::{Parser, Subcommand};
 use dns_core::{DomainName, Transport, ip_to_ptr_name, parse_record_type, parse_reverse_target};
-use dns_resolve::{TraceConfig, run_trace};
+use dns_resolve::{ExpansionPolicy, TraceConfig, run_trace};
 use thiserror::Error;
 
 use crate::dig_options::{ParseError, TraceOptions, parse_trace_args};
+use crate::expand_confirm::{ExpandConfirmOutcome, confirm_expand_all, expand_all_is_tty};
 use crate::explore::{ExploreError, run_events, run_explore, run_outline};
 use crate::hop_display::print_hop_human;
 use crate::progress::StderrProgress;
@@ -173,6 +174,9 @@ pub enum CliError {
     #[error("response cache is not available")]
     CacheUnavailable,
 
+    #[error("full expansion requires confirmation; use +expand=all+force in non-interactive mode")]
+    ExpandAllNeedsForce,
+
     #[error(transparent)]
     Explore(#[from] ExploreError),
 }
@@ -196,6 +200,17 @@ fn run_trace_command(args: TraceArgs) -> Result<(), CliError> {
 
 fn run_parsed_trace(options: TraceOptions, runtime: &Runtime) -> Result<(), CliError> {
     let request = TraceRequest::from_options(&options);
+
+    if options.expansion == ExpansionPolicy::All && !options.expand_all_force {
+        let server_count = options.server.as_ref().map(|_| 1usize).unwrap_or(13);
+        let budget = runtime.config.trace_max_queries_per_action;
+        let mut read_tty = read_tty_line;
+        match confirm_expand_all(server_count, budget, &mut read_tty, expand_all_is_tty()) {
+            ExpandConfirmOutcome::Confirmed => {}
+            ExpandConfirmOutcome::Declined => return Ok(()),
+            ExpandConfirmOutcome::NoTerminal => return Err(CliError::ExpandAllNeedsForce),
+        }
+    }
 
     if options.save_session && !options.fresh {
         if let Some(document) = runtime.find_matching_session(&request)? {
@@ -228,6 +243,8 @@ fn run_parsed_trace(options: TraceOptions, runtime: &Runtime) -> Result<(), CliE
     config.ipv4_only = options.ipv4_only;
     config.ipv6_only = options.ipv6_only;
     config.use_cache = options.use_cache;
+    config.expansion_policy = options.expansion;
+    config.max_queries_per_action = runtime.config.trace_max_queries_per_action;
     for raw in &options.cache_skip_qnames {
         config.cache_skip_qnames.insert(DomainName::parse(raw)?);
     }
@@ -264,6 +281,17 @@ fn run_parsed_trace(options: TraceOptions, runtime: &Runtime) -> Result<(), CliE
     }
 
     Ok(())
+}
+
+fn read_tty_line(_prompt: &str) -> std::io::Result<String> {
+    use std::fs::OpenOptions;
+    use std::io::{BufRead, BufReader};
+
+    let tty = OpenOptions::new().read(true).open("/dev/tty")?;
+    let mut reader = BufReader::new(tty);
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+    Ok(line)
 }
 
 fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
@@ -412,8 +440,8 @@ fn print_session(document: &SessionDocument, json: bool) {
         document.result.qname(),
         document.result.qtype()
     );
-    for hop in document.result.primary_hops() {
-        print_hop_human(hop);
+    for (depth, hop) in document.result.primary_hops().iter().enumerate() {
+        print_hop_human(hop, depth);
     }
     if let Some(hop) = document.result.answering_hop() {
         eprintln!(

@@ -14,9 +14,12 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::OffsetDateTime;
 
+pub mod budget;
 pub mod root_hints;
 pub mod trace;
 pub mod tree;
+
+pub use budget::QueryBudget;
 
 pub use tree::{
     BranchIntent, HopOutcome, NodeOrigin, NodePath, TraceNode, TraceTree, TraceTreeRequest,
@@ -48,6 +51,19 @@ pub enum ResolveError {
 }
 
 pub type Result<T> = std::result::Result<T, ResolveError>;
+
+/// Controls how many nameservers are queried at each zone cut during a trace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpansionPolicy {
+    /// Single-path: one server per cut (`+expand=none`).
+    None,
+    /// Expand only the terminal answer cut (`+expand=last`, default).
+    #[default]
+    Last,
+    /// Query every nameserver at every cut (`+expand=all`).
+    All,
+}
 
 /// Exchange hook for tests and cache integration.
 pub trait DnsExchange: Send + Sync {
@@ -96,6 +112,8 @@ pub struct TraceConfig {
     pub exchange_counter: Arc<AtomicUsize>,
     /// Nameserver hostnames currently being resolved (detects cyclic NS lookups).
     pub ns_resolution_active: HashSet<String>,
+    pub expansion_policy: ExpansionPolicy,
+    pub max_queries_per_action: usize,
 }
 
 impl TraceConfig {
@@ -121,6 +139,8 @@ impl TraceConfig {
             exchange: Arc::new(DefaultExchange),
             exchange_counter: Arc::new(AtomicUsize::new(0)),
             ns_resolution_active: HashSet::new(),
+            expansion_policy: ExpansionPolicy::Last,
+            max_queries_per_action: 64,
         }
     }
 
@@ -227,8 +247,9 @@ pub struct TraceHop {
 }
 
 pub trait TraceProgress: Send {
-    fn hop(&mut self, hop: &TraceHop);
+    fn hop(&mut self, hop: &TraceHop, path: &NodePath);
     fn message(&mut self, message: &str);
+    fn budget_truncated(&mut self, _cap: usize) {}
 }
 
 pub fn run_trace(config: &TraceConfig, progress: &mut dyn TraceProgress) -> Result<TraceTree> {

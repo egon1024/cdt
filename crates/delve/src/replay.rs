@@ -5,8 +5,10 @@ use crate::session::SessionDocument;
 
 pub fn replay_session(document: &SessionDocument, events: bool) {
     let mut progress = StderrProgress::new(events);
-    for hop in document.result.primary_hops() {
-        progress.hop(hop);
+    for path in document.result.display_order() {
+        if let Some(node) = document.result.resolve(&path) {
+            progress.hop(&node.hop, &path);
+        }
     }
 
     if events {
