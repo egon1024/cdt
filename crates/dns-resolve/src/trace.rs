@@ -18,6 +18,12 @@ pub(crate) struct QueryAttempt {
     pub result: Result<dns_core::QueryResult>,
 }
 
+struct PrimaryAttempt {
+    server: ServerTarget,
+    query_result: dns_core::QueryResult,
+    hop: TraceHop,
+}
+
 pub fn run(config: &TraceConfig, progress: &mut dyn TraceProgress) -> Result<TraceTree> {
     let mut qname = config.qname.clone();
     let mut alias_visited = HashSet::new();
@@ -135,14 +141,118 @@ fn trace_last_policy(
     let mut chain: Vec<TraceNode> = Vec::new();
     let mut path_prefix: Vec<usize> = Vec::new();
     let mut servers = start_servers(config);
-    let mut current_zone = root_zone;
+    let mut current_zone = root_zone.clone();
     let current_qname = qname;
+    let mut parent_delegation: Option<DnsResponse> = None;
+    let mut parent_delegation_zone = root_zone;
 
     for depth in 0..config.max_depth {
         let (query_result, server_name) =
             query_one(&servers, config, budget, &current_qname, config.qtype)?;
         let referral_ns = query_result.response.ns_names();
         let glue = collect_glue(&query_result.response, &referral_ns);
+
+        if config.follow_aliases
+            && query_result
+                .response
+                .alias_target(&current_qname, config.qtype)
+                .is_some()
+        {
+            // Outer restart loop handles alias following after the tree is built.
+        }
+
+        if is_authoritative_answer(&query_result.response, &current_qname, config.qtype) {
+            let primary_server = servers
+                .iter()
+                .find(|server| server.address == query_result.server)
+                .cloned()
+                .unwrap_or_else(|| {
+                    ServerTarget::with_name(
+                        query_result.server,
+                        server_name.clone().unwrap_or_default(),
+                    )
+                });
+            let hop = hop_from_query(
+                &current_zone,
+                &query_result,
+                server_name.clone(),
+                referral_ns.iter().map(ToString::to_string).collect(),
+                glue.iter().map(ToString::to_string).collect(),
+                HopOutcome::Answered,
+            );
+            let expansion_servers = expansion_targets_for_cut(
+                parent_delegation.as_ref(),
+                &parent_delegation_zone,
+                &servers,
+                config,
+                budget,
+                progress,
+            )?;
+            expand_cut(
+                config,
+                budget,
+                progress,
+                &mut chain,
+                &path_prefix,
+                &expansion_servers,
+                &current_zone,
+                &current_qname,
+                true,
+                Some(PrimaryAttempt {
+                    server: primary_server,
+                    query_result,
+                    hop,
+                }),
+            )?;
+            return Ok(link_chain(chain));
+        }
+
+        let Some(next_zone) = query_result.response.referral_zone(&current_qname) else {
+            let primary_server = servers
+                .iter()
+                .find(|server| server.address == query_result.server)
+                .cloned()
+                .unwrap_or_else(|| {
+                    ServerTarget::with_name(
+                        query_result.server,
+                        server_name.clone().unwrap_or_default(),
+                    )
+                });
+            let hop = hop_from_query(
+                &current_zone,
+                &query_result,
+                server_name,
+                referral_ns.iter().map(ToString::to_string).collect(),
+                glue.iter().map(ToString::to_string).collect(),
+                HopOutcome::Answered,
+            );
+            let expansion_servers = expansion_targets_for_cut(
+                parent_delegation.as_ref(),
+                &parent_delegation_zone,
+                &servers,
+                config,
+                budget,
+                progress,
+            )?;
+            expand_cut(
+                config,
+                budget,
+                progress,
+                &mut chain,
+                &path_prefix,
+                &expansion_servers,
+                &current_zone,
+                &current_qname,
+                true,
+                Some(PrimaryAttempt {
+                    server: primary_server,
+                    query_result,
+                    hop,
+                }),
+            )?;
+            return Ok(link_chain(chain));
+        };
+
         let hop = hop_from_query(
             &current_zone,
             &query_result,
@@ -158,51 +268,6 @@ fn trace_last_policy(
             origin: NodeOrigin::Trace,
             children: Vec::new(),
         });
-
-        if config.follow_aliases
-            && query_result
-                .response
-                .alias_target(&current_qname, config.qtype)
-                .is_some()
-        {
-            // Outer restart loop handles alias following after the tree is built.
-        }
-
-        if is_authoritative_answer(&query_result.response, &current_qname, config.qtype) {
-            if let Some(last) = chain.last_mut() {
-                last.hop.outcome = HopOutcome::Answered;
-            }
-            expand_cut(
-                config,
-                budget,
-                progress,
-                &mut chain,
-                &path_prefix,
-                &servers,
-                &current_zone,
-                &current_qname,
-                true,
-            )?;
-            return Ok(link_chain(chain));
-        }
-
-        let Some(next_zone) = query_result.response.referral_zone(&current_qname) else {
-            if let Some(last) = chain.last_mut() {
-                last.hop.outcome = HopOutcome::Answered;
-            }
-            expand_cut(
-                config,
-                budget,
-                progress,
-                &mut chain,
-                &path_prefix,
-                &servers,
-                &current_zone,
-                &current_qname,
-                true,
-            )?;
-            return Ok(link_chain(chain));
-        };
 
         if !visited_zones.insert(next_zone.to_string()) {
             return Err(ResolveError::DelegationLoop {
@@ -225,6 +290,9 @@ fn trace_last_policy(
                 .map(|name| name.to_string())
                 .collect::<Vec<_>>()
         ));
+
+        parent_delegation = Some(query_result.response.clone());
+        parent_delegation_zone = current_zone.clone();
 
         servers = resolve_nameservers_from_referral(
             &query_result.response,
@@ -515,12 +583,20 @@ fn expand_cut(
     progress: &mut dyn TraceProgress,
     chain: &mut Vec<TraceNode>,
     path_prefix: &[usize],
-    servers: &[ServerTarget],
+    expansion_servers: &[ServerTarget],
     current_zone: &DomainName,
     qname: &DomainName,
     force_single_subtrees: bool,
+    primary: Option<PrimaryAttempt>,
 ) -> Result<()> {
-    let attempts = query_all(servers, config, budget, qname, config.qtype);
+    let attempts = query_expansion_servers(
+        expansion_servers,
+        config,
+        budget,
+        qname,
+        config.qtype,
+        primary.as_ref(),
+    );
     let mut siblings = Vec::new();
     let mut seen_referrals: HashMap<String, ()> = HashMap::new();
 
@@ -536,6 +612,18 @@ fn expand_cut(
 
         match attempt.result {
             Ok(query_result) => {
+                if let Some(primary_attempt) = primary.as_ref() {
+                    if server_matches_primary(&attempt.server, primary_attempt) {
+                        progress.hop(&primary_attempt.hop, &sibling_path);
+                        siblings.push(TraceNode {
+                            hop: primary_attempt.hop.clone(),
+                            origin: NodeOrigin::Trace,
+                            children: Vec::new(),
+                        });
+                        continue;
+                    }
+                }
+
                 let referral_ns = query_result.response.ns_names();
                 let glue = collect_glue(&query_result.response, &referral_ns);
                 let hop = hop_from_query(
@@ -572,7 +660,7 @@ fn expand_cut(
 
                     if let Ok(next_servers) = resolve_nameservers_from_referral(
                         &query_result.response,
-                        servers,
+                        expansion_servers,
                         config,
                         budget,
                         current_zone,
@@ -638,12 +726,13 @@ fn expand_cut(
         return Ok(());
     }
 
-    if chain.len() == 1 {
-        chain[0].children = siblings;
+    if chain.is_empty() {
+        let mut root = siblings.remove(0);
+        root.children.extend(siblings);
+        chain.push(root);
     } else {
-        let parent_idx = chain.len() - 2;
+        let parent_idx = chain.len() - 1;
         chain[parent_idx].children = siblings;
-        chain.pop();
     }
 
     Ok(())
@@ -815,6 +904,116 @@ fn filter_targets(targets: &[ServerTarget], ipv4_only: bool, ipv6_only: bool) ->
             .cloned()
     })
     .collect()
+}
+
+fn expansion_targets_for_cut(
+    parent_delegation: Option<&DnsResponse>,
+    parent_zone: &DomainName,
+    fallback_servers: &[ServerTarget],
+    config: &TraceConfig,
+    budget: &mut QueryBudget,
+    progress: &mut dyn TraceProgress,
+) -> Result<Vec<ServerTarget>> {
+    let Some(parent_delegation) = parent_delegation else {
+        return Ok(fallback_servers.to_vec());
+    };
+
+    resolve_all_nameserver_targets_from_referral(
+        parent_delegation,
+        fallback_servers,
+        config,
+        budget,
+        parent_zone,
+        progress,
+    )
+}
+
+fn resolve_all_nameserver_targets_from_referral(
+    referral: &DnsResponse,
+    current_servers: &[ServerTarget],
+    config: &TraceConfig,
+    budget: &mut QueryBudget,
+    parent_zone: &DomainName,
+    progress: &mut dyn TraceProgress,
+) -> Result<Vec<ServerTarget>> {
+    let ns_names = referral.ns_names();
+    if ns_names.is_empty() {
+        return Err(ResolveError::NoReachableNameserver {
+            zone: parent_zone.to_string(),
+        });
+    }
+
+    let mut targets = Vec::new();
+    let mut last_error = None;
+
+    for ns_name in ns_names {
+        match resolve_nameserver(
+            &ns_name,
+            referral,
+            current_servers,
+            config,
+            budget,
+            parent_zone,
+            progress,
+        ) {
+            Ok(addresses) if !addresses.is_empty() => targets.push(addresses[0].clone()),
+            Ok(_) => {}
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    if !targets.is_empty() {
+        return Ok(targets);
+    }
+
+    if let Some(error) = last_error {
+        return Err(error);
+    }
+
+    Err(ResolveError::NoReachableNameserver {
+        zone: parent_zone.to_string(),
+    })
+}
+
+fn query_expansion_servers(
+    servers: &[ServerTarget],
+    config: &TraceConfig,
+    budget: &mut QueryBudget,
+    qname: &DomainName,
+    qtype: RecordType,
+    primary: Option<&PrimaryAttempt>,
+) -> Vec<QueryAttempt> {
+    let mut attempts = Vec::new();
+    for server in servers {
+        if let Some(primary_attempt) = primary {
+            if server_matches_primary(server, primary_attempt) {
+                attempts.push(QueryAttempt {
+                    server: server.clone(),
+                    result: Ok(primary_attempt.query_result.clone()),
+                });
+                continue;
+            }
+        }
+        if !budget.try_consume() {
+            break;
+        }
+        let result = query_server(server.address, config, qname, qtype);
+        attempts.push(QueryAttempt {
+            server: server.clone(),
+            result,
+        });
+    }
+    attempts
+}
+
+fn server_matches_primary(server: &ServerTarget, primary: &PrimaryAttempt) -> bool {
+    if server.address == primary.server.address || server.address == primary.query_result.server {
+        return true;
+    }
+    match (&server.name, &primary.server.name) {
+        (Some(server_name), Some(primary_name)) => server_name.eq_ignore_ascii_case(primary_name),
+        _ => false,
+    }
 }
 
 fn resolve_nameservers_from_referral(
@@ -1338,21 +1537,128 @@ mod tests {
 
     #[test]
     fn last_policy_expands_terminal_cut_to_siblings() {
-        let mut config = test_config(
-            "example.com.",
-            Arc::new(DelegatingThenAuthoritativeExchange),
-        );
+        let mut config = test_config("example.com.", Arc::new(MultiNsDelegatingExchange));
         config.expansion_policy = ExpansionPolicy::Last;
-        config.start_servers = Some(vec![
-            IpAddr::V4(Ipv4Addr::new(1, 0, 0, 1)),
-            IpAddr::V4(Ipv4Addr::new(2, 0, 0, 1)),
-        ]);
+        config.start_servers = Some(vec![IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9))]);
         let tree = run(&config, &mut SilentProgress).expect("trace");
         let path = tree.primary_path();
         let parent = path.iter().rev().nth(1).expect("delegation hop");
         assert!(
             parent.children.len() >= 2,
             "terminal cut should expand to multiple siblings"
+        );
+    }
+
+    #[test]
+    fn last_policy_expands_all_parent_referral_nameservers() {
+        let mut config = test_config("example.com.", Arc::new(MultiNsDelegatingExchange));
+        config.expansion_policy = ExpansionPolicy::Last;
+        config.start_servers = Some(vec![IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9))]);
+        let tree = run(&config, &mut SilentProgress).expect("trace");
+        let path = tree.primary_path();
+        let parent = path.iter().rev().nth(1).expect("delegation hop");
+        assert_eq!(
+            parent.children.len(),
+            3,
+            "terminal cut should query every NS from the parent delegation"
+        );
+    }
+
+    #[test]
+    fn resolve_all_nameserver_targets_returns_one_per_ns() {
+        let referral = DnsResponse {
+            id: 1,
+            rcode: 0,
+            rcode_text: "NOERROR".into(),
+            authoritative: false,
+            truncated: false,
+            recursion_desired: false,
+            recursion_available: false,
+            authentic_data: false,
+            checking_disabled: false,
+            answers: vec![],
+            authorities: vec![
+                DnsRecord {
+                    name: DomainName::parse("example.com.").expect("zone"),
+                    rtype: "NS".into(),
+                    rclass: "IN".into(),
+                    ttl: 3600,
+                    rdata: "ns1.example.com.".into(),
+                },
+                DnsRecord {
+                    name: DomainName::parse("example.com.").expect("zone"),
+                    rtype: "NS".into(),
+                    rclass: "IN".into(),
+                    ttl: 3600,
+                    rdata: "ns2.example.com.".into(),
+                },
+                DnsRecord {
+                    name: DomainName::parse("example.com.").expect("zone"),
+                    rtype: "NS".into(),
+                    rclass: "IN".into(),
+                    ttl: 3600,
+                    rdata: "ns3.example.com.".into(),
+                },
+            ],
+            additionals: vec![
+                DnsRecord {
+                    name: DomainName::parse("ns1.example.com.").expect("ns"),
+                    rtype: "A".into(),
+                    rclass: "IN".into(),
+                    ttl: 300,
+                    rdata: "1.0.0.1".into(),
+                },
+                DnsRecord {
+                    name: DomainName::parse("ns2.example.com.").expect("ns"),
+                    rtype: "A".into(),
+                    rclass: "IN".into(),
+                    ttl: 300,
+                    rdata: "2.0.0.2".into(),
+                },
+                DnsRecord {
+                    name: DomainName::parse("ns3.example.com.").expect("ns"),
+                    rtype: "A".into(),
+                    rclass: "IN".into(),
+                    ttl: 300,
+                    rdata: "3.0.0.3".into(),
+                },
+            ],
+            edns: EdnsMeta::default(),
+        };
+        let parent_zone = DomainName::parse("com.").expect("zone");
+        let config = TraceConfig::new(
+            DomainName::parse("example.com.").expect("qname"),
+            RecordType::A,
+        );
+        let mut budget = QueryBudget::new(64);
+
+        let targets = resolve_all_nameserver_targets_from_referral(
+            &referral,
+            &[ServerTarget::from_address(IpAddr::V4(Ipv4Addr::new(
+                1, 1, 1, 1,
+            )))],
+            &config,
+            &mut budget,
+            &parent_zone,
+            &mut SilentProgress,
+        )
+        .expect("targets");
+
+        assert_eq!(targets.len(), 3);
+        assert!(
+            targets
+                .iter()
+                .any(|target| target.address == IpAddr::V4(Ipv4Addr::new(1, 0, 0, 1)))
+        );
+        assert!(
+            targets
+                .iter()
+                .any(|target| target.address == IpAddr::V4(Ipv4Addr::new(2, 0, 0, 2)))
+        );
+        assert!(
+            targets
+                .iter()
+                .any(|target| target.address == IpAddr::V4(Ipv4Addr::new(3, 0, 0, 3)))
         );
     }
 
@@ -1453,9 +1759,9 @@ mod tests {
         }
     }
 
-    struct DelegatingThenAuthoritativeExchange;
+    struct MultiNsDelegatingExchange;
 
-    impl crate::DnsExchange for DelegatingThenAuthoritativeExchange {
+    impl crate::DnsExchange for MultiNsDelegatingExchange {
         fn exchange(
             &self,
             server: IpAddr,
@@ -1463,7 +1769,14 @@ mod tests {
             options: &dns_core::QueryOptions,
         ) -> dns_core::Result<dns_core::QueryResult> {
             let qname = options.qname.to_string();
-            let (authoritative, answers, authorities) = if qname.ends_with("example.com.") {
+            let is_example_zone_ns = matches!(
+                server,
+                IpAddr::V4(v4)
+                    if matches!(v4.octets(), [1, 0, 0, 1] | [2, 0, 0, 2] | [3, 0, 0, 3])
+            );
+            let (authoritative, answers, authorities, additionals) = if qname == "example.com."
+                && is_example_zone_ns
+            {
                 (
                     true,
                     vec![DnsRecord {
@@ -1474,18 +1787,77 @@ mod tests {
                         rdata: "93.184.216.34".into(),
                     }],
                     vec![],
+                    vec![],
                 )
-            } else if qname.ends_with("com.") {
+            } else if qname == "example.com." && server == IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)) {
                 (
                     false,
                     vec![],
                     vec![DnsRecord {
-                        name: DomainName::parse("example.com.").expect("zone"),
+                        name: DomainName::parse("com.").expect("zone"),
                         rtype: "NS".into(),
                         rclass: "IN".into(),
                         ttl: 3600,
-                        rdata: "ns.example.com.".into(),
+                        rdata: "ns.com.".into(),
                     }],
+                    vec![DnsRecord {
+                        name: DomainName::parse("ns.com.").expect("ns"),
+                        rtype: "A".into(),
+                        rclass: "IN".into(),
+                        ttl: 300,
+                        rdata: "192.41.162.30".into(),
+                    }],
+                )
+            } else if qname == "example.com." {
+                (
+                    false,
+                    vec![],
+                    vec![
+                        DnsRecord {
+                            name: DomainName::parse("example.com.").expect("zone"),
+                            rtype: "NS".into(),
+                            rclass: "IN".into(),
+                            ttl: 3600,
+                            rdata: "ns1.example.com.".into(),
+                        },
+                        DnsRecord {
+                            name: DomainName::parse("example.com.").expect("zone"),
+                            rtype: "NS".into(),
+                            rclass: "IN".into(),
+                            ttl: 3600,
+                            rdata: "ns2.example.com.".into(),
+                        },
+                        DnsRecord {
+                            name: DomainName::parse("example.com.").expect("zone"),
+                            rtype: "NS".into(),
+                            rclass: "IN".into(),
+                            ttl: 3600,
+                            rdata: "ns3.example.com.".into(),
+                        },
+                    ],
+                    vec![
+                        DnsRecord {
+                            name: DomainName::parse("ns1.example.com.").expect("ns"),
+                            rtype: "A".into(),
+                            rclass: "IN".into(),
+                            ttl: 300,
+                            rdata: "1.0.0.1".into(),
+                        },
+                        DnsRecord {
+                            name: DomainName::parse("ns2.example.com.").expect("ns"),
+                            rtype: "A".into(),
+                            rclass: "IN".into(),
+                            ttl: 300,
+                            rdata: "2.0.0.2".into(),
+                        },
+                        DnsRecord {
+                            name: DomainName::parse("ns3.example.com.").expect("ns"),
+                            rtype: "A".into(),
+                            rclass: "IN".into(),
+                            ttl: 300,
+                            rdata: "3.0.0.3".into(),
+                        },
+                    ],
                 )
             } else {
                 (
@@ -1498,6 +1870,7 @@ mod tests {
                         ttl: 3600,
                         rdata: "ns.com.".into(),
                     }],
+                    vec![],
                 )
             };
 
@@ -1519,13 +1892,7 @@ mod tests {
                     checking_disabled: false,
                     answers,
                     authorities,
-                    additionals: vec![DnsRecord {
-                        name: DomainName::parse("ns.example.com.").expect("ns"),
-                        rtype: "A".into(),
-                        rclass: "IN".into(),
-                        ttl: 300,
-                        rdata: format!("{}", server),
-                    }],
+                    additionals,
                     edns: EdnsMeta::default(),
                 },
                 from_cache: false,
