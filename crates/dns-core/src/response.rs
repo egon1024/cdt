@@ -84,12 +84,28 @@ impl DnsResponse {
         }
     }
 
-    pub fn referral_zone(&self, _qname: &DomainName) -> Option<DomainName> {
-        self.authorities
+    pub fn referral_zone(&self, qname: &DomainName) -> Option<DomainName> {
+        let mut best: Option<(usize, DomainName)> = None;
+        for record in self
+            .authorities
             .iter()
             .filter(|record| record.rtype == "NS")
-            .filter_map(|record| DomainName::parse(record.name.as_str()).ok())
-            .next()
+        {
+            let Ok(zone) = DomainName::parse(record.name.as_str()) else {
+                continue;
+            };
+            if !qname.is_subdomain_of(&zone) {
+                continue;
+            }
+            let labels = zone_label_count(&zone);
+            if best
+                .as_ref()
+                .is_none_or(|(best_labels, _)| labels > *best_labels)
+            {
+                best = Some((labels, zone));
+            }
+        }
+        best.map(|(_, zone)| zone)
     }
 
     pub fn ns_names(&self) -> Vec<DomainName> {
@@ -217,6 +233,14 @@ fn convert_record(record: &Record) -> DnsRecord {
     }
 }
 
+fn zone_label_count(zone: &DomainName) -> usize {
+    let trimmed = zone.as_str().trim_end_matches('.');
+    if trimmed.is_empty() {
+        return 0;
+    }
+    trimmed.split('.').filter(|label| !label.is_empty()).count()
+}
+
 fn rcode_to_text(rcode: u16) -> String {
     match rcode {
         0 => "NOERROR".into(),
@@ -261,6 +285,46 @@ mod tests {
         assert_eq!(
             response.referral_zone(&qname).map(|zone| zone.to_string()),
             Some("com.".into())
+        );
+    }
+
+    #[test]
+    fn referral_zone_prefers_deepest_delegation_owner() {
+        let response = DnsResponse {
+            id: 1,
+            rcode: 0,
+            rcode_text: "NOERROR".into(),
+            authoritative: false,
+            truncated: false,
+            recursion_desired: false,
+            recursion_available: false,
+            authentic_data: false,
+            checking_disabled: false,
+            answers: vec![],
+            authorities: vec![
+                DnsRecord {
+                    name: DomainName::parse(".").expect("root"),
+                    rtype: "NS".into(),
+                    rclass: "IN".into(),
+                    ttl: 86400,
+                    rdata: "a.root-servers.net.".into(),
+                },
+                DnsRecord {
+                    name: DomainName::parse("org.").expect("org"),
+                    rtype: "NS".into(),
+                    rclass: "IN".into(),
+                    ttl: 86400,
+                    rdata: "a2.org.afilias-nst.info.".into(),
+                },
+            ],
+            additionals: vec![],
+            edns: EdnsMeta::default(),
+        };
+
+        let qname = DomainName::parse("tuininga.org.").expect("qname");
+        assert_eq!(
+            response.referral_zone(&qname).map(|zone| zone.to_string()),
+            Some("org.".into())
         );
     }
 

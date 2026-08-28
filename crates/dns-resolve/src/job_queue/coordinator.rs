@@ -384,20 +384,40 @@ impl<'a> Coordinator<'a> {
             },
         );
 
-        let next_servers = resolve_nameservers_from_referral(
+        let next_servers = match resolve_nameservers_from_referral(
             &query_result.response,
             std::slice::from_ref(&job.server),
             self.config,
             self.budget,
             &job.zone,
             self.progress,
-        )?;
-
-        if next_servers.is_empty() {
-            return Err(ResolveError::NoReachableNameserver {
-                zone: next_zone.to_string(),
-            });
-        }
+        ) {
+            Ok(servers) if !servers.is_empty() => servers,
+            Ok(_) => {
+                if self.config.expansion_policy == ExpansionPolicy::All {
+                    hop.outcome = HopOutcome::Failed {
+                        kind: "no_reachable_nameserver".into(),
+                        detail: next_zone.to_string(),
+                    };
+                    self.store_completed_node(&job.path, hop);
+                    return Ok(());
+                }
+                return Err(ResolveError::NoReachableNameserver {
+                    zone: next_zone.to_string(),
+                });
+            }
+            Err(error) => {
+                if self.config.expansion_policy == ExpansionPolicy::All {
+                    hop.outcome = HopOutcome::Failed {
+                        kind: "nameserver_resolution".into(),
+                        detail: error.to_string(),
+                    };
+                    self.store_completed_node(&job.path, hop);
+                    return Ok(());
+                }
+                return Err(error);
+            }
+        };
 
         hop.outcome = HopOutcome::Referral;
         self.store_completed_node(&job.path, hop);
