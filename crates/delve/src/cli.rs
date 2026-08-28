@@ -249,6 +249,7 @@ fn run_parsed_trace(options: TraceOptions, runtime: &Runtime) -> Result<(), CliE
     config.use_cache = options.use_cache;
     config.expansion_policy = options.expansion;
     config.max_queries_per_action = runtime.config.trace_max_queries_per_action;
+    config.max_parallel_queries = runtime.config.trace_max_parallel_queries;
     for raw in &options.cache_skip_qnames {
         config.cache_skip_qnames.insert(DomainName::parse(raw)?);
     }

@@ -4,6 +4,7 @@ use crate::paths::DelvePaths;
 
 const DEFAULT_RETENTION: &str = "180d";
 const DEFAULT_MAX_QUERIES: usize = 64;
+const DEFAULT_MAX_PARALLEL_QUERIES: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionRetention {
@@ -16,6 +17,7 @@ pub enum SessionRetention {
 pub struct DelveConfig {
     pub session_retention: SessionRetention,
     pub trace_max_queries_per_action: usize,
+    pub trace_max_parallel_queries: usize,
     /// Used by explore view-state persistence (Phase 5).
     #[allow(dead_code)]
     pub explore_persist_view_state: bool,
@@ -26,6 +28,7 @@ impl Default for DelveConfig {
         Self {
             session_retention: parse_retention(DEFAULT_RETENTION).expect("default retention"),
             trace_max_queries_per_action: DEFAULT_MAX_QUERIES,
+            trace_max_parallel_queries: DEFAULT_MAX_PARALLEL_QUERIES,
             explore_persist_view_state: true,
         }
     }
@@ -49,6 +52,7 @@ struct SessionSection {
 #[derive(Debug, Deserialize, Default)]
 struct TraceSection {
     max_queries_per_action: Option<usize>,
+    max_parallel_queries: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -113,12 +117,24 @@ impl DelveConfig {
             Some(value) => value,
         };
 
+        let trace_max_parallel_queries = match parsed.trace.max_parallel_queries {
+            None => DEFAULT_MAX_PARALLEL_QUERIES,
+            Some(0) => {
+                warnings.push(format!(
+                    "warning: invalid trace.max_parallel_queries 0; using {DEFAULT_MAX_PARALLEL_QUERIES}"
+                ));
+                DEFAULT_MAX_PARALLEL_QUERIES
+            }
+            Some(value) => value,
+        };
+
         let explore_persist_view_state = parsed.explore.persist_view_state.unwrap_or(true);
 
         (
             Self {
                 session_retention,
                 trace_max_queries_per_action,
+                trace_max_parallel_queries,
                 explore_persist_view_state,
             },
             warnings,
@@ -175,6 +191,11 @@ mod tests {
     #[test]
     fn default_max_queries_is_sixty_four() {
         assert_eq!(DelveConfig::default().trace_max_queries_per_action, 64);
+    }
+
+    #[test]
+    fn default_max_parallel_queries_is_eight() {
+        assert_eq!(DelveConfig::default().trace_max_parallel_queries, 8);
     }
 
     #[test]

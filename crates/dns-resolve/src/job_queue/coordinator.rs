@@ -15,6 +15,7 @@ use crate::{
 };
 
 use super::emitter::EmitScheduler;
+use super::pool::{JobOutcome, WorkerPool};
 use super::queue::WorkQueue;
 use super::result_store::ResultStore;
 use super::types::{JobId, JobKind, TraceJob};
@@ -187,11 +188,82 @@ impl<'a> Coordinator<'a> {
         };
         self.enqueue_cut(start_servers(self.config), qname, root_zone, initial_path)?;
 
-        while let Some(job) = self.queue.dequeue() {
-            self.process_job(job)?;
+        let max_parallel = self.config.max_parallel_queries.max(1);
+        if max_parallel == 1 {
+            self.run_serial()?;
+        } else {
+            self.run_parallel(max_parallel)?;
         }
 
         self.finalize_tree()
+    }
+
+    fn run_serial(&mut self) -> Result<()> {
+        while let Some(job) = self.queue.dequeue() {
+            self.dispatch_job(job)?;
+        }
+        Ok(())
+    }
+
+    fn run_parallel(&mut self, max_parallel: usize) -> Result<()> {
+        let pool = WorkerPool::new(self.config.clone(), max_parallel);
+        let mut in_flight = 0usize;
+
+        loop {
+            while in_flight < max_parallel {
+                if let Some(job) = self.queue.dequeue() {
+                    self.submit_job(&pool, job)?;
+                    in_flight += 1;
+                } else {
+                    break;
+                }
+            }
+
+            if in_flight == 0 {
+                break;
+            }
+
+            let JobOutcome { job, result } = pool.recv();
+            in_flight -= 1;
+            self.complete_job(job, result)?;
+        }
+
+        pool.shutdown();
+        Ok(())
+    }
+
+    fn submit_job(&mut self, pool: &WorkerPool, job: TraceJob) -> Result<()> {
+        if job.path.len() >= self.config.max_depth {
+            return Err(ResolveError::MaxDepth {
+                max: self.config.max_depth,
+            });
+        }
+        pool.submit(job);
+        Ok(())
+    }
+
+    fn dispatch_job(&mut self, job: TraceJob) -> Result<()> {
+        if job.path.len() >= self.config.max_depth {
+            return Err(ResolveError::MaxDepth {
+                max: self.config.max_depth,
+            });
+        }
+
+        match execute_job(&job, self.config) {
+            Ok(query_result) => self.handle_success(job, query_result),
+            Err(error) => self.handle_failure(job, error),
+        }
+    }
+
+    fn complete_job(
+        &mut self,
+        job: TraceJob,
+        result: Result<dns_core::response::QueryResult>,
+    ) -> Result<()> {
+        match result {
+            Ok(query_result) => self.handle_success(job, query_result),
+            Err(error) => self.handle_failure(job, error),
+        }
     }
 
     fn finalize_tree(&mut self) -> Result<TraceNode> {
@@ -211,19 +283,6 @@ impl<'a> Coordinator<'a> {
         self.results
             .take_tree()
             .ok_or_else(|| ResolveError::NoReachableNameserver { zone: ".".into() })
-    }
-
-    fn process_job(&mut self, job: TraceJob) -> Result<()> {
-        if job.path.len() >= self.config.max_depth {
-            return Err(ResolveError::MaxDepth {
-                max: self.config.max_depth,
-            });
-        }
-
-        match execute_job(&job, self.config) {
-            Ok(query_result) => self.handle_success(job, query_result),
-            Err(error) => self.handle_failure(job, error),
-        }
     }
 
     fn handle_failure(&mut self, job: TraceJob, error: ResolveError) -> Result<()> {
@@ -411,48 +470,16 @@ impl<'a> Coordinator<'a> {
                 continue;
             }
 
-            if !self.budget.try_consume() {
+            if !self.try_enqueue_job(
+                server.clone(),
+                vec![],
+                job.qname.clone(),
+                job.qtype,
+                job.zone.clone(),
+                sibling_path,
+            ) {
                 self.progress.budget_truncated(self.budget.cap());
                 break;
-            }
-
-            match execute_job(
-                &TraceJob {
-                    id: self.alloc_job_id(),
-                    kind: JobKind::Trace,
-                    server: server.clone(),
-                    qname: job.qname.clone(),
-                    qtype: job.qtype,
-                    zone: job.zone.clone(),
-                    path: sibling_path.clone(),
-                    fallback_servers: vec![],
-                },
-                self.config,
-            ) {
-                Ok(result) => {
-                    let referral_ns = result.response.ns_names();
-                    let glue = collect_glue(&result.response, &referral_ns);
-                    let sibling_hop = hop_from_query(
-                        &job.zone,
-                        &result,
-                        server.name.clone(),
-                        referral_ns.iter().map(ToString::to_string).collect(),
-                        glue.iter().map(ToString::to_string).collect(),
-                        HopOutcome::Answered,
-                    );
-                    self.store_completed_node(&sibling_path, sibling_hop);
-                }
-                Err(error) => {
-                    let sibling_hop = failed_hop(
-                        self.config,
-                        &job.zone,
-                        &job.qname,
-                        job.qtype,
-                        server,
-                        &error,
-                    );
-                    self.store_completed_node(&sibling_path, sibling_hop);
-                }
             }
         }
 
@@ -933,6 +960,50 @@ mod tests {
             "expected terminal sibling hops to be emitted, got {:?}",
             progress.paths
         );
+    }
+
+    #[test]
+    fn workers_do_not_reference_trace_progress() {
+        let source = include_str!("worker.rs");
+        assert!(
+            !source.contains("TraceProgress"),
+            "workers must not call TraceProgress directly"
+        );
+    }
+
+    #[test]
+    fn single_worker_matches_serial_output_on_fixture() {
+        let mut serial_config = test_config("example.com.", Arc::new(MultiCutExchange));
+        serial_config.expansion_policy = ExpansionPolicy::None;
+        serial_config.max_parallel_queries = 1;
+        serial_config.start_servers = Some(vec![IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9))]);
+
+        let mut parallel_config = serial_config.clone();
+        parallel_config.max_parallel_queries = 8;
+
+        let mut budget = QueryBudget::new(64);
+        let qname = DomainName::parse("example.com.").expect("qname");
+        let serial_tree = run_policy(
+            &serial_config,
+            &mut budget,
+            &mut SilentProgress,
+            qname.clone(),
+            false,
+        )
+        .expect("serial trace");
+
+        let mut budget = QueryBudget::new(64);
+        let parallel_tree = run_policy(
+            &parallel_config,
+            &mut budget,
+            &mut SilentProgress,
+            qname,
+            false,
+        )
+        .expect("parallel trace");
+
+        assert_eq!(serial_tree.hop.zone, parallel_tree.hop.zone);
+        assert_eq!(serial_tree.children.len(), parallel_tree.children.len());
     }
 
     #[test]

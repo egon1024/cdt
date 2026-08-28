@@ -1,5 +1,6 @@
 mod coordinator;
 mod emitter;
+mod pool;
 mod queue;
 mod result_store;
 mod types;

@@ -115,6 +115,8 @@ pub struct TraceConfig {
     pub ns_resolution_active: HashSet<String>,
     pub expansion_policy: ExpansionPolicy,
     pub max_queries_per_action: usize,
+    /// Maximum concurrent trace queries (1 = serial coordinator loop).
+    pub max_parallel_queries: usize,
 }
 
 impl TraceConfig {
@@ -142,6 +144,7 @@ impl TraceConfig {
             ns_resolution_active: HashSet::new(),
             expansion_policy: ExpansionPolicy::Last,
             max_queries_per_action: 64,
+            max_parallel_queries: 8,
         }
     }
 
