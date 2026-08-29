@@ -17,9 +17,8 @@ pub fn format_timestamp_for_list(value: &str) -> String {
     let Some(timestamp) = parse_session_timestamp(value) else {
         return value.to_string();
     };
-    const FORMAT: &[time::format_description::FormatItem<'static>] = time::macros::format_description!(
-        "[year]-[month]-[day]T[hour]:[minute]:[second]Z"
-    );
+    const FORMAT: &[time::format_description::FormatItem<'static>] =
+        time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
     timestamp
         .format(FORMAT)
         .unwrap_or_else(|_| value.to_string())
