@@ -84,6 +84,8 @@ pub struct Coordinator<'a> {
     referral_by_path: HashMap<Vec<usize>, DelegationInfo>,
     seen_referrals: HashMap<Vec<usize>, HashSet<String>>,
     single_path_subtrees: HashSet<Vec<usize>>,
+    /// Parent paths whose terminal sibling expansion has already run.
+    expanded_terminal_cuts: HashSet<Vec<usize>>,
     top_level_siblings: BTreeMap<usize, TraceNode>,
     next_job_id: u64,
 }
@@ -107,6 +109,7 @@ impl<'a> Coordinator<'a> {
             referral_by_path: HashMap::new(),
             seen_referrals: HashMap::new(),
             single_path_subtrees: HashSet::new(),
+            expanded_terminal_cuts: HashSet::new(),
             top_level_siblings: BTreeMap::new(),
             next_job_id: 1,
         }
@@ -493,6 +496,11 @@ impl<'a> Coordinator<'a> {
         query_result: dns_core::response::QueryResult,
     ) -> Result<()> {
         let parent_path = parent_path(&job.path);
+        if !self.expanded_terminal_cuts.insert(parent_path.clone()) {
+            self.store_completed_node(&job.path, hop);
+            return Ok(());
+        }
+
         let (parent_delegation, parent_zone, cut_servers) =
             if let Some(info) = self.referral_by_path.get(&parent_path) {
                 (
@@ -524,10 +532,6 @@ impl<'a> Coordinator<'a> {
             let mut sibling_path = parent_path.clone();
             sibling_path.push(index);
             self.single_path_subtrees.insert(sibling_path.clone());
-            // The linear-walk job already registered its path at enqueue time.
-            if sibling_path != job.path {
-                self.emitter.register_path(sibling_path.clone());
-            }
 
             if server_matches_primary(server, &primary_server, primary_result_server) {
                 self.store_completed_node(&sibling_path, hop.clone());
@@ -855,6 +859,27 @@ mod tests {
         assert!(budget.truncated);
         assert_eq!(root.hop.zone, ".");
         assert!(root.children.is_empty());
+    }
+
+    #[test]
+    fn terminal_last_expansion_runs_once_per_cut() {
+        let mut config = test_config("example.com.", Arc::new(MultiNsDelegatingExchange));
+        config.expansion_policy = ExpansionPolicy::Last;
+        config.start_servers = Some(vec![IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9))]);
+        let mut budget = QueryBudget::new(64);
+        let mut progress = RecordingProgress { messages: vec![] };
+        let qname = DomainName::parse("example.com.").expect("qname");
+        let _tree = run_policy(&config, &mut budget, &mut progress, qname, false).expect("trace");
+        let zone_cut_announcements = progress
+            .messages
+            .iter()
+            .filter(|message| message.contains("querying 3 nameserver(s) at zone example.com."))
+            .count();
+        assert_eq!(
+            zone_cut_announcements, 1,
+            "terminal expansion must run once per zone cut, got {:?}",
+            progress.messages
+        );
     }
 
     #[test]
