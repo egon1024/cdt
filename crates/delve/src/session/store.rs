@@ -43,6 +43,7 @@ pub trait SessionStore: Send {
         retention: SessionRetention,
         dry_run: bool,
     ) -> Result<PurgeReport>;
+    fn purge_all(&mut self, dry_run: bool) -> Result<PurgeReport>;
 }
 
 pub struct OpenSessionStore {
@@ -83,6 +84,10 @@ impl SessionStore for OpenSessionStore {
         dry_run: bool,
     ) -> Result<PurgeReport> {
         self.inner.purge_by_retention(retention, dry_run)
+    }
+
+    fn purge_all(&mut self, dry_run: bool) -> Result<PurgeReport> {
+        self.inner.purge_all(dry_run)
     }
 }
 

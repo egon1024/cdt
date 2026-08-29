@@ -189,6 +189,27 @@ impl SessionStore for SqliteSessionStore {
             skipped_unparseable,
         })
     }
+
+    fn purge_all(&mut self, dry_run: bool) -> Result<PurgeReport> {
+        let ids = self.all_ids()?;
+        let mut removed = 0;
+
+        for id in ids {
+            let document = self.get(&id)?;
+            if document.pinned {
+                continue;
+            }
+            if !dry_run {
+                self.remove(&id)?;
+            }
+            removed += 1;
+        }
+
+        Ok(PurgeReport {
+            removed,
+            skipped_unparseable: 0,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -262,5 +283,36 @@ mod tests {
         assert_eq!(report.removed, 1);
         assert!(store.get(&old_id).is_err());
         assert!(store.get(&pinned_id).is_ok());
+    }
+
+    #[test]
+    fn purge_all_removes_unpinned_regardless_of_age() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("sessions.sqlite");
+        let mut store = SqliteSessionStore::open(&path).expect("open");
+        let recent_id = store
+            .save(&sample_result("2026-08-25T00:00:00Z"), &sample_request())
+            .expect("recent");
+        let pinned_id = store
+            .save(&sample_result("2026-08-25T01:00:00Z"), &sample_request())
+            .expect("pinned");
+        store.set_pinned(&pinned_id, true).expect("pin");
+        let report = store.purge_all(false).expect("purge all");
+        assert_eq!(report.removed, 1);
+        assert!(store.get(&recent_id).is_err());
+        assert!(store.get(&pinned_id).is_ok());
+    }
+
+    #[test]
+    fn purge_all_dry_run_leaves_sessions_intact() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("sessions.sqlite");
+        let mut store = SqliteSessionStore::open(&path).expect("open");
+        let id = store
+            .save(&sample_result("2026-08-25T00:00:00Z"), &sample_request())
+            .expect("save");
+        let report = store.purge_all(true).expect("dry run");
+        assert_eq!(report.removed, 1);
+        assert!(store.get(&id).is_ok());
     }
 }

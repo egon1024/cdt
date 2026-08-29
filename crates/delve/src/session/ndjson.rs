@@ -174,6 +174,31 @@ impl SessionStore for NdjsonSessionStore {
             skipped_unparseable,
         })
     }
+
+    fn purge_all(&mut self, dry_run: bool) -> Result<PurgeReport> {
+        if let Some(reason) = &self.disabled_reason {
+            return Err(SessionError::Store(reason.clone()));
+        }
+
+        let ids = self.all_ids()?;
+        let mut removed = 0;
+
+        for id in ids {
+            let document = self.get(&id)?;
+            if document.pinned {
+                continue;
+            }
+            if !dry_run {
+                self.remove(&id)?;
+            }
+            removed += 1;
+        }
+
+        Ok(PurgeReport {
+            removed,
+            skipped_unparseable: 0,
+        })
+    }
 }
 
 #[cfg(test)]

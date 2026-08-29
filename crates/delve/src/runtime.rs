@@ -162,12 +162,15 @@ impl Runtime {
 
     pub fn purge_sessions(
         &self,
+        all: bool,
         dry_run: bool,
     ) -> Result<crate::retention::PurgeReport, SessionError> {
-        self.sessions
-            .lock()
-            .expect("session lock")
-            .purge_by_retention(self.config.session_retention, dry_run)
+        let mut store = self.sessions.lock().expect("session lock");
+        if all {
+            store.purge_all(dry_run)
+        } else {
+            store.purge_by_retention(self.config.session_retention, dry_run)
+        }
     }
 }
 

@@ -120,6 +120,9 @@ pub struct SessionIdArgs {
 
 #[derive(Debug, Parser)]
 pub struct SessionPurgeArgs {
+    /// Remove all unpinned sessions regardless of retention age.
+    #[arg(long)]
+    pub all: bool,
     /// Report what would be removed without deleting.
     #[arg(long)]
     pub dry_run: bool,
@@ -351,11 +354,16 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
             Ok(())
         }
         SessionSubcommand::Purge(args) => {
-            let report = runtime.purge_sessions(args.dry_run)?;
-            if args.dry_run {
-                println!("would remove {} sessions", report.removed);
+            let report = runtime.purge_sessions(args.all, args.dry_run)?;
+            let noun = if args.all {
+                "unpinned sessions"
             } else {
-                println!("removed {} sessions", report.removed);
+                "sessions"
+            };
+            if args.dry_run {
+                println!("would remove {} {}", report.removed, noun);
+            } else {
+                println!("removed {} {}", report.removed, noun);
             }
             Ok(())
         }

@@ -31,6 +31,7 @@ session: 01JXXXXXXXXXXXXXXXXXXXXXXXXXX
 | `delve session pin <id>` | Exempt from retention purge |
 | `delve session unpin <id>` | Allow retention purge again |
 | `delve session purge` | Apply retention policy now |
+| `delve session purge --all` | Remove all unpinned sessions |
 | `delve session purge --dry-run` | Report what would be removed |
 | `delve session explore [id]` | Interactive tree explorer (TUI); omit id to reopen the last session |
 | `delve session outline [id]` | Indented resolution tree on stdout; omit id for the last session |
@@ -157,7 +158,8 @@ purged 3 sessions older than 180d
 Use `delve session pin <id>` to keep a session across retention. Pinned sessions
 show a `*` prefix in `delve session list`.
 
-Manual removal: `delve session rm <id>` or `delve session purge`.
+Manual removal: `delve session rm <id>`, `delve session purge`, or
+`delve session purge --all` (unpinned only; pinned sessions are kept).
 
 ## Session explore, outline, and events
 
