@@ -1,11 +1,13 @@
 use std::io::{self, Write};
 use std::net::IpAddr;
 
-use clap::{Parser, Subcommand};
 use dns_core::{DomainName, Transport, ip_to_ptr_name, parse_record_type, parse_reverse_target};
 use dns_resolve::{ExpansionPolicy, TraceConfig, run_trace};
 use thiserror::Error;
 
+use crate::args::{
+    CacheCommand, CacheSubcommand, Cli, Command, SessionCommand, SessionSubcommand, TraceArgs,
+};
 use crate::dig_options::{ParseError, TraceOptions, parse_trace_args};
 use crate::expand_confirm::{ExpandConfirmOutcome, confirm_expand_all, expand_all_is_tty};
 use crate::explore::{ExploreError, run_events, run_explore, run_outline};
@@ -15,142 +17,6 @@ use crate::replay::{print_final_answer, print_reused_session_notice, replay_sess
 use crate::runtime::Runtime;
 use crate::session::SessionDocument;
 use crate::trace_request::TraceRequest;
-
-#[derive(Debug, Parser)]
-#[command(name = "delve", version, about = "DNS delegation-path tracer")]
-pub struct Cli {
-    #[command(subcommand)]
-    pub command: Command,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum Command {
-    /// Trace the DNS delegation path for a query name (dig-style options; see `delve trace --help`).
-    Trace(TraceArgs),
-    /// Inspect or manage stored trace sessions.
-    Session(SessionCommand),
-    /// Inspect or manage the response cache.
-    Cache(CacheCommand),
-}
-
-#[derive(Debug, Parser)]
-#[command(
-    about = "Trace the DNS delegation path for a query name",
-    long_about = "Trace the DNS delegation path for a query name.\n\
-Options use dig-style +flags and -type shorthands, not GNU --long-options.",
-    after_long_help = crate::dig_options::TRACE_OPTIONS_HELP
-)]
-pub struct TraceArgs {
-    /// Query name, optional @server, and dig-style options (see below).
-    #[arg(
-        trailing_var_arg = true,
-        allow_hyphen_values = true,
-        num_args = 0..,
-        value_name = "QNAME [@SERVER] [OPTIONS...]"
-    )]
-    pub args: Vec<String>,
-}
-
-#[derive(Debug, Parser)]
-pub struct SessionCommand {
-    #[command(subcommand)]
-    pub command: SessionSubcommand,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum SessionSubcommand {
-    /// List stored sessions.
-    List,
-    /// Print the current default session id (last used).
-    Current,
-    /// Show a stored session by id or prefix.
-    Show(SessionShowArgs),
-    /// Remove a stored session.
-    Rm(SessionRmArgs),
-    /// Pin a session so retention purge skips it.
-    Pin(SessionIdArgs),
-    /// Unpin a session so retention purge may remove it.
-    Unpin(SessionIdArgs),
-    /// Purge sessions older than configured retention.
-    Purge(SessionPurgeArgs),
-    /// Print a stored session as an indented tree on stdout.
-    Outline(SessionOutlineArgs),
-    /// Print a stored session as structured JSON (explore tree) on stdout.
-    Events(SessionEventsArgs),
-    /// Explore a stored session in the interactive tree TUI.
-    Explore(SessionExploreArgs),
-}
-
-#[derive(Debug, Parser)]
-pub struct SessionOutlineArgs {
-    /// Session id or prefix. When omitted, uses the last session.
-    pub id: Option<String>,
-}
-
-#[derive(Debug, Parser)]
-pub struct SessionEventsArgs {
-    /// Session id or prefix. When omitted, uses the last session.
-    pub id: Option<String>,
-}
-
-#[derive(Debug, Parser)]
-pub struct SessionExploreArgs {
-    /// Session id or prefix. When omitted, reopens the last used session.
-    pub id: Option<String>,
-}
-
-#[derive(Debug, Parser)]
-pub struct SessionShowArgs {
-    /// Session id or prefix. When omitted, uses the last session.
-    pub id: Option<String>,
-    /// Emit the stored trace as JSON (`event: complete`).
-    #[arg(long)]
-    pub json: bool,
-}
-
-#[derive(Debug, Parser)]
-pub struct SessionRmArgs {
-    pub id: String,
-}
-
-#[derive(Debug, Parser)]
-pub struct SessionIdArgs {
-    pub id: String,
-}
-
-#[derive(Debug, Parser)]
-pub struct SessionPurgeArgs {
-    /// Remove all unpinned sessions regardless of retention age.
-    #[arg(long)]
-    pub all: bool,
-    /// Report what would be removed without deleting.
-    #[arg(long)]
-    pub dry_run: bool,
-}
-
-#[derive(Debug, Parser)]
-pub struct CacheCommand {
-    #[command(subcommand)]
-    pub command: CacheSubcommand,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum CacheSubcommand {
-    /// Show cache statistics.
-    Stats,
-    /// Purge cache entries.
-    Purge(CachePurgeArgs),
-}
-
-#[derive(Debug, Parser)]
-pub struct CachePurgeArgs {
-    /// Remove only expired entries (default when neither flag is set).
-    #[arg(long)]
-    pub expired: bool,
-    /// Remove all entries.
-    #[arg(long)]
-    pub all: bool,
-}
 
 #[derive(Debug, Error)]
 pub enum CliError {

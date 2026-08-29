@@ -72,6 +72,8 @@ jobs:
           test -x /usr/bin/delve
           cdt version
           delve --help >/dev/null
+          man delve | grep -q '^delve'
+          man cdt | grep -q '^cdt'
           dpkg -s cdt | grep -q '^Status: install ok installed'
 
       - name: Install and verify .rpm
@@ -87,5 +89,7 @@ jobs:
               test -x /usr/bin/delve
               cdt version
               delve --help >/dev/null
+              man delve | grep -q '^delve'
+              man cdt | grep -q '^cdt'
               rpm -q cdt
             '

@@ -6,6 +6,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[lib]
+name = "delve"
+path = "src/lib.rs"
+
 [[bin]]
 name = "delve"
 path = "src/main.rs"
