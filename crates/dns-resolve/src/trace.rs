@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::net::IpAddr;
 
 use dns_core::name::DomainName;
@@ -8,22 +8,15 @@ use hickory_proto::rr::RecordType;
 
 use crate::root_hints::{root_server_names, root_servers};
 use crate::{
-    ExpansionPolicy, HopOutcome, NodeOrigin, NodePath, QueryBudget, QueryDebugContext,
-    ResolveError, Result, ServerTarget, TraceConfig, TraceHop, TraceNode, TraceProgress, TraceTree,
-    TraceTreeRequest, filter_addresses, hop_from_query, now_rfc3339, query_server,
-    record_query_debug,
+    ExpansionPolicy, HopOutcome, QueryBudget, QueryDebugContext, ResolveError, Result,
+    ServerTarget, TraceConfig, TraceHop, TraceNode, TraceProgress, TraceTree, TraceTreeRequest,
+    filter_addresses, now_rfc3339, query_server, record_query_debug,
 };
 
 #[allow(dead_code)]
 pub(crate) struct QueryAttempt {
     pub server: ServerTarget,
     pub result: Result<dns_core::QueryResult>,
-}
-
-struct PrimaryAttempt {
-    server: ServerTarget,
-    query_result: dns_core::QueryResult,
-    hop: TraceHop,
 }
 
 pub fn run(config: &TraceConfig, progress: &mut dyn TraceProgress) -> Result<TraceTree> {
@@ -187,42 +180,53 @@ fn expand_last_on_combined_tree(
             zone: parent.zone.clone(),
         })?;
 
-    let path_prefix: Vec<usize> = std::iter::repeat_n(0, chain.len().saturating_sub(1)).collect();
     let chain_len = chain.len();
     let mut chain: Vec<TraceNode> = chain
         .into_iter()
         .take(chain_len.saturating_sub(1))
         .collect();
 
+    let parent_path = if chain.len() <= 1 {
+        Vec::new()
+    } else {
+        vec![0; chain.len() - 1]
+    };
+
     let server = server_target_from_hop(&leaf)?;
     let query_result = query_result_from_hop(&leaf, server.address)?;
-    let expansion_servers = expansion_targets_for_cut(
-        Some(&parent_response),
-        &parent_zone,
-        &[],
+
+    let mut siblings = crate::job_queue::run_terminal_sibling_expansion(
         config,
         budget,
         progress,
+        crate::job_queue::TerminalSiblingExpansion {
+            parent_path,
+            parent_delegation: parent_response,
+            parent_zone,
+            cut_servers: Vec::new(),
+            zone: current_zone,
+            qname,
+            qtype: config.qtype,
+            primary_server: server,
+            primary_hop: leaf,
+            primary_query_result: query_result,
+            force_single_path_subtrees: true,
+        },
     )?;
 
-    expand_cut(
-        config,
-        budget,
-        progress,
-        &mut chain,
-        &path_prefix,
-        &expansion_servers,
-        &current_zone,
-        &qname,
-        true,
-        Some(PrimaryAttempt {
-            server,
-            query_result,
-            hop: leaf,
-        }),
-    )?;
+    if siblings.is_empty() {
+        return Ok(());
+    }
 
-    *leg_root = link_chain(chain);
+    if chain.is_empty() {
+        let mut root = siblings.remove(0);
+        root.children.extend(siblings);
+        *leg_root = root;
+    } else {
+        let parent_idx = chain.len() - 1;
+        chain[parent_idx].children = siblings;
+        *leg_root = link_chain(chain);
+    }
     Ok(())
 }
 
@@ -308,418 +312,6 @@ fn answering_hop_from_node(node: &TraceNode) -> Option<&TraceHop> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn trace_linear(
-    config: &TraceConfig,
-    budget: &mut QueryBudget,
-    progress: &mut dyn TraceProgress,
-    path: &NodePath,
-    servers: Vec<ServerTarget>,
-    qname: DomainName,
-    current_zone: DomainName,
-    visited_zones: &mut HashSet<String>,
-) -> Result<TraceNode> {
-    if path.path.len() >= config.max_depth {
-        return Err(ResolveError::MaxDepth {
-            max: config.max_depth,
-        });
-    }
-
-    let path_prefix = path.path.clone();
-    let current_qname = qname;
-
-    let (query_result, server_name) =
-        query_one(&servers, config, budget, &current_qname, config.qtype)?;
-    let referral_ns = query_result.response.ns_names();
-    let glue = collect_glue(&query_result.response, &referral_ns);
-    let hop = hop_from_query(
-        &current_zone,
-        &query_result,
-        server_name,
-        referral_ns.iter().map(ToString::to_string).collect(),
-        glue.iter().map(ToString::to_string).collect(),
-        HopOutcome::Referral,
-    );
-    let node_path = node_path(path.tree, &path_prefix);
-    progress.hop(&hop, &node_path);
-
-    let mut node = TraceNode {
-        hop,
-        origin: NodeOrigin::Trace,
-        children: Vec::new(),
-    };
-
-    if is_authoritative_answer(&query_result.response, &current_qname, config.qtype) {
-        node.hop.outcome = HopOutcome::Answered;
-        return Ok(node);
-    }
-
-    let Some(next_zone) = query_result.response.referral_zone(&current_qname) else {
-        node.hop.outcome = HopOutcome::Answered;
-        return Ok(node);
-    };
-
-    if !visited_zones.insert(next_zone.to_string()) {
-        return Err(ResolveError::DelegationLoop {
-            zone: next_zone.to_string(),
-        });
-    }
-
-    let ns_names = query_result.response.ns_names();
-    if ns_names.is_empty() {
-        return Err(ResolveError::NoReachableNameserver {
-            zone: next_zone.to_string(),
-        });
-    }
-
-    progress.message(&format!(
-        "following delegation to zone {} via {:?}",
-        next_zone,
-        ns_names
-            .iter()
-            .map(|name| name.to_string())
-            .collect::<Vec<_>>()
-    ));
-
-    let next_servers = resolve_nameservers_from_referral(
-        &query_result.response,
-        &servers,
-        config,
-        budget,
-        &current_zone,
-        progress,
-    )?;
-
-    if next_servers.is_empty() {
-        return Err(ResolveError::NoReachableNameserver {
-            zone: next_zone.to_string(),
-        });
-    }
-
-    let child = trace_linear(
-        config,
-        budget,
-        progress,
-        &node_path,
-        next_servers,
-        current_qname,
-        next_zone,
-        visited_zones,
-    )?;
-    node.children.push(child);
-    Ok(node)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn trace_all_policy(
-    config: &TraceConfig,
-    budget: &mut QueryBudget,
-    progress: &mut dyn TraceProgress,
-    path: &NodePath,
-    servers: Vec<ServerTarget>,
-    qname: DomainName,
-    current_zone: DomainName,
-    visited_zones: &mut HashSet<String>,
-    force_single: bool,
-) -> Result<TraceNode> {
-    if force_single {
-        return trace_linear(
-            config,
-            budget,
-            progress,
-            path,
-            servers,
-            qname,
-            current_zone,
-            visited_zones,
-        );
-    }
-
-    announce_multi_server_query(progress, &current_zone, servers.len());
-
-    let mut siblings = Vec::new();
-    for (index, server) in servers.iter().enumerate() {
-        if !budget.try_consume() {
-            break;
-        }
-
-        let mut child_path = path.path.clone();
-        child_path.push(index);
-        let child_path = node_path(path.tree, &child_path);
-
-        record_query_debug(
-            config,
-            server.address,
-            &qname,
-            config.qtype,
-            QueryDebugContext::trace_path(child_path.path.clone()),
-        );
-        match query_server(server.address, config, &qname, config.qtype) {
-            Ok(query_result) => {
-                let referral_ns = query_result.response.ns_names();
-                let glue = collect_glue(&query_result.response, &referral_ns);
-                let hop = hop_from_query(
-                    &current_zone,
-                    &query_result,
-                    server.name.clone(),
-                    referral_ns.iter().map(ToString::to_string).collect(),
-                    glue.iter().map(ToString::to_string).collect(),
-                    HopOutcome::Referral,
-                );
-                progress.hop(&hop, &child_path);
-                let mut node = TraceNode {
-                    hop,
-                    origin: NodeOrigin::Trace,
-                    children: Vec::new(),
-                };
-
-                if is_authoritative_answer(&query_result.response, &qname, config.qtype) {
-                    node.hop.outcome = HopOutcome::Answered;
-                    siblings.push(node);
-                    continue;
-                }
-
-                let Some(next_zone) = query_result.response.referral_zone(&qname) else {
-                    node.hop.outcome = HopOutcome::Answered;
-                    siblings.push(node);
-                    continue;
-                };
-
-                if !visited_zones.insert(next_zone.to_string()) {
-                    node.hop.outcome = HopOutcome::Failed {
-                        kind: "delegation_loop".into(),
-                        detail: next_zone.to_string(),
-                    };
-                    siblings.push(node);
-                    continue;
-                }
-
-                let next_servers = resolve_nameservers_from_referral(
-                    &query_result.response,
-                    &servers,
-                    config,
-                    budget,
-                    &current_zone,
-                    progress,
-                );
-
-                match next_servers {
-                    Ok(next_servers) if !next_servers.is_empty() => {
-                        let subtree = trace_all_policy(
-                            config,
-                            budget,
-                            progress,
-                            &child_path,
-                            next_servers,
-                            qname.clone(),
-                            next_zone,
-                            visited_zones,
-                            false,
-                        )?;
-                        node.children.push(subtree);
-                    }
-                    Ok(_) => {
-                        node.hop.outcome = HopOutcome::Failed {
-                            kind: "no_reachable_nameserver".into(),
-                            detail: next_zone.to_string(),
-                        };
-                    }
-                    Err(error) => {
-                        node.hop.outcome = HopOutcome::Failed {
-                            kind: "nameserver_resolution".into(),
-                            detail: error.to_string(),
-                        };
-                    }
-                }
-                siblings.push(node);
-            }
-            Err(error) => {
-                let hop = failed_hop(config, &current_zone, &qname, config.qtype, server, &error);
-                progress.hop(&hop, &child_path);
-                siblings.push(TraceNode {
-                    hop,
-                    origin: NodeOrigin::Trace,
-                    children: Vec::new(),
-                });
-            }
-        }
-    }
-
-    if siblings.is_empty() && budget.truncated {
-        progress.budget_truncated(budget.cap());
-    }
-
-    if siblings.is_empty() {
-        return Err(ResolveError::NoReachableNameserver {
-            zone: current_zone.to_string(),
-        });
-    }
-
-    let mut root = siblings.remove(0);
-    root.children.extend(siblings);
-    Ok(root)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn expand_cut(
-    config: &TraceConfig,
-    budget: &mut QueryBudget,
-    progress: &mut dyn TraceProgress,
-    chain: &mut Vec<TraceNode>,
-    path_prefix: &[usize],
-    expansion_servers: &[ServerTarget],
-    current_zone: &DomainName,
-    qname: &DomainName,
-    force_single_subtrees: bool,
-    primary: Option<PrimaryAttempt>,
-) -> Result<()> {
-    announce_multi_server_query(progress, current_zone, expansion_servers.len());
-
-    let mut siblings = Vec::new();
-    let mut seen_referrals: HashMap<String, ()> = HashMap::new();
-
-    for (index, server) in expansion_servers.iter().enumerate() {
-        let mut sibling_path = path_prefix.to_vec();
-        if chain.len() <= 1 {
-            sibling_path.push(index);
-        } else {
-            sibling_path.pop();
-            sibling_path.push(index);
-        }
-        let sibling_path = node_path(0, &sibling_path);
-
-        if let Some(primary_attempt) = primary.as_ref() {
-            if server_matches_primary_attempt(server, primary_attempt) {
-                progress.hop(&primary_attempt.hop, &sibling_path);
-                siblings.push(TraceNode {
-                    hop: primary_attempt.hop.clone(),
-                    origin: NodeOrigin::Trace,
-                    children: Vec::new(),
-                });
-                continue;
-            }
-        }
-
-        if !budget.try_consume() {
-            break;
-        }
-
-        record_query_debug(
-            config,
-            server.address,
-            qname,
-            config.qtype,
-            QueryDebugContext::trace_path(sibling_path.path.clone()),
-        );
-        match query_server(server.address, config, qname, config.qtype) {
-            Ok(query_result) => {
-                let referral_ns = query_result.response.ns_names();
-                let glue = collect_glue(&query_result.response, &referral_ns);
-                let hop = hop_from_query(
-                    current_zone,
-                    &query_result,
-                    server.name.clone(),
-                    referral_ns.iter().map(ToString::to_string).collect(),
-                    glue.iter().map(ToString::to_string).collect(),
-                    if is_authoritative_answer(&query_result.response, qname, config.qtype) {
-                        HopOutcome::Answered
-                    } else {
-                        HopOutcome::Referral
-                    },
-                );
-                progress.hop(&hop, &sibling_path);
-                let mut node = TraceNode {
-                    hop,
-                    origin: NodeOrigin::Trace,
-                    children: Vec::new(),
-                };
-
-                if is_authoritative_answer(&query_result.response, qname, config.qtype) {
-                    siblings.push(node);
-                    continue;
-                }
-
-                if let Some(next_zone) = query_result.response.referral_zone(qname) {
-                    let key = referral_key(&query_result.response, qname, &next_zone);
-                    if seen_referrals.contains_key(&key) {
-                        siblings.push(node);
-                        continue;
-                    }
-                    seen_referrals.insert(key, ());
-
-                    if let Ok(next_servers) = resolve_nameservers_from_referral(
-                        &query_result.response,
-                        expansion_servers,
-                        config,
-                        budget,
-                        current_zone,
-                        progress,
-                    ) {
-                        if !next_servers.is_empty() {
-                            let mut visited = HashSet::new();
-                            visited.insert(next_zone.to_string());
-                            let subtree = if force_single_subtrees {
-                                trace_linear(
-                                    config,
-                                    budget,
-                                    progress,
-                                    &sibling_path,
-                                    next_servers,
-                                    qname.clone(),
-                                    next_zone,
-                                    &mut visited,
-                                )?
-                            } else {
-                                trace_all_policy(
-                                    config,
-                                    budget,
-                                    progress,
-                                    &sibling_path,
-                                    next_servers,
-                                    qname.clone(),
-                                    next_zone,
-                                    &mut visited,
-                                    false,
-                                )?
-                            };
-                            node.children.push(subtree);
-                        }
-                    }
-                }
-                siblings.push(node);
-            }
-            Err(error) => {
-                let hop = failed_hop(config, current_zone, qname, config.qtype, server, &error);
-                progress.hop(&hop, &sibling_path);
-                siblings.push(TraceNode {
-                    hop,
-                    origin: NodeOrigin::Trace,
-                    children: Vec::new(),
-                });
-            }
-        }
-    }
-
-    if budget.truncated {
-        progress.budget_truncated(budget.cap());
-    }
-
-    if siblings.is_empty() {
-        return Ok(());
-    }
-
-    if chain.is_empty() {
-        let mut root = siblings.remove(0);
-        root.children.extend(siblings);
-        chain.push(root);
-    } else {
-        let parent_idx = chain.len() - 1;
-        chain[parent_idx].children = siblings;
-    }
-
-    Ok(())
-}
-
 pub(crate) fn referral_key(
     response: &DnsResponse,
     qname: &DomainName,
@@ -746,13 +338,6 @@ fn link_chain(mut nodes: Vec<TraceNode>) -> TraceNode {
         nodes.last_mut().expect("parent").children.push(child);
     }
     nodes.pop().expect("root")
-}
-
-fn node_path(tree: usize, path: &[usize]) -> NodePath {
-    NodePath {
-        tree,
-        path: path.to_vec(),
-    }
 }
 
 pub(crate) fn query_one(
@@ -1002,10 +587,6 @@ pub(crate) fn server_matches_primary(
     }
 }
 
-fn server_matches_primary_attempt(server: &ServerTarget, primary: &PrimaryAttempt) -> bool {
-    server_matches_primary(server, &primary.server, primary.query_result.server)
-}
-
 pub(crate) fn resolve_nameservers_from_referral(
     referral: &DnsResponse,
     current_servers: &[ServerTarget],
@@ -1190,6 +771,7 @@ pub(crate) fn is_authoritative_answer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NodePath;
     use std::net::{IpAddr, Ipv4Addr};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};

@@ -1,3 +1,11 @@
+//! DNS resolution engine for `delve trace` and session branch operations.
+//!
+//! Traces run through the job-queue coordinator in [`job_queue`]. Session branch
+//! queries (`delve-trace-tree` phase 4) use [`run_branch_job`] for an
+//! alternate-server hop or [`run_expand_cut_branch`] to query every nameserver
+//! at a zone cut. Completed branch nodes carry [`NodeOrigin::Branch`] with the
+//! supplied [`BranchIntent`].
+
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -14,17 +22,22 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::OffsetDateTime;
 
-pub mod budget;
 pub mod job_queue;
 pub mod root_hints;
 pub mod trace;
 pub mod tree;
+
+mod budget;
 
 pub use budget::QueryBudget;
 
 pub use tree::{
     BranchIntent, HopOutcome, NodeOrigin, NodePath, TraceNode, TraceTree, TraceTreeRequest,
     build_linear_tree,
+};
+
+pub use job_queue::{
+    BranchJobRequest, TerminalSiblingExpansion, run_branch_job, run_expand_cut_branch,
 };
 
 #[derive(Debug, Error)]
@@ -226,7 +239,7 @@ impl StoredDnsMessage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ServerTarget {
+pub struct ServerTarget {
     pub address: IpAddr,
     pub name: Option<String>,
 }
@@ -301,14 +314,6 @@ impl QueryDebugContext {
     pub(crate) fn trace_job(job_id: u64, path: Vec<usize>) -> Self {
         Self {
             job_id: Some(job_id),
-            path,
-            context: "trace",
-        }
-    }
-
-    pub(crate) fn trace_path(path: Vec<usize>) -> Self {
-        Self {
-            job_id: None,
             path,
             context: "trace",
         }

@@ -10,9 +10,12 @@ use crate::trace::{
     server_matches_primary, start_servers,
 };
 use crate::{
-    ExpansionPolicy, HopOutcome, QueryBudget, ResolveError, Result, ServerTarget, TraceConfig,
-    TraceHop, TraceNode, TraceProgress, drain_query_debug, hop_from_query,
+    ExpansionPolicy, HopOutcome, NodeOrigin, QueryBudget, ResolveError, Result, ServerTarget,
+    TraceConfig, TraceHop, TraceNode, TraceProgress, drain_query_debug, hop_from_query,
+    now_rfc3339,
 };
+
+use super::branch::BranchJobRequest;
 
 use super::emitter::EmitScheduler;
 use super::pool::{JobOutcome, WorkerPool};
@@ -64,6 +67,103 @@ pub fn run_none_policy(
     qname: DomainName,
 ) -> Result<TraceNode> {
     run_policy(config, budget, progress, qname, false)
+}
+
+/// Parameters for deferred terminal sibling expansion (`+follow` + `+expand=last`).
+pub struct TerminalSiblingExpansion {
+    pub parent_path: Vec<usize>,
+    pub parent_delegation: DnsResponse,
+    pub parent_zone: DomainName,
+    pub cut_servers: Vec<ServerTarget>,
+    pub zone: DomainName,
+    pub qname: DomainName,
+    pub qtype: RecordType,
+    pub primary_server: ServerTarget,
+    pub primary_hop: TraceHop,
+    pub primary_query_result: dns_core::response::QueryResult,
+    pub force_single_path_subtrees: bool,
+}
+
+/// Expand terminal sibling nameservers through the job queue.
+pub(crate) fn run_terminal_sibling_expansion(
+    config: &TraceConfig,
+    budget: &mut QueryBudget,
+    progress: &mut dyn TraceProgress,
+    expansion: TerminalSiblingExpansion,
+) -> Result<Vec<TraceNode>> {
+    let expansion_servers = expansion_targets_for_cut(
+        Some(&expansion.parent_delegation),
+        &expansion.parent_zone,
+        &expansion.cut_servers,
+        config,
+        budget,
+        progress,
+    )?;
+
+    let mut coordinator = Coordinator::new(config, budget, progress, false);
+    coordinator.referral_by_path.insert(
+        expansion.parent_path.clone(),
+        DelegationInfo {
+            response: expansion.parent_delegation,
+            zone: expansion.parent_zone,
+            servers_at_cut: expansion.cut_servers,
+        },
+    );
+
+    if expansion.force_single_path_subtrees {
+        for index in 0..expansion_servers.len() {
+            let mut path = expansion.parent_path.clone();
+            path.push(index);
+            coordinator.single_path_subtrees.insert(path);
+        }
+    }
+
+    let mut primary_path = expansion.parent_path.clone();
+    primary_path.push(0);
+    let job = TraceJob {
+        id: JobId(1),
+        kind: JobKind::Trace,
+        server: expansion.primary_server,
+        qname: expansion.qname,
+        qtype: expansion.qtype,
+        zone: expansion.zone,
+        path: primary_path,
+        fallback_servers: Vec::new(),
+    };
+    coordinator.expand_terminal_last(job, expansion.primary_hop, expansion.primary_query_result)?;
+    coordinator.run_pending()?;
+    Ok(coordinator.results.children_at(&expansion.parent_path))
+}
+
+/// Run one or more branch jobs and return the completed nodes in request order.
+pub(crate) fn run_branch_jobs(
+    config: &TraceConfig,
+    budget: &mut QueryBudget,
+    progress: &mut dyn TraceProgress,
+    requests: Vec<BranchJobRequest>,
+) -> Result<Vec<TraceNode>> {
+    if requests.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let paths = requests
+        .iter()
+        .map(|request| request.attach_path.clone())
+        .collect::<Vec<_>>();
+    let mut coordinator = Coordinator::new(config, budget, progress, true);
+    for request in requests {
+        coordinator.enqueue_branch_job(request)?;
+    }
+    coordinator.run_pending()?;
+
+    let mut nodes = Vec::with_capacity(paths.len());
+    for path in paths {
+        let Some(node) = coordinator.results.node_at(&path) else {
+            continue;
+        };
+        nodes.push(node);
+    }
+    Ok(nodes)
 }
 
 struct DelegationInfo {
@@ -130,6 +230,28 @@ impl<'a> Coordinator<'a> {
         zone: DomainName,
         path: Vec<usize>,
     ) -> bool {
+        self.try_enqueue_job_with_kind(
+            server,
+            fallback_servers,
+            qname,
+            qtype,
+            zone,
+            path,
+            JobKind::Trace,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn try_enqueue_job_with_kind(
+        &mut self,
+        server: ServerTarget,
+        fallback_servers: Vec<ServerTarget>,
+        qname: DomainName,
+        qtype: RecordType,
+        zone: DomainName,
+        path: Vec<usize>,
+        kind: JobKind,
+    ) -> bool {
         if !self.config.budget_exempt && !self.budget.try_consume() {
             return false;
         }
@@ -137,7 +259,7 @@ impl<'a> Coordinator<'a> {
         let job_id = self.alloc_job_id();
         self.queue.enqueue(TraceJob {
             id: job_id,
-            kind: JobKind::Trace,
+            kind,
             server,
             qname,
             qtype,
@@ -217,14 +339,43 @@ impl<'a> Coordinator<'a> {
         };
         self.enqueue_cut(start_servers(self.config), qname, root_zone, initial_path)?;
 
-        let max_parallel = self.config.max_parallel_queries.max(1);
-        if max_parallel == 1 {
-            self.run_serial()?;
-        } else {
-            self.run_parallel(max_parallel)?;
-        }
+        self.run_pending()?;
 
         self.finalize_tree()
+    }
+
+    fn run_pending(&mut self) -> Result<()> {
+        let max_parallel = self.config.max_parallel_queries.max(1);
+        if max_parallel == 1 {
+            self.run_serial()
+        } else {
+            self.run_parallel(max_parallel)
+        }
+    }
+
+    fn enqueue_branch_job(&mut self, request: BranchJobRequest) -> Result<()> {
+        if request.attach_path.len() >= self.config.max_depth {
+            return Err(ResolveError::MaxDepth {
+                max: self.config.max_depth,
+            });
+        }
+
+        let kind = JobKind::Branch {
+            at: request.at,
+            intent: request.intent,
+        };
+        if !self.try_enqueue_job_with_kind(
+            request.server,
+            Vec::new(),
+            request.qname,
+            request.qtype,
+            request.zone,
+            request.attach_path,
+            kind,
+        ) {
+            self.progress.budget_truncated(self.budget.cap());
+        }
+        Ok(())
     }
 
     fn run_serial(&mut self) -> Result<()> {
@@ -332,7 +483,7 @@ impl<'a> Coordinator<'a> {
                 &job.server,
                 &error,
             );
-            self.store_completed_node(&job.path, hop);
+            self.store_completed_node(&job.path, hop, node_origin_for_job(&job));
             return Ok(());
         }
 
@@ -360,6 +511,28 @@ impl<'a> Coordinator<'a> {
         job: TraceJob,
         query_result: dns_core::response::QueryResult,
     ) -> Result<()> {
+        if matches!(job.kind, JobKind::Branch { .. }) {
+            let referral_ns = query_result.response.ns_names();
+            let glue = collect_glue(&query_result.response, &referral_ns);
+            let mut hop = hop_from_query(
+                &job.zone,
+                &query_result,
+                job.server.name.clone(),
+                referral_ns.iter().map(ToString::to_string).collect(),
+                glue.iter().map(ToString::to_string).collect(),
+                HopOutcome::Referral,
+            );
+            if is_authoritative_answer(&query_result.response, &job.qname, job.qtype) {
+                hop.outcome = HopOutcome::Answered;
+            } else if query_result.response.referral_zone(&job.qname).is_some() {
+                hop.outcome = HopOutcome::Referral;
+            } else {
+                hop.outcome = HopOutcome::Answered;
+            }
+            self.store_completed_node(&job.path, hop, node_origin_for_job(&job));
+            return Ok(());
+        }
+
         let referral_ns = query_result.response.ns_names();
         let glue = collect_glue(&query_result.response, &referral_ns);
         let mut hop = hop_from_query(
@@ -387,7 +560,7 @@ impl<'a> Coordinator<'a> {
                     kind: "delegation_loop".into(),
                     detail: next_zone.to_string(),
                 };
-                self.store_completed_node(&job.path, hop);
+                self.store_completed_node(&job.path, hop, node_origin_for_job(&job));
                 return Ok(());
             }
         } else if !self.visited_zones.insert(next_zone.to_string()) {
@@ -409,7 +582,7 @@ impl<'a> Coordinator<'a> {
             let seen = self.seen_referrals.entry(cut_parent).or_default();
             if !seen.insert(ref_key) {
                 hop.outcome = HopOutcome::Referral;
-                self.store_completed_node(&job.path, hop);
+                self.store_completed_node(&job.path, hop, node_origin_for_job(&job));
                 return Ok(());
             }
         }
@@ -447,7 +620,7 @@ impl<'a> Coordinator<'a> {
                         kind: "no_reachable_nameserver".into(),
                         detail: next_zone.to_string(),
                     };
-                    self.store_completed_node(&job.path, hop);
+                    self.store_completed_node(&job.path, hop, node_origin_for_job(&job));
                     return Ok(());
                 }
                 return Err(ResolveError::NoReachableNameserver {
@@ -460,7 +633,7 @@ impl<'a> Coordinator<'a> {
                         kind: "nameserver_resolution".into(),
                         detail: error.to_string(),
                     };
-                    self.store_completed_node(&job.path, hop);
+                    self.store_completed_node(&job.path, hop, node_origin_for_job(&job));
                     return Ok(());
                 }
                 return Err(error);
@@ -468,7 +641,7 @@ impl<'a> Coordinator<'a> {
         };
 
         hop.outcome = HopOutcome::Referral;
-        self.store_completed_node(&job.path, hop);
+        self.store_completed_node(&job.path, hop, node_origin_for_job(&job));
 
         let child_path = child_path_for_policy(self.config.expansion_policy, &job.path);
         if self.requires_single_path_subtree(&job.path) {
@@ -489,7 +662,7 @@ impl<'a> Coordinator<'a> {
             return self.expand_terminal_last(job, hop, query_result);
         }
 
-        self.store_completed_node(&job.path, hop);
+        self.store_completed_node(&job.path, hop, node_origin_for_job(&job));
         Ok(())
     }
 
@@ -501,7 +674,7 @@ impl<'a> Coordinator<'a> {
     ) -> Result<()> {
         let parent_path = parent_path(&job.path);
         if !self.expanded_terminal_cuts.insert(parent_path.clone()) {
-            self.store_completed_node(&job.path, hop);
+            self.store_completed_node(&job.path, hop, node_origin_for_job(&job));
             return Ok(());
         }
 
@@ -538,7 +711,7 @@ impl<'a> Coordinator<'a> {
             self.single_path_subtrees.insert(sibling_path.clone());
 
             if server_matches_primary(server, &primary_server, primary_result_server) {
-                self.store_completed_node(&sibling_path, hop.clone());
+                self.store_completed_node(&sibling_path, hop.clone(), node_origin_for_job(&job));
                 continue;
             }
 
@@ -564,12 +737,12 @@ impl<'a> Coordinator<'a> {
             .any(|prefix| path.len() >= prefix.len() && path[..prefix.len()] == prefix[..])
     }
 
-    fn store_completed_node(&mut self, path: &[usize], hop: crate::TraceHop) {
+    fn store_completed_node(&mut self, path: &[usize], hop: crate::TraceHop, origin: NodeOrigin) {
         if self.config.expansion_policy == ExpansionPolicy::All && path.len() == 1 {
             let index = path[0];
             let node = TraceNode {
                 hop: hop.clone(),
-                origin: crate::NodeOrigin::Trace,
+                origin: origin.clone(),
                 children: Vec::new(),
             };
             self.top_level_siblings.insert(index, node);
@@ -578,9 +751,20 @@ impl<'a> Coordinator<'a> {
             return;
         }
 
-        self.results.insert_hop(path, hop.clone());
+        self.results.insert_hop(path, hop.clone(), origin);
         self.emitter.mark_ready(path, hop);
         self.emitter.drain(self.progress);
+    }
+}
+
+fn node_origin_for_job(job: &TraceJob) -> NodeOrigin {
+    match &job.kind {
+        JobKind::Trace => NodeOrigin::Trace,
+        JobKind::Branch { at, intent } => NodeOrigin::Branch {
+            at: at.clone(),
+            intent: *intent,
+            at_time: now_rfc3339(),
+        },
     }
 }
 

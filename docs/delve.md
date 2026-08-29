@@ -123,7 +123,17 @@ delve prints a warning and falls back to defaults.
 ```yaml
 session:
   retention: 180d
+trace:
+  max_parallel_queries: 8
 ```
+
+### `trace.max_parallel_queries`
+
+Maximum number of DNS queries that `delve trace` may run concurrently when
+expanding a zone cut across multiple nameservers (`+expand=last` or `+expand=all`).
+Independent queries at the same cut share this worker pool; progress events are
+still emitted in stable path order. Set to `1` for fully serial execution
+(useful for deterministic tests). Default: **8**.
 
 ### `session.retention`
 

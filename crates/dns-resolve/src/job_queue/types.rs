@@ -14,10 +14,15 @@ impl fmt::Display for JobId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum JobKind {
     /// Primary trace hop at a zone cut.
     Trace,
+    /// Session branch query (`delve-trace-tree` phase 4).
+    Branch {
+        at: crate::NodePath,
+        intent: crate::BranchIntent,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
