@@ -12,6 +12,19 @@ pub fn parse_created_at(value: &str) -> Option<OffsetDateTime> {
     OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).ok()
 }
 
+/// Format an RFC 3339 timestamp for session list display (second precision).
+pub fn format_timestamp_for_list(value: &str) -> String {
+    let Some(timestamp) = parse_created_at(value) else {
+        return value.to_string();
+    };
+    const FORMAT: &[time::format_description::FormatItem<'static>] = time::macros::format_description!(
+        "[year]-[month]-[day]T[hour]:[minute]:[second]Z"
+    );
+    timestamp
+        .format(FORMAT)
+        .unwrap_or_else(|_| value.to_string())
+}
+
 /// Whether a session should be removed under retention policy.
 pub fn is_expired(
     created_at: &str,
@@ -98,6 +111,26 @@ mod tests {
         assert_eq!(
             is_expired("2020-01-01T00:00:00Z", SessionRetention::Never, now),
             None
+        );
+    }
+
+    #[test]
+    fn format_timestamp_for_list_truncates_subsecond_precision() {
+        assert_eq!(
+            format_timestamp_for_list("2026-08-25T12:34:56.789012345Z"),
+            "2026-08-25T12:34:56Z"
+        );
+        assert_eq!(
+            format_timestamp_for_list("2026-08-25T12:34:56Z"),
+            "2026-08-25T12:34:56Z"
+        );
+    }
+
+    #[test]
+    fn format_timestamp_for_list_preserves_unparseable_values() {
+        assert_eq!(
+            format_timestamp_for_list("not-a-timestamp"),
+            "not-a-timestamp"
         );
     }
 }

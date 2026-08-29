@@ -10,6 +10,7 @@ use crate::explore::{ExploreError, run_events, run_explore, run_outline};
 use crate::hop_display::print_hop_human;
 use crate::progress::StderrProgress;
 use crate::replay::{print_final_answer, print_reused_session_notice, replay_session};
+use crate::retention::format_timestamp_for_list;
 use crate::runtime::Runtime;
 use crate::session::SessionDocument;
 use crate::trace_request::TraceRequest;
@@ -281,7 +282,11 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
                 };
                 println!(
                     "{pin}{current} {}  {} {}  {} hops  {}",
-                    summary.id, summary.qname, summary.qtype, summary.hop_count, summary.created_at
+                    summary.id,
+                    summary.qname,
+                    summary.qtype,
+                    summary.hop_count,
+                    format_timestamp_for_list(&summary.created_at)
                 );
             }
             Ok(())
