@@ -3,8 +3,9 @@
 //! Traces run through the job-queue coordinator in [`job_queue`]. Session branch
 //! queries (`delve-trace-tree` phase 4) use [`run_branch_job`] for an
 //! alternate-server hop or [`run_expand_cut_branch`] to query every nameserver
-//! at a zone cut. Completed branch nodes carry [`NodeOrigin::Branch`] with the
-//! supplied [`BranchIntent`].
+//! at a zone cut. Each branch continues single-path through delegation below
+//! the cut (divergent referrals fan out as separate subtrees). The first hop
+//! carries [`NodeOrigin::Branch`] with the supplied [`BranchIntent`].
 
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;

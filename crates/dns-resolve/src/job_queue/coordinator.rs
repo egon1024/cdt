@@ -360,6 +360,11 @@ impl<'a> Coordinator<'a> {
             });
         }
 
+        // Branch subtrees continue single-path (like `+expand=last` divergent legs)
+        // and may fan out only when expand-cut launches sibling jobs at the cut.
+        self.single_path_subtrees
+            .insert(request.attach_path.clone());
+
         let kind = JobKind::Branch {
             at: request.at,
             intent: request.intent,
@@ -511,28 +516,6 @@ impl<'a> Coordinator<'a> {
         job: TraceJob,
         query_result: dns_core::response::QueryResult,
     ) -> Result<()> {
-        if matches!(job.kind, JobKind::Branch { .. }) {
-            let referral_ns = query_result.response.ns_names();
-            let glue = collect_glue(&query_result.response, &referral_ns);
-            let mut hop = hop_from_query(
-                &job.zone,
-                &query_result,
-                job.server.name.clone(),
-                referral_ns.iter().map(ToString::to_string).collect(),
-                glue.iter().map(ToString::to_string).collect(),
-                HopOutcome::Referral,
-            );
-            if is_authoritative_answer(&query_result.response, &job.qname, job.qtype) {
-                hop.outcome = HopOutcome::Answered;
-            } else if query_result.response.referral_zone(&job.qname).is_some() {
-                hop.outcome = HopOutcome::Referral;
-            } else {
-                hop.outcome = HopOutcome::Answered;
-            }
-            self.store_completed_node(&job.path, hop, node_origin_for_job(&job));
-            return Ok(());
-        }
-
         let referral_ns = query_result.response.ns_names();
         let glue = collect_glue(&query_result.response, &referral_ns);
         let mut hop = hop_from_query(
@@ -658,7 +641,10 @@ impl<'a> Coordinator<'a> {
         hop: crate::TraceHop,
         query_result: dns_core::response::QueryResult,
     ) -> Result<()> {
-        if self.config.expansion_policy == ExpansionPolicy::Last && !self.defer_terminal_expansion {
+        if self.config.expansion_policy == ExpansionPolicy::Last
+            && !self.defer_terminal_expansion
+            && !matches!(job.kind, JobKind::Branch { .. })
+        {
             return self.expand_terminal_last(job, hop, query_result);
         }
 

@@ -2,9 +2,9 @@
 //!
 //! Primary traces call [`run_policy`] (via [`crate::trace::run`]). Session branch
 //! work uses [`run_branch_job`] for a single alternate-server hop or
-//! [`run_expand_cut_branch`] to query every nameserver at a zone cut. Completed
-//! branch nodes carry [`crate::NodeOrigin::Branch`] with the supplied
-//! [`crate::BranchIntent`].
+//! [`run_expand_cut_branch`] to query every nameserver at a zone cut. Branch
+//! subtrees continue single-path through delegation; only the first hop carries
+//! [`crate::NodeOrigin::Branch`] with the supplied [`crate::BranchIntent`].
 
 mod branch;
 mod coordinator;
