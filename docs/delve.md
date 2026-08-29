@@ -1,8 +1,6 @@
 # delve
 
-`delve` traces the DNS delegation path for a query name — similar in spirit to
-`dig +trace`, but built for operators who need structured per-hop metadata (NSID,
-EDE, RTT), persisted sessions, and machine-readable output.
+`delve` traces the DNS delegation path for a query name — similar in spirit to `dig +trace`, but built for operators who need structured per-hop metadata (NSID, EDE, RTT), persisted sessions, and machine-readable output.
 
 ## Quick start
 
@@ -42,10 +40,7 @@ session: 01JXXXXXXXXXXXXXXXXXXXXXXXXXX
 
 Session ids accept a full ULID or a unique short prefix (like git).
 
-The **default session** is the last one you traced, explored, or otherwise
-touched. Commands that accept an optional `[id]` (`show`, `outline`, `events`,
-`explore`) use it when you omit the id. `delve session current` prints that id;
-`delve session list` marks it with `@` in the first column (`*` means pinned).
+The **default session** is the last one you traced, explored, or otherwise touched. Commands that accept an optional `[id]` (`show`, `outline`, `events`, `explore`) use it when you omit the id. `delve session current` prints that id; `delve session list` marks it with `@` in the first column (`*` means pinned).
 
 ## Trace query options
 
@@ -82,8 +77,7 @@ Any IANA type code also works via `TYPEnn` (for example `TYPE45` for IPSECKEY).
 
 Truncated UDP responses (`TC=1`) are recorded as-is. Delve does **not** automatically retry over TCP when `TC` is set; use `+tcp` up front if you need TCP for the whole trace.
 
-Human progress is written to **stderr**; with `+events`, structured events go to
-**stdout** so you can redirect:
+Human progress is written to **stderr**; with `+events`, structured events go to **stdout** so you can redirect:
 
 ```bash
 delve trace example.com +events > trace.ndjson
@@ -91,22 +85,15 @@ delve trace example.com +events > trace.ndjson
 
 ### Session reuse
 
-When `+save` is enabled (the default), `delve trace` checks for an existing stored
-session whose trace parameters match the current request (qname, qtype, `@server`,
-transport, timeout, tries, DNSSEC/NSID flags, address family, and cache options).
-If a match exists, delve **replays that stored snapshot** instead of issuing new
-DNS queries. The snapshot is kept until retention purge removes it — there is no
-time-based expiry for reuse.
+When `+save` is enabled (the default), `delve trace` checks for an existing stored session whose trace parameters match the current request (qname, qtype, `@server`, transport, timeout, tries, DNSSEC/NSID flags, address family, and cache options). If a match exists, delve **replays that stored snapshot** instead of issuing new DNS queries. The snapshot is kept until retention purge removes it — there is no time-based expiry for reuse.
 
 ```text
 session: 01JXXXXXXXXXXXXXXXXXXXXXXXXXX (reused snapshot from 2026-08-25T12:34:56Z)
 ```
 
-Use `+fresh` to force a live trace and save a new session. `+nosave` disables both
-saving and reuse.
+Use `+fresh` to force a live trace and save a new session. `+nosave` disables both saving and reuse.
 
-With `+events`, reuse replays stored hop events and emits a final `complete` event
-with `"reused": true`.
+With `+events`, reuse replays stored hop events and emits a final `complete` event with `"reused": true`.
 
 ## Configuration
 
@@ -116,8 +103,7 @@ delve reads an optional YAML config file:
 
 Typical path: `~/.config/cdt/delve.yaml`
 
-If the file is missing, defaults apply. If the file exists but is invalid,
-delve prints a warning and falls back to defaults.
+If the file is missing, defaults apply. If the file exists but is invalid, delve prints a warning and falls back to defaults.
 
 ### Example
 
@@ -130,11 +116,7 @@ trace:
 
 ### `trace.max_parallel_queries`
 
-Maximum number of DNS queries that `delve trace` may run concurrently when
-expanding a zone cut across multiple nameservers (`+expand=last` or `+expand=all`).
-Independent queries at the same cut share this worker pool; progress events are
-still emitted in stable path order. Set to `1` for fully serial execution
-(useful for deterministic tests). Default: **8**.
+Maximum number of DNS queries that `delve trace` may run concurrently when expanding a zone cut across multiple nameservers (`+expand=last` or `+expand=all`). Independent queries at the same cut share this worker pool; progress events are still emitted in stable path order. Set to `1` for fully serial execution (useful for deterministic tests). Default: **8**.
 
 ### `session.retention`
 
@@ -146,32 +128,23 @@ Controls how long **unpinned** stored sessions are kept before automatic purge.
 | `6mo` | Calendar months (same day-of-month, N months earlier; end-of-month clamped) |
 | `0` or `never` | Sessions are never removed by retention |
 
-Retention purge runs when the session store is opened (any command that touches
-sessions: `trace` with `+save`, `session list`, etc.). Pinned sessions are
-skipped. When sessions are removed, stderr shows a notice only if the count is
-greater than zero, for example:
+Retention purge runs when the session store is opened (any command that touches sessions: `trace` with `+save`, `session list`, etc.). Pinned sessions are skipped. When sessions are removed, stderr shows a notice only if the count is greater than zero, for example:
 
 ```text
 purged 3 sessions older than 180d
 ```
 
-Use `delve session pin <id>` to keep a session across retention. Pinned sessions
-show a `*` prefix in `delve session list`.
+Use `delve session pin <id>` to keep a session across retention. Pinned sessions show a `*` prefix in `delve session list`.
 
-Manual removal: `delve session rm <id>`, `delve session purge`, or
-`delve session purge --all` (unpinned only; pinned sessions are kept).
+Manual removal: `delve session rm <id>`, `delve session purge`, or `delve session purge --all` (unpinned only; pinned sessions are kept).
 
 ## Session explore, outline, and events
 
-`delve session explore <id>` opens a stored trace in the **interactive tree TUI**
-(no network I/O). Omit `<id>` to reopen the **default session**.
+`delve session explore <id>` opens a stored trace in the **interactive tree TUI** (no network I/O). Omit `<id>` to reopen the **default session**.
 
-`delve session outline <id>` prints the same tree as a **one-shot indented outline**
-on stdout — suitable for logs, pipes, and narrow terminals. The first line is
-`session: <id>`.
+`delve session outline <id>` prints the same tree as a **one-shot indented outline** on stdout — suitable for logs, pipes, and narrow terminals. The first line is `session: <id>`.
 
-`delve session events <id>` prints the explore tree as **structured JSON** on stdout
-(`event: explore_tree`, including `session` and hierarchical `tree` nodes).
+`delve session events <id>` prints the explore tree as **structured JSON** on stdout (`event: explore_tree`, including `session` and hierarchical `tree` nodes).
 
 ### `show --json` vs `events`
 
@@ -182,12 +155,9 @@ These are different JSON shapes for different jobs:
 | **`session show --json`** | Flat `TraceResult`: chronological `hops` array + `final_response` | Replaying trace data, diffing sessions, tools that expect the stored snapshot |
 | **`session events`** | Hierarchical explore `tree`: delegation / resolve / hop / final nodes | Tools that want the same structure as the TUI and outline views |
 
-Both include per-query **`rtt_ms`** and **`from_cache`** in hop JSON. The explore
-tree omits a separate final node when the last hop already records the
-authoritative answer (same exchange as `final_response`).
+Both include per-query **`rtt_ms`** and **`from_cache`** in hop JSON. The explore tree omits a separate final node when the last hop already records the authoritative answer (same exchange as `final_response`).
 
-Use **`--json`** for JSON output from `session show` (not `+events`; that flag is
-for `delve trace` only).
+Use **`--json`** for JSON output from `session show` (not `+events`; that flag is for `delve trace` only).
 
 ```bash
 delve session explore              # default session, TUI
@@ -216,30 +186,22 @@ New traces store full DNS response sections (header flags, question, answer, aut
 | Sessions (NDJSON fallback) | `$XDG_DATA_HOME/cdt/delve/sessions/*.json` |
 | Last session pointer | `$XDG_STATE_HOME/cdt/delve/last-session` |
 
-On non-Linux platforms, the `directories` crate selects the equivalent config,
-cache, and data locations.
+On non-Linux platforms, the `directories` crate selects the equivalent config, cache, and data locations.
 
 ## Sessions vs response cache
 
 These are separate on purpose:
 
-- **Sessions** store a full **snapshot** of the trace (`TraceResult`). `delve
-  session show` reads only that stored data — no network, no cache.
-- **Response cache** speeds up **new live traces** by reusing recent DNS
-  responses within record TTL. `delve cache stats` reports entry count, size,
-  and cumulative hit/miss counts (persisted in `cache.sqlite` across runs).
-  Cache expiry does not affect stored sessions.
+- **Sessions** store a full **snapshot** of the trace (`TraceResult`). `delve session show` reads only that stored data — no network, no cache.
+- **Response cache** speeds up **new live traces** by reusing recent DNS responses within record TTL. `delve cache stats` reports entry count, size, and cumulative hit/miss counts (persisted in `cache.sqlite` across runs). Cache expiry does not affect stored sessions.
 
-Each `delve trace` with `+save` creates a **new** session. Re-running a trace may
-use the cache for fewer queries, but it does not update an existing session.
+Each `delve trace` with `+save` creates a **new** session. Re-running a trace may use the cache for fewer queries, but it does not update an existing session.
 
 ## Output shapes
 
-With `+events`, NDJSON lines include `hop`, `message`, and `complete` events.
-The `complete` event carries the full `TraceResult`.
+With `+events`, NDJSON lines include `hop`, `message`, and `complete` events. The `complete` event carries the full `TraceResult`.
 
-Stored sessions use a versioned JSON document (`version: 1`) containing the same
-`TraceResult` shape plus metadata (`id`, `created_at`, `pinned`).
+Stored sessions use a versioned JSON document (`version: 1`) containing the same `TraceResult` shape plus metadata (`id`, `created_at`, `pinned`).
 
 ## See also
 
