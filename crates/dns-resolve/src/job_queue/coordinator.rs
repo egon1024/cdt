@@ -559,15 +559,15 @@ impl<'a> Coordinator<'a> {
             });
         }
 
-        if self.config.expansion_policy == ExpansionPolicy::All {
-            let cut_parent = parent_path(&job.path);
-            let ref_key = referral_key(&query_result.response, &job.qname, &next_zone);
-            let seen = self.seen_referrals.entry(cut_parent).or_default();
-            if !seen.insert(ref_key) {
-                hop.outcome = HopOutcome::Referral;
-                self.store_completed_node(&job.path, hop, node_origin_for_job(&job));
-                return Ok(());
-            }
+        // Deduplicate identical referrals from siblings at the same cut (applies to
+        // `+expand=all` at every cut and to terminal sibling expansion under `+expand=last`).
+        let cut_parent = parent_path(&job.path);
+        let ref_key = referral_key(&query_result.response, &job.qname, &next_zone);
+        let seen = self.seen_referrals.entry(cut_parent).or_default();
+        if !seen.insert(ref_key) {
+            hop.outcome = HopOutcome::Referral;
+            self.store_completed_node(&job.path, hop, node_origin_for_job(&job));
+            return Ok(());
         }
 
         self.progress.message(&format!(
@@ -1413,8 +1413,17 @@ mod tests {
 
     #[test]
     fn all_policy_divergent_referrals_fan_out_to_distinct_subtrees() {
+        assert_two_servers_two_referrals_fan_out(ExpansionPolicy::All);
+    }
+
+    #[test]
+    fn two_servers_two_referrals_fan_out_to_distinct_subtrees() {
+        assert_two_servers_two_referrals_fan_out(ExpansionPolicy::All);
+    }
+
+    fn assert_two_servers_two_referrals_fan_out(policy: ExpansionPolicy) {
         let mut config = test_config("example.com.", Arc::new(DivergentReferralExchange));
-        config.expansion_policy = ExpansionPolicy::All;
+        config.expansion_policy = policy;
         config.start_servers = Some(vec![
             IpAddr::V4(Ipv4Addr::new(1, 0, 0, 1)),
             IpAddr::V4(Ipv4Addr::new(2, 0, 0, 2)),
@@ -1437,8 +1446,17 @@ mod tests {
 
     #[test]
     fn all_policy_identical_referrals_are_traced_once() {
+        assert_three_servers_one_referral_traced_once(ExpansionPolicy::All);
+    }
+
+    #[test]
+    fn three_servers_one_referral_traced_once() {
+        assert_three_servers_one_referral_traced_once(ExpansionPolicy::All);
+    }
+
+    fn assert_three_servers_one_referral_traced_once(policy: ExpansionPolicy) {
         let mut config = test_config("example.com.", Arc::new(DivergentReferralExchange));
-        config.expansion_policy = ExpansionPolicy::All;
+        config.expansion_policy = policy;
         config.start_servers = Some(vec![
             IpAddr::V4(Ipv4Addr::new(1, 0, 0, 1)),
             IpAddr::V4(Ipv4Addr::new(1, 0, 0, 3)),
@@ -1487,6 +1505,155 @@ mod tests {
         assert!(budget.truncated);
         assert!(progress.truncated);
         assert!(!tree.children.is_empty());
+    }
+
+    struct TerminalDivergentReferralExchange;
+
+    impl crate::DnsExchange for TerminalDivergentReferralExchange {
+        fn exchange(
+            &self,
+            server: IpAddr,
+            _port: u16,
+            options: &dns_core::QueryOptions,
+        ) -> dns_core::Result<dns_core::response::QueryResult> {
+            let qname = options.qname.to_string();
+            let is_example_zone_ns = matches!(
+                server,
+                IpAddr::V4(v4)
+                    if matches!(v4.octets(), [1, 0, 0, 1] | [2, 0, 0, 2] | [3, 0, 0, 3])
+            );
+            let response = if qname == "example.com." && is_example_zone_ns {
+                match server {
+                    IpAddr::V4(v4) if v4 == Ipv4Addr::new(1, 0, 0, 1) => {
+                        authoritative_a(&options.qname, "93.184.216.34")
+                    }
+                    IpAddr::V4(v4) if v4 == Ipv4Addr::new(2, 0, 0, 2) => {
+                        referral_response(&options.qname, "net.", "ns.net.", "4.0.0.4")
+                    }
+                    IpAddr::V4(v4) if v4 == Ipv4Addr::new(3, 0, 0, 3) => {
+                        referral_response(&options.qname, "org.", "ns.org.", "5.0.0.5")
+                    }
+                    _ => authoritative_a(&options.qname, "93.184.216.34"),
+                }
+            } else if qname == "example.com." && server == IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)) {
+                referral_response(&options.qname, "com.", "ns.com.", "1.1.1.1")
+            } else if qname == "example.com." {
+                DnsResponse {
+                    id: 1,
+                    rcode: 0,
+                    rcode_text: "NOERROR".into(),
+                    authoritative: false,
+                    truncated: false,
+                    recursion_desired: false,
+                    recursion_available: false,
+                    authentic_data: false,
+                    checking_disabled: false,
+                    answers: vec![],
+                    authorities: vec![
+                        DnsRecord {
+                            name: DomainName::parse("example.com.").expect("zone"),
+                            rtype: "NS".into(),
+                            rclass: "IN".into(),
+                            ttl: 3600,
+                            rdata: "ns1.example.com.".into(),
+                        },
+                        DnsRecord {
+                            name: DomainName::parse("example.com.").expect("zone"),
+                            rtype: "NS".into(),
+                            rclass: "IN".into(),
+                            ttl: 3600,
+                            rdata: "ns2.example.com.".into(),
+                        },
+                        DnsRecord {
+                            name: DomainName::parse("example.com.").expect("zone"),
+                            rtype: "NS".into(),
+                            rclass: "IN".into(),
+                            ttl: 3600,
+                            rdata: "ns3.example.com.".into(),
+                        },
+                    ],
+                    additionals: vec![
+                        DnsRecord {
+                            name: DomainName::parse("ns1.example.com.").expect("ns"),
+                            rtype: "A".into(),
+                            rclass: "IN".into(),
+                            ttl: 300,
+                            rdata: "1.0.0.1".into(),
+                        },
+                        DnsRecord {
+                            name: DomainName::parse("ns2.example.com.").expect("ns"),
+                            rtype: "A".into(),
+                            rclass: "IN".into(),
+                            ttl: 300,
+                            rdata: "2.0.0.2".into(),
+                        },
+                        DnsRecord {
+                            name: DomainName::parse("ns3.example.com.").expect("ns"),
+                            rtype: "A".into(),
+                            rclass: "IN".into(),
+                            ttl: 300,
+                            rdata: "3.0.0.3".into(),
+                        },
+                    ],
+                    edns: EdnsMeta::default(),
+                }
+            } else {
+                authoritative_a(&options.qname, "93.184.216.34")
+            };
+            Ok(dns_core::response::QueryResult {
+                server,
+                transport: options.transport,
+                qname: options.qname.clone(),
+                qtype: options.qtype.to_string(),
+                rtt: std::time::Duration::from_millis(1),
+                response,
+                from_cache: false,
+            })
+        }
+    }
+
+    fn count_referral_subtrees_with_children(node: &TraceNode) -> usize {
+        let mut count = 0usize;
+        if node.hop.outcome == HopOutcome::Referral && !node.children.is_empty() {
+            count += 1;
+        }
+        for child in &node.children {
+            count += count_referral_subtrees_with_children(child);
+        }
+        count
+    }
+
+    #[test]
+    fn last_policy_divergent_referral_from_expanded_cut() {
+        let mut config = test_config("example.com.", Arc::new(TerminalDivergentReferralExchange));
+        config.expansion_policy = ExpansionPolicy::Last;
+        config.start_servers = Some(vec![IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9))]);
+        let mut budget = QueryBudget::new(64);
+        let qname = DomainName::parse("example.com.").expect("qname");
+        let tree =
+            run_policy(&config, &mut budget, &mut SilentProgress, qname, false).expect("trace");
+        assert_eq!(
+            count_referral_subtrees_with_children(&tree),
+            2,
+            "expanded terminal cut with divergent referrals should fan out to two subtrees"
+        );
+        let wrapped = crate::TraceTree {
+            request: crate::TraceTreeRequest {
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                started_at: "now".into(),
+            },
+            root: tree,
+            budget_truncated: false,
+        };
+        let path = wrapped.primary_path();
+        let parent = path.iter().rev().nth(1).expect("terminal delegation hop");
+        for sibling in &parent.children {
+            assert!(
+                sibling.children.len() <= 1,
+                "divergent subtrees under +expand=last must not expand again"
+            );
+        }
     }
 
     #[test]
