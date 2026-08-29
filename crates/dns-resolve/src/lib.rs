@@ -123,6 +123,9 @@ pub struct TraceConfig {
     /// Resolved nameserver targets reused for the lifetime of this trace action.
     /// Checked after glue from the current referral; see `resolve_nameserver`.
     pub(crate) ns_target_cache: Arc<Mutex<HashMap<String, Vec<ServerTarget>>>>,
+    /// Emit per-query concurrency diagnostics (`+debug`).
+    pub debug: bool,
+    pub(crate) query_debug_buffer: Option<Arc<Mutex<Vec<TraceQueryEvent>>>>,
 }
 
 impl TraceConfig {
@@ -153,7 +156,18 @@ impl TraceConfig {
             max_parallel_queries: 8,
             budget_exempt: false,
             ns_target_cache: Arc::new(Mutex::new(HashMap::new())),
+            debug: false,
+            query_debug_buffer: None,
         }
+    }
+
+    pub fn set_debug(&mut self, enabled: bool) {
+        self.debug = enabled;
+        self.query_debug_buffer = if enabled {
+            Some(Arc::new(Mutex::new(Vec::new())))
+        } else {
+            None
+        };
     }
 
     pub fn with_memory_cache(&mut self) -> Arc<dyn ResponseCache> {
@@ -262,6 +276,96 @@ pub trait TraceProgress: Send {
     fn hop(&mut self, hop: &TraceHop, path: &NodePath);
     fn message(&mut self, message: &str);
     fn budget_truncated(&mut self, _cap: usize) {}
+    fn query_debug(&mut self, _event: &TraceQueryEvent) {}
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraceQueryEvent {
+    pub job_id: Option<u64>,
+    pub path: Vec<usize>,
+    pub thread_id: String,
+    pub server: String,
+    pub qname: String,
+    pub qtype: String,
+    pub context: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct QueryDebugContext {
+    pub job_id: Option<u64>,
+    pub path: Vec<usize>,
+    pub context: &'static str,
+}
+
+impl QueryDebugContext {
+    pub(crate) fn trace_job(job_id: u64, path: Vec<usize>) -> Self {
+        Self {
+            job_id: Some(job_id),
+            path,
+            context: "trace",
+        }
+    }
+
+    pub(crate) fn trace_path(path: Vec<usize>) -> Self {
+        Self {
+            job_id: None,
+            path,
+            context: "trace",
+        }
+    }
+
+    pub(crate) fn ns_resolve() -> Self {
+        Self {
+            job_id: None,
+            path: Vec::new(),
+            context: "ns-resolve",
+        }
+    }
+}
+
+pub(crate) fn record_query_debug(
+    config: &TraceConfig,
+    server: IpAddr,
+    qname: &DomainName,
+    qtype: RecordType,
+    ctx: QueryDebugContext,
+) {
+    if !config.debug {
+        return;
+    }
+    let Some(buffer) = &config.query_debug_buffer else {
+        return;
+    };
+    let event = TraceQueryEvent {
+        job_id: ctx.job_id,
+        path: ctx.path,
+        thread_id: format!("{:?}", std::thread::current().id()),
+        server: server.to_string(),
+        qname: qname.to_string(),
+        qtype: qtype.to_string(),
+        context: ctx.context.to_string(),
+    };
+    if let Ok(mut guard) = buffer.lock() {
+        guard.push(event);
+    }
+}
+
+pub(crate) fn drain_query_debug(config: &TraceConfig, progress: &mut dyn TraceProgress) {
+    if !config.debug {
+        return;
+    }
+    let Some(buffer) = &config.query_debug_buffer else {
+        return;
+    };
+    let events = {
+        let Ok(mut guard) = buffer.lock() else {
+            return;
+        };
+        guard.drain(..).collect::<Vec<_>>()
+    };
+    for event in events {
+        progress.query_debug(&event);
+    }
 }
 
 pub fn run_trace(config: &TraceConfig, progress: &mut dyn TraceProgress) -> Result<TraceTree> {
@@ -571,5 +675,49 @@ mod cache_tests {
                 from_cache: false,
             })
         }
+    }
+
+    struct RecordingQueryDebug {
+        events: Arc<Mutex<Vec<TraceQueryEvent>>>,
+    }
+
+    impl TraceProgress for RecordingQueryDebug {
+        fn hop(&mut self, _hop: &TraceHop, _path: &NodePath) {}
+        fn message(&mut self, _message: &str) {}
+        fn query_debug(&mut self, event: &TraceQueryEvent) {
+            self.events.lock().expect("lock").push(event.clone());
+        }
+    }
+
+    #[test]
+    fn debug_records_and_drains_query_events() {
+        let qname = DomainName::parse("example.com.").expect("qname");
+        let mut config = TraceConfig::new(qname, RecordType::A);
+        config.set_debug(true);
+        config.exchange = Arc::new(CountingExchange {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut progress = RecordingQueryDebug {
+            events: events.clone(),
+        };
+
+        record_query_debug(
+            &config,
+            IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)),
+            &config.qname,
+            RecordType::A,
+            QueryDebugContext::trace_job(7, vec![0, 1]),
+        );
+        drain_query_debug(&config, &mut progress);
+
+        let recorded = events.lock().expect("lock");
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].job_id, Some(7));
+        assert_eq!(recorded[0].path, vec![0, 1]);
+        assert_eq!(recorded[0].server, "1.2.3.4");
+        assert_eq!(recorded[0].context, "trace");
+        assert!(recorded[0].thread_id.starts_with("ThreadId("));
     }
 }

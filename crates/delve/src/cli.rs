@@ -250,6 +250,7 @@ fn run_parsed_trace(options: TraceOptions, runtime: &Runtime) -> Result<(), CliE
     config.expansion_policy = options.expansion;
     config.max_queries_per_action = runtime.config.trace_max_queries_per_action;
     config.max_parallel_queries = runtime.config.trace_max_parallel_queries;
+    config.set_debug(options.debug);
     for raw in &options.cache_skip_qnames {
         config.cache_skip_qnames.insert(DomainName::parse(raw)?);
     }
@@ -262,7 +263,7 @@ fn run_parsed_trace(options: TraceOptions, runtime: &Runtime) -> Result<(), CliE
         config.start_servers = Some(vec![addr]);
     }
 
-    let mut progress = StderrProgress::new(options.events);
+    let mut progress = StderrProgress::new(options.events, options.debug);
     let result = run_trace(&config, &mut progress)?;
 
     if options.save_session {

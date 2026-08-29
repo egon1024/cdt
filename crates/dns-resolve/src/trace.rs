@@ -8,9 +8,10 @@ use hickory_proto::rr::RecordType;
 
 use crate::root_hints::{root_server_names, root_servers};
 use crate::{
-    ExpansionPolicy, HopOutcome, NodeOrigin, NodePath, QueryBudget, ResolveError, Result,
-    ServerTarget, TraceConfig, TraceHop, TraceNode, TraceProgress, TraceTree, TraceTreeRequest,
-    filter_addresses, hop_from_query, now_rfc3339, query_server,
+    ExpansionPolicy, HopOutcome, NodeOrigin, NodePath, QueryBudget, QueryDebugContext,
+    ResolveError, Result, ServerTarget, TraceConfig, TraceHop, TraceNode, TraceProgress, TraceTree,
+    TraceTreeRequest, filter_addresses, hop_from_query, now_rfc3339, query_server,
+    record_query_debug,
 };
 
 #[allow(dead_code)]
@@ -446,6 +447,13 @@ fn trace_all_policy(
         child_path.push(index);
         let child_path = node_path(path.tree, &child_path);
 
+        record_query_debug(
+            config,
+            server.address,
+            &qname,
+            config.qtype,
+            QueryDebugContext::trace_path(child_path.path.clone()),
+        );
         match query_server(server.address, config, &qname, config.qtype) {
             Ok(query_result) => {
                 let referral_ns = query_result.response.ns_names();
@@ -596,6 +604,13 @@ fn expand_cut(
             break;
         }
 
+        record_query_debug(
+            config,
+            server.address,
+            qname,
+            config.qtype,
+            QueryDebugContext::trace_path(sibling_path.path.clone()),
+        );
         match query_server(server.address, config, qname, config.qtype) {
             Ok(query_result) => {
                 let referral_ns = query_result.response.ns_names();
@@ -757,6 +772,13 @@ pub(crate) fn query_one(
                 }),
             );
         }
+        record_query_debug(
+            config,
+            server.address,
+            qname,
+            qtype,
+            QueryDebugContext::ns_resolve(),
+        );
         match query_server(server.address, config, qname, qtype) {
             Ok(result) => return Ok((result, server.name.clone())),
             Err(error) => last_error = Some(error),
@@ -782,6 +804,13 @@ pub(crate) fn query_all(
         if !config.budget_exempt && !budget.try_consume() {
             break;
         }
+        record_query_debug(
+            config,
+            server.address,
+            qname,
+            qtype,
+            QueryDebugContext::ns_resolve(),
+        );
         let result = query_server(server.address, config, qname, qtype);
         attempts.push(QueryAttempt {
             server: server.clone(),

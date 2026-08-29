@@ -4,7 +4,7 @@ use crate::progress::StderrProgress;
 use crate::session::SessionDocument;
 
 pub fn replay_session(document: &SessionDocument, events: bool) {
-    let mut progress = StderrProgress::new(events);
+    let mut progress = StderrProgress::new(events, false);
     for path in document.result.display_order() {
         if let Some(node) = document.result.resolve(&path) {
             progress.hop(&node.hop, &path);

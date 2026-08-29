@@ -11,7 +11,7 @@ use crate::trace::{
 };
 use crate::{
     ExpansionPolicy, HopOutcome, QueryBudget, ResolveError, Result, ServerTarget, TraceConfig,
-    TraceHop, TraceNode, TraceProgress, hop_from_query,
+    TraceHop, TraceNode, TraceProgress, drain_query_debug, hop_from_query,
 };
 
 use super::emitter::EmitScheduler;
@@ -281,7 +281,9 @@ impl<'a> Coordinator<'a> {
         match execute_job(&job, self.config) {
             Ok(query_result) => self.handle_success(job, query_result),
             Err(error) => self.handle_failure(job, error),
-        }
+        }?;
+        drain_query_debug(self.config, self.progress);
+        Ok(())
     }
 
     fn complete_job(
@@ -289,10 +291,12 @@ impl<'a> Coordinator<'a> {
         job: TraceJob,
         result: Result<dns_core::response::QueryResult>,
     ) -> Result<()> {
-        match result {
+        let output = match result {
             Ok(query_result) => self.handle_success(job, query_result),
             Err(error) => self.handle_failure(job, error),
-        }
+        };
+        drain_query_debug(self.config, self.progress);
+        output
     }
 
     fn finalize_tree(&mut self) -> Result<TraceNode> {

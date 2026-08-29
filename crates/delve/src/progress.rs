@@ -1,16 +1,18 @@
-use dns_resolve::{NodePath, TraceHop, TraceProgress};
+use dns_resolve::{NodePath, TraceHop, TraceProgress, TraceQueryEvent};
 
 use crate::hop_display::{HopDisplayState, print_hop_human};
 
 pub struct StderrProgress {
     events: bool,
+    debug: bool,
     hop_display: HopDisplayState,
 }
 
 impl StderrProgress {
-    pub fn new(events: bool) -> Self {
+    pub fn new(events: bool, debug: bool) -> Self {
         Self {
             events,
+            debug,
             hop_display: HopDisplayState::new(),
         }
     }
@@ -65,6 +67,42 @@ impl TraceProgress for StderrProgress {
             eprintln!("  -> query budget of {cap} exhausted; trace truncated");
         }
     }
+
+    fn query_debug(&mut self, event: &TraceQueryEvent) {
+        if !self.debug {
+            return;
+        }
+        if self.events {
+            println!(
+                "{}",
+                serde_json::to_string(&serde_json::json!({
+                    "event": "query",
+                    "job_id": event.job_id,
+                    "path": event.path,
+                    "thread": event.thread_id,
+                    "server": event.server,
+                    "qname": event.qname,
+                    "qtype": event.qtype,
+                    "context": event.context,
+                }))
+                .expect("json")
+            );
+        } else {
+            let job = event
+                .job_id
+                .map(|id| format!("job-{id}"))
+                .unwrap_or_else(|| "job-?".into());
+            let path = if event.path.is_empty() {
+                "[]".into()
+            } else {
+                format!("{:?}", event.path)
+            };
+            eprintln!(
+                "  -> query {job} path {path} thread={} {} {} {} ({})",
+                event.thread_id, event.server, event.qname, event.qtype, event.context
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -74,7 +112,7 @@ mod tests {
 
     #[test]
     fn events_emit_tree_path_fields() {
-        let mut progress = StderrProgress::new(true);
+        let mut progress = StderrProgress::new(true, false);
         let hop = TraceHop {
             zone: ".".into(),
             server: "1.1.1.1".into(),

@@ -21,6 +21,8 @@ pub struct TraceRequest {
     pub request_nsid: bool,
     pub use_cache: bool,
     pub cache_skip_qnames: Vec<String>,
+    #[serde(default)]
+    pub debug: bool,
 }
 
 impl TraceRequest {
@@ -42,6 +44,7 @@ impl TraceRequest {
             request_nsid: options.request_nsid,
             use_cache: options.use_cache,
             cache_skip_qnames,
+            debug: options.debug,
         }
     }
 }

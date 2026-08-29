@@ -34,6 +34,7 @@ DNS behavior:
 
 Output and sessions:
   +events / +noevents    Emit NDJSON events on stdout (default: off)
+  +debug / +nodebug      Log query job, path, and thread id (default: off)
   +save / +nosave        Persist trace as a session (default: on)
   +fresh                 Force a live trace; do not reuse a stored session
 
@@ -75,6 +76,7 @@ pub struct TraceOptions {
     pub cache_skip_qnames: Vec<String>,
     pub save_session: bool,
     pub events: bool,
+    pub debug: bool,
     pub fresh: bool,
     pub expansion: ExpansionPolicy,
     pub expand_all_force: bool,
@@ -99,6 +101,7 @@ impl Default for TraceOptions {
             cache_skip_qnames: Vec::new(),
             save_session: true,
             events: false,
+            debug: false,
             fresh: false,
             expansion: ExpansionPolicy::Last,
             expand_all_force: false,
@@ -221,6 +224,7 @@ fn apply_query_option(options: &mut TraceOptions, arg: &str) -> Result<(), Parse
         "nsid" => options.request_nsid = !negate,
         "nonsid" => options.request_nsid = false,
         "events" => options.events = !negate,
+        "debug" => options.debug = !negate,
         "cache" => {
             if negate {
                 if let Some(raw) = value {
@@ -311,6 +315,7 @@ mod tests {
     #[test]
     fn trace_options_help_documents_key_flags() {
         assert!(TRACE_OPTIONS_HELP.contains("+follow"));
+        assert!(TRACE_OPTIONS_HELP.contains("+debug"));
         assert!(TRACE_OPTIONS_HELP.contains("+events"));
         assert!(TRACE_OPTIONS_HELP.contains("+timeout=N"));
         assert!(TRACE_OPTIONS_HELP.contains("-x"));
@@ -386,6 +391,15 @@ mod tests {
 
         assert!(!options.use_tcp);
         assert!(!options.dnssec);
+    }
+
+    #[test]
+    fn supports_debug_flag() {
+        let options = parse_trace_args(&args(&["example.com", "+debug"])).expect("parse");
+        assert!(options.debug);
+
+        let options = parse_trace_args(&args(&["example.com", "+nodebug"])).expect("parse");
+        assert!(!options.debug);
     }
 
     #[test]
