@@ -14,6 +14,7 @@ use crate::explore::{ExploreError, run_events, run_explore, run_outline};
 use crate::hop_display::{HopDisplayState, print_hop_human};
 use crate::progress::StderrProgress;
 use crate::replay::{print_final_answer, print_reused_session_notice, replay_session};
+use crate::retention::format_timestamp_for_list;
 use crate::runtime::{Runtime, SessionReuseLookup};
 use crate::session::SessionDocument;
 use crate::trace_request::TraceRequest;
@@ -196,8 +197,8 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
                             summary.qname,
                             summary.qtype,
                             summary.node_count,
-                            summary.created_at,
-                            summary.updated_at
+                            format_timestamp_for_list(&summary.created_at),
+                            format_timestamp_for_list(&summary.updated_at)
                         );
                     }
                     crate::session::SessionListItem::Unreadable { id, message } => {
