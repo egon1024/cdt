@@ -1024,10 +1024,6 @@ fn resolve_nameserver(
     parent_zone: &DomainName,
     progress: &mut dyn TraceProgress,
 ) -> Result<Vec<ServerTarget>> {
-    if let Some(targets) = cached_ns_targets(config, ns_name) {
-        return Ok(targets);
-    }
-
     if config.ns_resolution_active.contains(ns_name.as_str()) {
         return Err(ResolveError::NameserverResolution {
             name: ns_name.to_string(),
@@ -1048,6 +1044,10 @@ fn resolve_nameserver(
             .map(|address| ServerTarget::with_name(address, ns_name.to_string()))
             .collect();
         remember_ns_targets(config, ns_name, &targets);
+        return Ok(targets);
+    }
+
+    if let Some(targets) = cached_ns_targets(config, ns_name) {
         return Ok(targets);
     }
 
@@ -1751,6 +1751,130 @@ mod tests {
         assert!(
             cache.stats().entries > 0,
             "glueless NS resolution queries should populate the response cache"
+        );
+    }
+
+    #[test]
+    fn glue_preferred_over_ns_target_cache() {
+        let glueless_referral = DnsResponse {
+            id: 1,
+            rcode: 0,
+            rcode_text: "NOERROR".into(),
+            authoritative: false,
+            truncated: false,
+            recursion_desired: false,
+            recursion_available: false,
+            authentic_data: false,
+            checking_disabled: false,
+            answers: vec![],
+            authorities: vec![DnsRecord {
+                name: DomainName::parse("example.com.").expect("zone"),
+                rtype: "NS".into(),
+                rclass: "IN".into(),
+                ttl: 3600,
+                rdata: "ns.outside.example.".into(),
+            }],
+            additionals: vec![],
+            edns: EdnsMeta::default(),
+        };
+        let glued_referral = DnsResponse {
+            additionals: vec![DnsRecord {
+                name: DomainName::parse("ns.outside.example.").expect("ns"),
+                rtype: "A".into(),
+                rclass: "IN".into(),
+                ttl: 3600,
+                rdata: "93.184.216.34".into(),
+            }],
+            ..glueless_referral.clone()
+        };
+        let parent_zone = DomainName::parse("com.").expect("zone");
+        let ns_name = DomainName::parse("ns.outside.example.").expect("ns");
+
+        struct DistinctAddressExchange;
+
+        impl crate::DnsExchange for DistinctAddressExchange {
+            fn exchange(
+                &self,
+                server: IpAddr,
+                _port: u16,
+                options: &dns_core::QueryOptions,
+            ) -> dns_core::Result<dns_core::response::QueryResult> {
+                Ok(dns_core::response::QueryResult {
+                    server,
+                    transport: options.transport,
+                    qname: options.qname.clone(),
+                    qtype: options.qtype.to_string(),
+                    rtt: Duration::from_millis(1),
+                    response: DnsResponse {
+                        id: 1,
+                        rcode: 0,
+                        rcode_text: "NOERROR".into(),
+                        authoritative: true,
+                        truncated: false,
+                        recursion_desired: false,
+                        recursion_available: false,
+                        authentic_data: false,
+                        checking_disabled: false,
+                        answers: vec![DnsRecord {
+                            name: options.qname.clone(),
+                            rtype: "A".into(),
+                            rclass: "IN".into(),
+                            ttl: 300,
+                            rdata: "1.2.3.4".into(),
+                        }],
+                        authorities: vec![],
+                        additionals: vec![],
+                        edns: EdnsMeta::default(),
+                    },
+                    from_cache: false,
+                })
+            }
+        }
+
+        let mut config = TraceConfig::new(
+            DomainName::parse("example.com.").expect("qname"),
+            RecordType::A,
+        );
+        config.exchange = Arc::new(DistinctAddressExchange);
+        let mut budget = QueryBudget::new(64);
+        let mut progress = SilentProgress;
+        let servers = [ServerTarget::from_address(IpAddr::V4(Ipv4Addr::new(
+            1, 1, 1, 1,
+        )))];
+
+        let cached = resolve_nameserver(
+            &ns_name,
+            &glueless_referral,
+            &servers,
+            &config,
+            &mut budget,
+            &parent_zone,
+            &mut progress,
+        )
+        .expect("cached resolution");
+        assert_eq!(
+            cached[0].address,
+            IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)),
+            "fixture setup should cache the queried address"
+        );
+
+        let glued = resolve_nameserver(
+            &ns_name,
+            &glued_referral,
+            &servers,
+            &config,
+            &mut budget,
+            &parent_zone,
+            &mut progress,
+        )
+        .expect("glued resolution");
+
+        assert_eq!(
+            glued,
+            vec![ServerTarget::with_name(
+                IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)),
+                "ns.outside.example."
+            )]
         );
     }
 

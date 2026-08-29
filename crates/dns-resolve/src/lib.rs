@@ -121,6 +121,7 @@ pub struct TraceConfig {
     /// `trace.max_queries_per_action` (glueless NS resolution sub-traces).
     pub budget_exempt: bool,
     /// Resolved nameserver targets reused for the lifetime of this trace action.
+    /// Checked after glue from the current referral; see `resolve_nameserver`.
     pub(crate) ns_target_cache: Arc<Mutex<HashMap<String, Vec<ServerTarget>>>>,
 }
 
