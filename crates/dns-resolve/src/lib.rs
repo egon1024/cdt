@@ -1,7 +1,7 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use dns_cache::{CacheKey, CachedEntry, ResponseCache, now_unix, shared_cache, ttl_from_result};
@@ -117,6 +117,11 @@ pub struct TraceConfig {
     pub max_queries_per_action: usize,
     /// Maximum concurrent trace queries (1 = serial coordinator loop).
     pub max_parallel_queries: usize,
+    /// When true, coordinator jobs and `query_one`/`query_all` do not consume
+    /// `trace.max_queries_per_action` (glueless NS resolution sub-traces).
+    pub budget_exempt: bool,
+    /// Resolved nameserver targets reused for the lifetime of this trace action.
+    pub(crate) ns_target_cache: Arc<Mutex<HashMap<String, Vec<ServerTarget>>>>,
 }
 
 impl TraceConfig {
@@ -145,6 +150,8 @@ impl TraceConfig {
             expansion_policy: ExpansionPolicy::Last,
             max_queries_per_action: 64,
             max_parallel_queries: 8,
+            budget_exempt: false,
+            ns_target_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

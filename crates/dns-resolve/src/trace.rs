@@ -749,7 +749,7 @@ pub(crate) fn query_one(
 ) -> Result<(dns_core::QueryResult, Option<String>)> {
     let mut last_error = None;
     for server in servers {
-        if !budget.try_consume() {
+        if !config.budget_exempt && !budget.try_consume() {
             progress_budget_if_needed(config, budget);
             return Err(
                 last_error.unwrap_or_else(|| ResolveError::NoReachableNameserver {
@@ -779,7 +779,7 @@ pub(crate) fn query_all(
 ) -> Vec<QueryAttempt> {
     let mut attempts = Vec::new();
     for server in servers {
-        if !budget.try_consume() {
+        if !config.budget_exempt && !budget.try_consume() {
             break;
         }
         let result = query_server(server.address, config, qname, qtype);
@@ -1024,6 +1024,10 @@ fn resolve_nameserver(
     parent_zone: &DomainName,
     progress: &mut dyn TraceProgress,
 ) -> Result<Vec<ServerTarget>> {
+    if let Some(targets) = cached_ns_targets(config, ns_name) {
+        return Ok(targets);
+    }
+
     if config.ns_resolution_active.contains(ns_name.as_str()) {
         return Err(ResolveError::NameserverResolution {
             name: ns_name.to_string(),
@@ -1039,18 +1043,23 @@ fn resolve_nameserver(
 
     if !addresses.is_empty() {
         progress.message(&format!("using glue for {}: {:?}", ns_name, addresses));
-        return Ok(addresses
+        let targets: Vec<ServerTarget> = addresses
             .into_iter()
             .map(|address| ServerTarget::with_name(address, ns_name.to_string()))
-            .collect());
+            .collect();
+        remember_ns_targets(config, ns_name, &targets);
+        return Ok(targets);
     }
 
     progress.message(&format!("resolving addresses for {}", ns_name));
 
+    let mut exempt = config.clone();
+    exempt.budget_exempt = true;
+
     for qtype in [RecordType::A, RecordType::AAAA] {
         if let Ok((result, _)) = query_one(
             &filter_targets(current_servers, config.ipv4_only, config.ipv6_only),
-            config,
+            &exempt,
             budget,
             ns_name,
             qtype,
@@ -1068,10 +1077,12 @@ fn resolve_nameserver(
 
     addresses = filter_addresses(&addresses, config.ipv4_only, config.ipv6_only);
     if !addresses.is_empty() {
-        return Ok(addresses
+        let targets: Vec<ServerTarget> = addresses
             .into_iter()
             .map(|address| ServerTarget::with_name(address, ns_name.to_string()))
-            .collect());
+            .collect();
+        remember_ns_targets(config, ns_name, &targets);
+        return Ok(targets);
     }
 
     if ns_name.is_subdomain_of(parent_zone) {
@@ -1081,13 +1092,7 @@ fn resolve_nameserver(
         });
     }
 
-    let mut sub_config = config.clone();
-    sub_config.qname = ns_name.clone();
-    sub_config.qtype = RecordType::A;
-    sub_config.expansion_policy = ExpansionPolicy::None;
-    sub_config.ns_resolution_active.insert(ns_name.to_string());
-
-    let subtree = crate::job_queue::run_ns_resolution_batch(&sub_config, budget, ns_name.clone())?;
+    let subtree = crate::job_queue::run_ns_resolution_batch(&exempt, budget, ns_name.clone())?;
     if let Some(hop) = answering_hop_from_node(&subtree) {
         let parsed = hop
             .response
@@ -1098,10 +1103,12 @@ fn resolve_nameserver(
             .collect::<Vec<_>>();
         addresses = filter_addresses(&parsed, config.ipv4_only, config.ipv6_only);
         if !addresses.is_empty() {
-            return Ok(addresses
+            let targets: Vec<ServerTarget> = addresses
                 .into_iter()
                 .map(|address| ServerTarget::with_name(address, ns_name.to_string()))
-                .collect());
+                .collect();
+            remember_ns_targets(config, ns_name, &targets);
+            return Ok(targets);
         }
     }
 
@@ -1109,6 +1116,24 @@ fn resolve_nameserver(
         name: ns_name.to_string(),
         reason: "no A/AAAA records found".into(),
     })
+}
+
+fn cached_ns_targets(config: &TraceConfig, ns_name: &DomainName) -> Option<Vec<ServerTarget>> {
+    config
+        .ns_target_cache
+        .lock()
+        .ok()?
+        .get(ns_name.as_str())
+        .cloned()
+}
+
+fn remember_ns_targets(config: &TraceConfig, ns_name: &DomainName, targets: &[ServerTarget]) {
+    if targets.is_empty() {
+        return;
+    }
+    if let Ok(mut cache) = config.ns_target_cache.lock() {
+        cache.insert(ns_name.to_string(), targets.to_vec());
+    }
 }
 
 pub(crate) fn collect_glue(response: &DnsResponse, ns_names: &[DomainName]) -> Vec<IpAddr> {
@@ -1616,6 +1641,203 @@ mod tests {
             hops.load(Ordering::SeqCst),
             0,
             "nested NS-resolution traces must not emit hops on the caller progress sink"
+        );
+    }
+
+    #[test]
+    fn glueless_ns_resolution_does_not_consume_action_budget() {
+        let referral = DnsResponse {
+            id: 1,
+            rcode: 0,
+            rcode_text: "NOERROR".into(),
+            authoritative: false,
+            truncated: false,
+            recursion_desired: false,
+            recursion_available: false,
+            authentic_data: false,
+            checking_disabled: false,
+            answers: vec![],
+            authorities: vec![DnsRecord {
+                name: DomainName::parse("example.com.").expect("zone"),
+                rtype: "NS".into(),
+                rclass: "IN".into(),
+                ttl: 3600,
+                rdata: "ns.outside.example.".into(),
+            }],
+            additionals: vec![],
+            edns: EdnsMeta::default(),
+        };
+        let parent_zone = DomainName::parse("com.").expect("zone");
+        let ns_name = DomainName::parse("ns.outside.example.").expect("ns");
+        let mut config = TraceConfig::new(
+            DomainName::parse("example.com.").expect("qname"),
+            RecordType::A,
+        );
+        config.exchange = Arc::new(AuthoritativeExchange);
+        let mut budget = QueryBudget::new(5);
+        let mut progress = SilentProgress;
+
+        let addresses = resolve_nameserver(
+            &ns_name,
+            &referral,
+            &[ServerTarget::from_address(IpAddr::V4(Ipv4Addr::new(
+                1, 1, 1, 1,
+            )))],
+            &config,
+            &mut budget,
+            &parent_zone,
+            &mut progress,
+        )
+        .expect("addresses");
+
+        assert!(!addresses.is_empty());
+        assert_eq!(
+            budget.remaining(),
+            5,
+            "glueless NS resolution must not consume trace.max_queries_per_action"
+        );
+        assert!(!budget.truncated);
+    }
+
+    #[test]
+    fn ns_resolution_subtrace_writes_response_cache_entries() {
+        let referral = DnsResponse {
+            id: 1,
+            rcode: 0,
+            rcode_text: "NOERROR".into(),
+            authoritative: false,
+            truncated: false,
+            recursion_desired: false,
+            recursion_available: false,
+            authentic_data: false,
+            checking_disabled: false,
+            answers: vec![],
+            authorities: vec![DnsRecord {
+                name: DomainName::parse("example.com.").expect("zone"),
+                rtype: "NS".into(),
+                rclass: "IN".into(),
+                ttl: 3600,
+                rdata: "ns.outside.example.".into(),
+            }],
+            additionals: vec![],
+            edns: EdnsMeta::default(),
+        };
+        let parent_zone = DomainName::parse("com.").expect("zone");
+        let ns_name = DomainName::parse("ns.outside.example.").expect("ns");
+        let mut config = TraceConfig::new(
+            DomainName::parse("example.com.").expect("qname"),
+            RecordType::A,
+        );
+        config.exchange = Arc::new(AuthoritativeExchange);
+        let cache = config.with_memory_cache();
+        let mut budget = QueryBudget::new(64);
+        let mut progress = SilentProgress;
+
+        assert_eq!(cache.stats().entries, 0);
+
+        let addresses = resolve_nameserver(
+            &ns_name,
+            &referral,
+            &[ServerTarget::from_address(IpAddr::V4(Ipv4Addr::new(
+                1, 1, 1, 1,
+            )))],
+            &config,
+            &mut budget,
+            &parent_zone,
+            &mut progress,
+        )
+        .expect("addresses");
+        assert!(!addresses.is_empty());
+        assert!(
+            cache.stats().entries > 0,
+            "glueless NS resolution queries should populate the response cache"
+        );
+    }
+
+    #[test]
+    fn ns_target_cache_reuses_nameserver_within_trace() {
+        let referral = DnsResponse {
+            id: 1,
+            rcode: 0,
+            rcode_text: "NOERROR".into(),
+            authoritative: false,
+            truncated: false,
+            recursion_desired: false,
+            recursion_available: false,
+            authentic_data: false,
+            checking_disabled: false,
+            answers: vec![],
+            authorities: vec![DnsRecord {
+                name: DomainName::parse("example.com.").expect("zone"),
+                rtype: "NS".into(),
+                rclass: "IN".into(),
+                ttl: 3600,
+                rdata: "ns.outside.example.".into(),
+            }],
+            additionals: vec![],
+            edns: EdnsMeta::default(),
+        };
+        let parent_zone = DomainName::parse("com.").expect("zone");
+        let ns_name = DomainName::parse("ns.outside.example.").expect("ns");
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        struct CountingAuthoritativeExchange {
+            calls: Arc<AtomicUsize>,
+        }
+
+        impl crate::DnsExchange for CountingAuthoritativeExchange {
+            fn exchange(
+                &self,
+                server: IpAddr,
+                _port: u16,
+                options: &dns_core::QueryOptions,
+            ) -> dns_core::Result<dns_core::response::QueryResult> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                AuthoritativeExchange.exchange(server, _port, options)
+            }
+        }
+
+        let mut config = TraceConfig::new(
+            DomainName::parse("example.com.").expect("qname"),
+            RecordType::A,
+        );
+        config.exchange = Arc::new(CountingAuthoritativeExchange {
+            calls: calls.clone(),
+        });
+        let mut budget = QueryBudget::new(64);
+        let mut progress = SilentProgress;
+        let servers = [ServerTarget::from_address(IpAddr::V4(Ipv4Addr::new(
+            1, 1, 1, 1,
+        )))];
+
+        let first = resolve_nameserver(
+            &ns_name,
+            &referral,
+            &servers,
+            &config,
+            &mut budget,
+            &parent_zone,
+            &mut progress,
+        )
+        .expect("first resolution");
+        let calls_after_first = calls.load(Ordering::SeqCst);
+
+        let second = resolve_nameserver(
+            &ns_name,
+            &referral,
+            &servers,
+            &config,
+            &mut budget,
+            &parent_zone,
+            &mut progress,
+        )
+        .expect("second resolution");
+
+        assert_eq!(first, second);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            calls_after_first,
+            "second resolve_nameserver should reuse ns_target_cache"
         );
     }
 

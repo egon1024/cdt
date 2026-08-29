@@ -31,6 +31,7 @@ pub(crate) fn run_ns_resolution_batch(
     sub_config.qname = ns_name.clone();
     sub_config.qtype = RecordType::A;
     sub_config.expansion_policy = ExpansionPolicy::None;
+    sub_config.budget_exempt = true;
     sub_config.ns_resolution_active.insert(ns_name.to_string());
     run_policy(&sub_config, budget, &mut SilentNsProgress, ns_name, false)
 }
@@ -126,7 +127,7 @@ impl<'a> Coordinator<'a> {
         zone: DomainName,
         path: Vec<usize>,
     ) -> bool {
-        if !self.budget.try_consume() {
+        if !self.config.budget_exempt && !self.budget.try_consume() {
             return false;
         }
         self.emitter.register_path(path.clone());
