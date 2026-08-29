@@ -17,12 +17,19 @@ pub use tui::run_tui;
 use crate::session::SessionDocument;
 use std::io::{self, IsTerminal, Write};
 
-pub fn run_outline(document: &SessionDocument) -> Result<(), ExploreError> {
-    let tree = if let Some(request) = document.request.as_ref() {
-        build_explore_tree_with_qname(&document.result, Some(&request.qname))
+fn explore_tree_for_document(document: &SessionDocument) -> tree::ExploreTree {
+    let trace = document
+        .primary_tree()
+        .expect("v2 session must contain a trace tree");
+    if let Some(request) = document.primary_request() {
+        build_explore_tree_with_qname(trace, Some(&request.qname))
     } else {
-        build_explore_tree(&document.result)
-    };
+        build_explore_tree(trace)
+    }
+}
+
+pub fn run_outline(document: &SessionDocument) -> Result<(), ExploreError> {
+    let tree = explore_tree_for_document(document);
     let mut output = format!("session: {}\n", document.id);
     output.push_str(&render_outline(&tree, ui_symbols()));
     let mut stdout = io::stdout().lock();
@@ -34,11 +41,7 @@ pub fn run_outline(document: &SessionDocument) -> Result<(), ExploreError> {
 }
 
 pub fn run_events(document: &SessionDocument) -> Result<(), ExploreError> {
-    let tree = if let Some(request) = document.request.as_ref() {
-        build_explore_tree_with_qname(&document.result, Some(&request.qname))
-    } else {
-        build_explore_tree(&document.result)
-    };
+    let tree = explore_tree_for_document(document);
     println!("{}", render_tree_json(&tree, &document.id));
     Ok(())
 }
@@ -48,11 +51,7 @@ pub fn run_explore(document: &SessionDocument) -> Result<(), ExploreError> {
         return Err(ExploreError::NotTerminal);
     }
 
-    let tree = if let Some(request) = document.request.as_ref() {
-        build_explore_tree_with_qname(&document.result, Some(&request.qname))
-    } else {
-        build_explore_tree(&document.result)
-    };
+    let tree = explore_tree_for_document(document);
     run_tui(&tree, &document.id).map_err(ExploreError::Io)
 }
 
@@ -68,17 +67,19 @@ pub enum ExploreError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::SessionDocument;
+    use crate::trace_request::TraceRequest;
     use dns_resolve::{HopOutcome, TraceHop, TraceTreeRequest, build_linear_tree};
 
     #[test]
     fn run_outline_writes_tree() {
-        let document = SessionDocument {
-            version: 1,
-            id: "01JTESTSESSION000000000000".into(),
-            created_at: "2026-08-25T12:00:00Z".into(),
-            pinned: false,
-            request: None,
-            result: build_linear_tree(
+        let document = SessionDocument::new(
+            "01JTESTSESSION000000000000".into(),
+            TraceRequest::from_options(&crate::dig_options::TraceOptions {
+                qname: "example.com".into(),
+                ..Default::default()
+            }),
+            build_linear_tree(
                 vec![
                     TraceHop {
                         zone: ".".into(),
@@ -123,9 +124,9 @@ mod tests {
                     started_at: "2026-08-25T12:00:00Z".into(),
                 },
             ),
-        };
+        );
 
-        let tree = build_explore_tree(&document.result);
+        let tree = explore_tree_for_document(&document);
         let outline = render_outline(&tree, ui_symbols());
         assert!(outline.contains("example.com. A"));
         assert!(outline.contains("query response time: 11ms"));

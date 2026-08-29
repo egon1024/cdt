@@ -14,7 +14,7 @@ use crate::explore::{ExploreError, run_events, run_explore, run_outline};
 use crate::hop_display::{HopDisplayState, print_hop_human};
 use crate::progress::StderrProgress;
 use crate::replay::{print_final_answer, print_reused_session_notice, replay_session};
-use crate::runtime::Runtime;
+use crate::runtime::{Runtime, SessionReuseLookup};
 use crate::session::SessionDocument;
 use crate::trace_request::TraceRequest;
 
@@ -86,11 +86,17 @@ fn run_parsed_trace(options: TraceOptions, runtime: &Runtime) -> Result<(), CliE
     }
 
     if options.save_session && !options.fresh {
-        if let Some(document) = runtime.find_matching_session(&request)? {
-            replay_session(&document, options.events);
-            print_reused_session_notice(&document);
-            runtime.remember_session(&document.id)?;
-            return Ok(());
+        match runtime.find_matching_session(&request)? {
+            SessionReuseLookup::Reuse(document) => {
+                replay_session(&document, options.events);
+                print_reused_session_notice(&document);
+                runtime.remember_session(&document.id)?;
+                return Ok(());
+            }
+            SessionReuseLookup::ExtendedMatch { id } => {
+                eprintln!("matching extended session {id} exists; running fresh trace");
+            }
+            SessionReuseLookup::NoMatch => {}
         }
     }
 
@@ -175,17 +181,29 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
     match command.command {
         SessionSubcommand::List => {
             let default_id = runtime.last_session_id().ok();
-            for summary in runtime.list_sessions()? {
-                let pin = if summary.pinned { '*' } else { ' ' };
-                let current = if default_id.as_deref() == Some(summary.id.as_str()) {
-                    '@'
-                } else {
-                    ' '
-                };
-                println!(
-                    "{pin}{current} {}  {} {}  {} hops  {}",
-                    summary.id, summary.qname, summary.qtype, summary.hop_count, summary.created_at
-                );
+            for item in runtime.list_sessions()? {
+                match item {
+                    crate::session::SessionListItem::Session(summary) => {
+                        let pin = if summary.pinned { '*' } else { ' ' };
+                        let current = if default_id.as_deref() == Some(summary.id.as_str()) {
+                            '@'
+                        } else {
+                            ' '
+                        };
+                        println!(
+                            "{pin}{current} {}  {} {}  {} nodes  created {} updated {}",
+                            summary.id,
+                            summary.qname,
+                            summary.qtype,
+                            summary.node_count,
+                            summary.created_at,
+                            summary.updated_at
+                        );
+                    }
+                    crate::session::SessionListItem::Unreadable { id, message } => {
+                        println!("?  {id}  unreadable: {message}");
+                    }
+                }
             }
             Ok(())
         }
@@ -297,13 +315,21 @@ fn resolve_session_target(
 }
 
 fn print_session(document: &SessionDocument, json: bool) {
+    let tree = document
+        .primary_tree()
+        .expect("v2 session must contain a trace tree");
     if json {
         println!(
             "{}",
             serde_json::to_string(&serde_json::json!({
                 "event": "complete",
                 "session": document.id,
-                "result": document.result,
+                "version": document.version,
+                "created_at": document.created_at,
+                "updated_at": document.updated_at,
+                "pinned": document.pinned,
+                "trees": document.trees,
+                "view_state": document.view_state,
             }))
             .expect("json")
         );
@@ -314,19 +340,16 @@ fn print_session(document: &SessionDocument, json: bool) {
     if document.pinned {
         println!("pinned: yes");
     }
-    println!("started: {}", document.created_at);
-    println!(
-        "query: {} {}",
-        document.result.qname(),
-        document.result.qtype()
-    );
+    println!("created: {}", document.created_at);
+    println!("updated: {}", document.updated_at);
+    println!("query: {} {}", tree.qname(), tree.qtype());
     let mut hop_display = HopDisplayState::new();
-    for path in document.result.display_order() {
-        if let Some(node) = document.result.resolve(&path) {
+    for path in tree.display_order() {
+        if let Some(node) = tree.resolve(&path) {
             print_hop_human(&mut hop_display, &node.hop, &path);
         }
     }
-    if let Some(hop) = document.result.answering_hop() {
+    if let Some(hop) = tree.answering_hop() {
         eprintln!(
             "final answer from {} in {}ms ({})",
             hop.server, hop.rtt_ms, hop.rcode

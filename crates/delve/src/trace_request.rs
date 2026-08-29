@@ -1,3 +1,4 @@
+use dns_resolve::ExpansionPolicy;
 use serde::{Deserialize, Serialize};
 
 use crate::dig_options::TraceOptions;
@@ -23,6 +24,8 @@ pub struct TraceRequest {
     pub cache_skip_qnames: Vec<String>,
     #[serde(default)]
     pub debug: bool,
+    #[serde(default)]
+    pub expansion: ExpansionPolicy,
 }
 
 impl TraceRequest {
@@ -45,6 +48,7 @@ impl TraceRequest {
             use_cache: options.use_cache,
             cache_skip_qnames,
             debug: options.debug,
+            expansion: options.expansion,
         }
     }
 }
@@ -77,5 +81,17 @@ mod tests {
         };
         let request = TraceRequest::from_options(&options);
         assert_eq!(request.timeout_secs, 3);
+    }
+
+    #[test]
+    fn expansion_policy_participates_in_matching() {
+        let default_request = TraceRequest::from_options(&TraceOptions {
+            qname: "example.com".into(),
+            ..TraceOptions::default()
+        });
+        let mut none_request = default_request.clone();
+        none_request.expansion = ExpansionPolicy::None;
+        assert_ne!(default_request, none_request);
+        assert_eq!(default_request.expansion, ExpansionPolicy::Last);
     }
 }

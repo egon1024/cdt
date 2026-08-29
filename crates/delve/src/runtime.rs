@@ -9,9 +9,16 @@ use crate::paths::DelvePaths;
 use crate::retention::retention_label;
 use crate::session::SessionStore;
 use crate::session::{
-    OpenSessionStore, SessionDocument, SessionError, SessionSummary, open_session_store,
+    OpenSessionStore, SessionDocument, SessionError, SessionListItem, open_session_store,
 };
 use crate::trace_request::TraceRequest;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionReuseLookup {
+    Reuse(SessionDocument),
+    ExtendedMatch { id: String },
+    NoMatch,
+}
 
 pub struct Runtime {
     pub paths: DelvePaths,
@@ -95,17 +102,28 @@ impl Runtime {
             .save(result, request)
     }
 
+    pub fn update_session(&self, document: &SessionDocument) -> Result<(), SessionError> {
+        self.sessions.lock().expect("session lock").update(document)
+    }
+
     pub fn find_matching_session(
         &self,
         request: &TraceRequest,
-    ) -> Result<Option<SessionDocument>, SessionError> {
-        for summary in self.list_sessions()? {
+    ) -> Result<SessionReuseLookup, SessionError> {
+        for item in self.list_sessions()? {
+            let SessionListItem::Session(summary) = item else {
+                continue;
+            };
             let document = self.get_session(&summary.id)?;
-            if document.request.as_ref() == Some(request) {
-                return Ok(Some(document));
+            if !document.trees.iter().any(|entry| entry.request == *request) {
+                continue;
             }
+            if document.trees.len() > 1 || document.has_branches() {
+                return Ok(SessionReuseLookup::ExtendedMatch { id: document.id });
+            }
+            return Ok(SessionReuseLookup::Reuse(document));
         }
-        Ok(None)
+        Ok(SessionReuseLookup::NoMatch)
     }
 
     pub fn remember_session(&self, id: &str) -> Result<(), SessionError> {
@@ -130,7 +148,7 @@ impl Runtime {
         self.sessions.lock().expect("session lock").get(id)
     }
 
-    pub fn list_sessions(&self) -> Result<Vec<SessionSummary>, SessionError> {
+    pub fn list_sessions(&self) -> Result<Vec<SessionListItem>, SessionError> {
         self.sessions.lock().expect("session lock").list()
     }
 
@@ -179,7 +197,10 @@ mod degradation_tests {
     use super::*;
     use crate::session::SessionStore;
     use crate::trace_request::TraceRequest;
-    use dns_resolve::{HopOutcome, TraceHop, TraceTree, TraceTreeRequest, build_linear_tree};
+    use dns_resolve::{
+        BranchIntent, HopOutcome, NodeOrigin, NodePath, TraceHop, TraceTree, TraceTreeRequest,
+        build_linear_tree,
+    };
 
     fn empty_tree(started_at: &str) -> TraceTree {
         build_linear_tree(
@@ -261,12 +282,66 @@ mod degradation_tests {
         let second = runtime
             .save_session(&empty_tree("2026-08-25T01:00:00Z"), &request)
             .expect("second");
-        let matched = runtime
-            .find_matching_session(&request)
-            .expect("find")
-            .expect("some");
+        let matched = match runtime.find_matching_session(&request).expect("find") {
+            SessionReuseLookup::Reuse(document) => document,
+            other => panic!("expected reuse, got {other:?}"),
+        };
         assert_eq!(matched.id, second);
         assert_ne!(matched.id, first);
+    }
+
+    #[test]
+    fn find_matching_session_refuses_branched_session() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = DelvePaths::from_root(dir.path());
+        let runtime = Runtime::open(paths);
+        let request = sample_request();
+        let id = runtime
+            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request)
+            .expect("save");
+        let mut document = runtime.get_session(&id).expect("get");
+        document.trees[0].tree.root.origin = NodeOrigin::Branch {
+            at: NodePath::root(0),
+            intent: BranchIntent::ExpandCut,
+            at_time: "2026-08-25T01:00:00Z".into(),
+        };
+        runtime.update_session(&document).expect("update");
+        let lookup = runtime.find_matching_session(&request).expect("find");
+        assert_eq!(lookup, SessionReuseLookup::ExtendedMatch { id: id.clone() });
+    }
+
+    #[test]
+    fn find_matching_session_refuses_multi_tree_session() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = DelvePaths::from_root(dir.path());
+        let runtime = Runtime::open(paths);
+        let request = sample_request();
+        let id = runtime
+            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request)
+            .expect("save");
+        let mut document = runtime.get_session(&id).expect("get");
+        document.trees.push(crate::session::SessionTree {
+            request: request.clone(),
+            tree: empty_tree("2026-08-25T02:00:00Z"),
+        });
+        runtime.update_session(&document).expect("update");
+        let lookup = runtime.find_matching_session(&request).expect("find");
+        assert_eq!(lookup, SessionReuseLookup::ExtendedMatch { id: id.clone() });
+    }
+
+    #[test]
+    fn find_matching_session_refuses_different_expansion_policy() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = DelvePaths::from_root(dir.path());
+        let runtime = Runtime::open(paths);
+        let request = sample_request();
+        runtime
+            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request)
+            .expect("save");
+        let mut none_request = request.clone();
+        none_request.expansion = dns_resolve::ExpansionPolicy::None;
+        let lookup = runtime.find_matching_session(&none_request).expect("find");
+        assert_eq!(lookup, SessionReuseLookup::NoMatch);
     }
 
     #[test]

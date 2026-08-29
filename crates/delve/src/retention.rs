@@ -7,20 +7,20 @@ pub struct PurgeReport {
     pub skipped_unparseable: usize,
 }
 
-/// Parse session `created_at` (RFC 3339). Returns None if unparseable.
-pub fn parse_created_at(value: &str) -> Option<OffsetDateTime> {
+/// Parse session timestamps (RFC 3339). Returns None if unparseable.
+pub fn parse_session_timestamp(value: &str) -> Option<OffsetDateTime> {
     OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).ok()
 }
 
 /// Whether a session should be removed under retention policy.
 pub fn is_expired(
-    created_at: &str,
+    updated_at: &str,
     retention: SessionRetention,
     now: OffsetDateTime,
 ) -> Option<bool> {
     let cutoff = retention.cutoff(now)?;
-    let created = parse_created_at(created_at)?;
-    Some(created < cutoff)
+    let updated = parse_session_timestamp(updated_at)?;
+    Some(updated < cutoff)
 }
 
 pub fn retention_label(retention: SessionRetention) -> String {
@@ -98,6 +98,24 @@ mod tests {
         assert_eq!(
             is_expired("2020-01-01T00:00:00Z", SessionRetention::Never, now),
             None
+        );
+    }
+
+    #[test]
+    fn recently_updated_session_survives_retention() {
+        let now = datetime!(2026-08-25 12:00:00 UTC);
+        assert_eq!(
+            is_expired("2026-08-24T00:00:00Z", SessionRetention::Days(30), now),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn untouched_old_session_is_purged() {
+        let now = datetime!(2026-08-25 12:00:00 UTC);
+        assert_eq!(
+            is_expired("2020-01-01T00:00:00Z", SessionRetention::Days(30), now),
+            Some(true)
         );
     }
 }

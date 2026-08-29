@@ -5,7 +5,7 @@ use crate::config::SessionRetention;
 use crate::retention::PurgeReport;
 use crate::trace_request::TraceRequest;
 
-use super::document::{SessionDocument, SessionSummary};
+use super::document::{SessionDocument, SessionListItem};
 use super::id::{is_ambiguous_prefix, resolve_prefix};
 use super::ndjson::NdjsonSessionStore;
 use super::sqlite::SqliteSessionStore;
@@ -29,12 +29,19 @@ pub enum SessionError {
 
     #[error("no last session; run a trace or specify a session id")]
     NoLastSession,
+
+    #[error("session {id} uses unsupported format version {version}")]
+    UnsupportedFormat { id: String, version: u32 },
+
+    #[error("unsupported legacy session store at {path}; remove or migrate the file")]
+    UnsupportedLegacyStore { path: String },
 }
 
 pub trait SessionStore: Send {
     fn save(&mut self, result: &TraceTree, request: &TraceRequest) -> Result<String>;
+    fn update(&mut self, document: &SessionDocument) -> Result<()>;
     fn get(&self, id: &str) -> Result<SessionDocument>;
-    fn list(&self) -> Result<Vec<SessionSummary>>;
+    fn list(&self) -> Result<Vec<SessionListItem>>;
     fn remove(&mut self, id: &str) -> Result<()>;
     fn all_ids(&self) -> Result<Vec<String>>;
     fn set_pinned(&mut self, id: &str, pinned: bool) -> Result<()>;
@@ -55,12 +62,16 @@ impl SessionStore for OpenSessionStore {
         self.inner.save(result, request)
     }
 
+    fn update(&mut self, document: &SessionDocument) -> Result<()> {
+        self.inner.update(document)
+    }
+
     fn get(&self, id: &str) -> Result<SessionDocument> {
         let resolved = self.resolve_lookup_id(id)?;
         self.inner.get(&resolved)
     }
 
-    fn list(&self) -> Result<Vec<SessionSummary>> {
+    fn list(&self) -> Result<Vec<SessionListItem>> {
         self.inner.list()
     }
 
