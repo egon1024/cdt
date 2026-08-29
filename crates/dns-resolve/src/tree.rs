@@ -101,6 +101,17 @@ impl TraceTree {
         Some(node)
     }
 
+    pub fn resolve_mut(&mut self, path: &NodePath) -> Option<&mut TraceNode> {
+        if path.tree != 0 {
+            return None;
+        }
+        let mut node = &mut self.root;
+        for index in &path.path {
+            node = node.children.get_mut(*index)?;
+        }
+        Some(node)
+    }
+
     pub fn primary_path(&self) -> Vec<&TraceNode> {
         let mut nodes = vec![&self.root];
         let mut current = &self.root;

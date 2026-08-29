@@ -479,7 +479,9 @@ impl<'a> Coordinator<'a> {
     }
 
     fn handle_failure(&mut self, job: TraceJob, error: ResolveError) -> Result<()> {
-        if self.config.expansion_policy == ExpansionPolicy::All {
+        if matches!(job.kind, JobKind::Branch { .. })
+            || self.config.expansion_policy == ExpansionPolicy::All
+        {
             let hop = failed_hop(
                 self.config,
                 &job.zone,

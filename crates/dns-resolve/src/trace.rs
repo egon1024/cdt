@@ -230,7 +230,7 @@ fn expand_last_on_combined_tree(
     Ok(())
 }
 
-fn server_target_from_hop(hop: &TraceHop) -> Result<ServerTarget> {
+pub fn server_target_from_hop(hop: &TraceHop) -> Result<ServerTarget> {
     let address: IpAddr = hop
         .server
         .parse()
@@ -274,7 +274,7 @@ fn alias_target_from_tree(root: &TraceNode, qtype: RecordType) -> Option<String>
         .map(|name| name.to_string())
 }
 
-fn dns_response_from_stored(hop: &TraceHop) -> Option<DnsResponse> {
+pub fn dns_response_from_stored(hop: &TraceHop) -> Option<DnsResponse> {
     if !hop.response.is_stored() {
         return None;
     }
@@ -407,7 +407,7 @@ pub(crate) fn query_all(
 
 fn progress_budget_if_needed(_config: &TraceConfig, _budget: &mut QueryBudget) {}
 
-pub(crate) fn failed_hop(
+pub fn failed_hop(
     config: &TraceConfig,
     zone: &DomainName,
     qname: &DomainName,
@@ -492,7 +492,7 @@ fn filter_targets(targets: &[ServerTarget], ipv4_only: bool, ipv6_only: bool) ->
     .collect()
 }
 
-pub(crate) fn expansion_targets_for_cut(
+pub fn expansion_targets_for_cut(
     parent_delegation: Option<&DnsResponse>,
     parent_zone: &DomainName,
     fallback_servers: &[ServerTarget],
@@ -573,7 +573,7 @@ pub(crate) fn announce_multi_server_query(
     }
 }
 
-pub(crate) fn server_matches_primary(
+pub fn server_matches_primary(
     server: &ServerTarget,
     primary_server: &ServerTarget,
     primary_result_server: IpAddr,

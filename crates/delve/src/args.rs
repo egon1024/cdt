@@ -71,6 +71,29 @@ pub enum SessionSubcommand {
     Events(SessionEventsArgs),
     /// Explore a stored session in the interactive tree TUI.
     Explore(SessionExploreArgs),
+    /// Branch a stored trace at a node.
+    Branch(SessionBranchArgs),
+}
+
+#[derive(Debug, Parser)]
+pub struct SessionBranchArgs {
+    /// Session id or prefix. When omitted, uses the last session.
+    pub id: Option<String>,
+    /// Node display index from `session outline`.
+    #[arg(long, conflicts_with = "at_path")]
+    pub at_hop: Option<usize>,
+    /// Stable node path (for example `0.1.2`).
+    #[arg(long, conflicts_with = "at_hop")]
+    pub at_path: Option<String>,
+    /// Query a named nameserver or `@address` at the zone cut.
+    #[arg(long)]
+    pub server: Option<String>,
+    /// Query every unqueried nameserver at the zone cut.
+    #[arg(long)]
+    pub expand: bool,
+    /// Describe the branch plan without issuing queries.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Parser)]

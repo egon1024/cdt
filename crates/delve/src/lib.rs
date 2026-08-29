@@ -1,4 +1,5 @@
 pub mod args;
+pub mod branch;
 pub mod cli;
 pub mod config;
 pub mod dig_options;
@@ -12,5 +13,6 @@ pub mod replay;
 pub mod retention;
 pub mod runtime;
 pub mod session;
+pub mod trace_config;
 pub mod trace_options_help;
 pub mod trace_request;

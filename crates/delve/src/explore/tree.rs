@@ -27,6 +27,10 @@ impl ExploreTree {
     pub fn hop(&self, index: usize) -> &TraceHop {
         &self.hops[index]
     }
+
+    pub fn trace(&self) -> &TraceTree {
+        &self.trace
+    }
 }
 
 pub fn build_explore_tree(trace: &TraceTree) -> ExploreTree {

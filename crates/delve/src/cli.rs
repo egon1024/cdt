@@ -6,7 +6,11 @@ use dns_resolve::{ExpansionPolicy, TraceConfig, run_trace};
 use thiserror::Error;
 
 use crate::args::{
-    CacheCommand, CacheSubcommand, Cli, Command, SessionCommand, SessionSubcommand, TraceArgs,
+    CacheCommand, CacheSubcommand, Cli, Command, SessionBranchArgs, SessionCommand,
+    SessionSubcommand, TraceArgs,
+};
+use crate::branch::{
+    BranchError, BranchIntentArg, format_branch_report, parse_server_target, resolve_branch_target,
 };
 use crate::dig_options::{ParseError, TraceOptions, parse_trace_args};
 use crate::expand_confirm::{ExpandConfirmOutcome, confirm_expand_all, expand_all_is_tty};
@@ -50,6 +54,9 @@ pub enum CliError {
 
     #[error(transparent)]
     Explore(#[from] ExploreError),
+
+    #[error(transparent)]
+    Branch(#[from] BranchError),
 }
 
 impl Cli {
@@ -270,7 +277,43 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
             run_explore(&document)?;
             Ok(())
         }
+        SessionSubcommand::Branch(args) => run_session_branch(args, &runtime),
     }
+}
+
+fn run_session_branch(args: SessionBranchArgs, runtime: &Runtime) -> Result<(), CliError> {
+    if args.at_hop.is_none() && args.at_path.is_none() {
+        return Err(CliError::Branch(BranchError::UnresolvedPath {
+            path: "missing --at-hop or --at-path".into(),
+        }));
+    }
+    if !args.expand && args.server.is_none() {
+        return Err(CliError::Branch(BranchError::MissingTarget));
+    }
+    let (session_id, _) = resolve_session_target(args.id, Vec::new(), runtime)?;
+    let document = runtime.get_session(&session_id)?;
+    let at = resolve_branch_target(&document, args.at_hop, args.at_path.as_deref())?;
+    let intent = if args.expand {
+        BranchIntentArg::ExpandCut
+    } else {
+        BranchIntentArg::AlternateServer {
+            target: parse_server_target(args.server.as_deref().expect("server checked"))?,
+        }
+    };
+    let mut progress = crate::progress::StderrProgress::new(false, false);
+    let report = crate::branch::branch_session(
+        runtime,
+        &session_id,
+        at,
+        intent,
+        args.dry_run,
+        &mut progress,
+    )?;
+    println!("{}", format_branch_report(&report));
+    if !args.dry_run && report.nodes_added > 0 {
+        runtime.remember_session(&session_id)?;
+    }
+    Ok(())
 }
 
 fn run_cache_command(command: CacheCommand) -> Result<(), CliError> {
