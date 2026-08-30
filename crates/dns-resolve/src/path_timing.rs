@@ -432,6 +432,52 @@ mod path_timing_tests {
         assert!(tree.fork_path_timing_summary(&selection).is_none());
     }
 
+    /// Two shared referral hops above a three-way terminal cut, matching the shape
+    /// a `+expand=last` trace produces when every authoritative server answers.
+    #[test]
+    fn expanded_terminal_cut_aggregates_every_answered_sibling() {
+        let leaf = |rtt| TraceNode {
+            hop: hop("tuininga.org.", rtt, HopOutcome::Answered),
+            origin: NodeOrigin::Trace,
+            children: vec![],
+        };
+        let tree = TraceTree {
+            request: request(),
+            root: TraceNode {
+                hop: hop(".", 96, HopOutcome::Referral),
+                origin: NodeOrigin::Trace,
+                children: vec![TraceNode {
+                    hop: hop("org.", 101, HopOutcome::Referral),
+                    origin: NodeOrigin::Trace,
+                    children: vec![leaf(107), leaf(109), leaf(106)],
+                }],
+            },
+            budget_truncated: false,
+        };
+
+        let summary = tree.path_timing_summary().expect("summary");
+        assert_eq!(summary.count, 3);
+        assert_eq!(summary.fastest.total_rtt_ms, 303);
+        assert_eq!(summary.fastest.path, vec![0, 2]);
+        assert_eq!(summary.slowest.total_rtt_ms, 306);
+        assert_eq!(summary.slowest.path, vec![0, 1]);
+
+        let fork = NodePath {
+            tree: 0,
+            path: vec![0],
+        };
+        let siblings = tree.fork_sibling_hop_rtts(&fork).expect("siblings");
+        assert_eq!(
+            siblings.iter().map(|s| s.rtt_ms).collect::<Vec<_>>(),
+            vec![107, 109, 106]
+        );
+
+        let fork_summary = tree.fork_path_timing_summary(&fork).expect("fork summary");
+        assert_eq!(fork_summary.count, summary.count);
+        assert_eq!(fork_summary.fastest, summary.fastest);
+        assert_eq!(fork_summary.slowest, summary.slowest);
+    }
+
     #[test]
     fn fork_sibling_hop_rtts_lists_each_child_at_cut() {
         let tree = TraceTree {
