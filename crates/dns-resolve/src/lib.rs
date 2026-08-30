@@ -24,6 +24,7 @@ use thiserror::Error;
 use time::OffsetDateTime;
 
 pub mod job_queue;
+pub mod path_timing;
 pub mod root_hints;
 pub mod trace;
 pub mod tree;
@@ -32,6 +33,7 @@ mod budget;
 
 pub use budget::QueryBudget;
 
+pub use path_timing::{AnsweredPath, ForkSiblingRtt, PathIdentity, PathTimingSummary};
 pub use tree::{
     BranchIntent, HopOutcome, NodeOrigin, NodePath, TraceNode, TraceTree, TraceTreeRequest,
     build_linear_tree,
