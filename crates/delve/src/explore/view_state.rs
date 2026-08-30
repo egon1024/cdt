@@ -355,6 +355,32 @@ mod tests {
     }
 
     #[test]
+    fn restores_browse_split_percent() {
+        let tree = sample_tree();
+        let mut controller = ViewStateController::default_for_tree(&tree);
+        controller.browse_split = VerticalPaneSplit::new(65);
+
+        let document = SessionDocument {
+            version: 2,
+            id: "01TEST".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            pinned: false,
+            trees: vec![crate::session::SessionTree {
+                request: TraceRequest::from_options(&crate::dig_options::TraceOptions {
+                    qname: "example.com".into(),
+                    ..Default::default()
+                }),
+                tree: tree.trace().clone(),
+            }],
+            view_state: Some(controller.to_view_state()),
+        };
+
+        let restored = ViewStateController::from_document(&tree, &document);
+        assert_eq!(restored.browse_split.first_percent, 65);
+    }
+
+    #[test]
     fn debounce_blocks_immediate_persist() {
         let tree = sample_tree();
         let mut controller = ViewStateController::default_for_tree(&tree);
