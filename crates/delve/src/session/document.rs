@@ -18,6 +18,12 @@ pub struct ExploreViewState {
     pub pane: String,
     #[serde(default)]
     pub compare_focus_row: usize,
+    #[serde(default = "default_browse_split_percent")]
+    pub browse_split_percent: u16,
+}
+
+fn default_browse_split_percent() -> u16 {
+    55
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

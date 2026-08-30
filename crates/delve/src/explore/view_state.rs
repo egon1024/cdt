@@ -4,6 +4,7 @@ use dns_resolve::NodePath;
 
 use crate::session::{ExploreViewState, SessionDocument};
 
+use super::pane_split::VerticalPaneSplit;
 use super::tree::ExploreTree;
 
 const PERSIST_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -74,6 +75,7 @@ pub struct ViewStateController {
     pub browse_pane: BrowsePane,
     pub compare_fork: Option<NodePath>,
     pub compare_row: usize,
+    pub browse_split: VerticalPaneSplit,
     dirty: bool,
     last_change: Option<Instant>,
 }
@@ -96,6 +98,7 @@ impl ViewStateController {
             browse_pane: BrowsePane::Tree,
             compare_fork: None,
             compare_row: 0,
+            browse_split: VerticalPaneSplit::default(),
             dirty: false,
             last_change: None,
         }
@@ -133,6 +136,7 @@ impl ViewStateController {
             selection: self.selection.path.clone(),
             pane: self.browse_pane.as_str().into(),
             compare_focus_row: self.compare_row,
+            browse_split_percent: self.browse_split.first_percent,
         }
     }
 
@@ -215,6 +219,7 @@ pub fn restore_from_state(tree: &ExploreTree, state: &ExploreViewState) -> ViewS
         browse_pane: BrowsePane::from_str(&state.pane),
         compare_fork: None,
         compare_row: state.compare_focus_row,
+        browse_split: VerticalPaneSplit::from_stored(state.browse_split_percent),
         dirty: false,
         last_change: None,
     }
@@ -323,6 +328,7 @@ mod tests {
             selection: vec![99],
             pane: "tree".into(),
             compare_focus_row: 0,
+            browse_split_percent: VerticalPaneSplit::DEFAULT_PERCENT,
         };
         let restored = restore_from_state(&tree, &state);
         assert_eq!(restored.selection, NodePath::root(0));

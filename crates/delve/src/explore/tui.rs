@@ -25,6 +25,7 @@ use crate::session::SessionDocument;
 
 use super::detail::hop_failure_line;
 use super::dig_view::hop_detail_styled;
+use super::pane_split::{AxisScrollHints, VerticalPaneSplit};
 use super::terminal::{cache_source_legend, cache_source_symbol};
 use super::theme::Theme;
 use super::tree::{ExploreTree, VisibleNode};
@@ -149,6 +150,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
 
         let scroll_limits = browse_scroll_limits(
             Rect::from((Position::ORIGIN, terminal.size()?)),
+            view.browse_split,
             &tree,
             &visible,
             selected_index,
@@ -356,6 +358,18 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                     KeyCode::Char('C') => {
                         view.collapse_all(&tree);
                         detail_scroll = 0;
+                    }
+                    KeyCode::Char('+') | KeyCode::Char('=') => {
+                        if view.active_screen == ActiveScreen::Browse {
+                            view.browse_split.grow_first();
+                            view.mark_dirty();
+                        }
+                    }
+                    KeyCode::Char('-') | KeyCode::Char('_') => {
+                        if view.active_screen == ActiveScreen::Browse {
+                            view.browse_split.shrink_first();
+                            view.mark_dirty();
+                        }
                     }
                     KeyCode::Char('b') if view.active_screen == ActiveScreen::Browse => {
                         branch_overlay = BranchOverlay::Menu;
@@ -606,22 +620,19 @@ fn browse_body_area(terminal_area: Rect) -> Rect {
         .split(terminal_area)[1]
 }
 
-fn browse_pane_areas(body_area: Rect) -> (Rect, Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-        .split(body_area);
-    (chunks[0], chunks[1])
+fn browse_pane_areas(body_area: Rect, split: VerticalPaneSplit) -> (Rect, Rect) {
+    split.split(body_area)
 }
 
 fn browse_scroll_limits(
     terminal_area: Rect,
+    browse_split: VerticalPaneSplit,
     tree: &ExploreTree,
     visible: &[VisibleNode],
     selected_index: usize,
     theme: &Theme,
 ) -> BrowseScrollLimits {
-    let (tree_area, detail_area) = browse_pane_areas(browse_body_area(terminal_area));
+    let (tree_area, detail_area) = browse_pane_areas(browse_body_area(terminal_area), browse_split);
 
     let color_hint = if theme.color_enabled { "on" } else { "off" };
     let tree_title = format!("{} {}  [tree]  color:{color_hint}", tree.qname, tree.qtype);
@@ -810,10 +821,7 @@ fn render_browse(
     theme: &Theme,
     session_id: &str,
 ) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-        .split(area);
+    let (tree_area, detail_area) = view.browse_split.split(area);
 
     let color_hint = if theme.color_enabled { "on" } else { "off" };
     let session_hint = format!("session:{session_id}  ");
@@ -838,12 +846,12 @@ fn render_browse(
         raw_tree_lines.push((line, selected));
     }
 
-    let tree_title = format!(
+    let tree_title_base = format!(
         "{session_hint}{} {}  [tree]  color:{color_hint}",
         tree.qname, tree.qtype
     );
     let tree_block = Block::default()
-        .title(tree_title)
+        .title(tree_title_base.as_str())
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(if view.browse_pane == BrowsePane::Tree {
@@ -851,9 +859,12 @@ fn render_browse(
         } else {
             theme.border_unfocused()
         });
-    let tree_inner = tree_block.inner(chunks[0]);
-    let clamped_tree_scroll_x =
-        tree_scroll_x.min(max_horizontal_scroll(max_line_width, tree_inner.width));
+    let tree_inner = tree_block.inner(tree_area);
+    let tree_max_scroll_x = max_horizontal_scroll(max_line_width, tree_inner.width);
+    let clamped_tree_scroll_x = tree_scroll_x.min(tree_max_scroll_x);
+    let tree_scroll_hints =
+        AxisScrollHints::horizontal(clamped_tree_scroll_x, tree_max_scroll_x).format_horizontal();
+    let tree_title = format!("{tree_title_base}{tree_scroll_hints}");
     let tree_rows = raw_tree_lines
         .into_iter()
         .map(|(line, selected)| {
@@ -866,17 +877,27 @@ fn render_browse(
         })
         .collect::<Vec<_>>();
 
-    let tree_widget = List::new(tree_rows).block(tree_block);
-    frame.render_widget(tree_widget, chunks[0]);
+    let tree_widget = List::new(tree_rows).block(
+        Block::default()
+            .title(tree_title)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(if view.browse_pane == BrowsePane::Tree {
+                theme.border_focused()
+            } else {
+                theme.border_unfocused()
+            }),
+    );
+    frame.render_widget(tree_widget, tree_area);
 
     let detail_lines = detail_content(tree, visible.get(selected_index), theme);
-    let detail_title = if view.browse_pane == BrowsePane::Detail {
-        "Details  [w toggles focus — j/k scroll when focused]".to_string()
+    let detail_focus_hint = if view.browse_pane == BrowsePane::Detail {
+        " — j/k scroll when focused"
     } else {
-        "Details  [w toggles focus]".to_string()
+        ""
     };
     let detail_block = Block::default()
-        .title(detail_title)
+        .title("Details")
         .title_bottom(footer_line(theme).centered())
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -885,17 +906,32 @@ fn render_browse(
         } else {
             theme.border_unfocused()
         });
-    let detail_inner = detail_block.inner(chunks[1]);
+    let detail_inner = detail_block.inner(detail_area);
     let detail_max_scroll = max_vertical_scroll(
         wrapped_line_count(&detail_lines, detail_inner.width),
         detail_inner.height,
     );
     let clamped_detail_scroll = detail_scroll.min(detail_max_scroll);
+    let detail_scroll_hints =
+        AxisScrollHints::vertical(clamped_detail_scroll, detail_max_scroll).format_vertical();
+    let detail_title =
+        format!("Details{detail_focus_hint}  [w toggles focus]{detail_scroll_hints}");
     let detail_widget = Paragraph::new(detail_lines)
-        .block(detail_block)
+        .block(
+            Block::default()
+                .title(detail_title)
+                .title_bottom(footer_line(theme).centered())
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(if view.browse_pane == BrowsePane::Detail {
+                    theme.border_focused()
+                } else {
+                    theme.border_unfocused()
+                }),
+        )
         .wrap(Wrap { trim: false })
         .scroll((clamped_detail_scroll, 0));
-    frame.render_widget(detail_widget, chunks[1]);
+    frame.render_widget(detail_widget, detail_area);
 }
 
 fn render_compare(
@@ -1167,6 +1203,7 @@ fn help_lines(view: &ViewStateController, theme: &Theme) -> Vec<Line<'static>> {
             help_binding("E / C", "Expand all / collapse all", theme),
             help_binding("b", "Branch from selection", theme),
             help_binding("←/→, h/l", "Scroll tree horizontally", theme),
+            help_binding("+ / -", "Resize tree/detail split", theme),
             Line::from(""),
             help_section("Hop symbols", theme),
             help_symbol_legend(
