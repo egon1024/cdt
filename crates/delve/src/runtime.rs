@@ -4,9 +4,7 @@ use dns_cache::{ResponseCache, SqliteCache};
 use dns_resolve::TraceTree;
 
 use crate::config::DelveConfig;
-use crate::last_session::{
-    clear_last_session, read_env_session, read_last_session, write_last_session,
-};
+use crate::default_session::read_env_session;
 use crate::paths::DelvePaths;
 use crate::retention::retention_label;
 use crate::session::SessionStore;
@@ -128,14 +126,6 @@ impl Runtime {
         Ok(SessionReuseLookup::NoMatch)
     }
 
-    pub fn remember_session(&self, id: &str) -> Result<(), SessionError> {
-        write_last_session(&self.paths, id)
-    }
-
-    pub fn last_session_id(&self) -> Result<String, SessionError> {
-        self.resolve_last_session_id()
-    }
-
     pub fn default_session_id(&self) -> Result<String, SessionError> {
         if let Some(id) = read_env_session() {
             match self.get_session(&id) {
@@ -144,37 +134,16 @@ impl Runtime {
                 Err(error) => return Err(error),
             }
         }
-        self.resolve_last_session_id()
+        self.most_recently_modified_session_id()
     }
 
-    fn resolve_last_session_id(&self) -> Result<String, SessionError> {
-        let id = read_last_session(&self.paths)?;
-        if self.last_session_file_id_exists(&id)? {
-            Ok(id)
-        } else {
-            let _ = clear_last_session(&self.paths);
-            Err(SessionError::NoLastSession)
+    fn most_recently_modified_session_id(&self) -> Result<String, SessionError> {
+        for item in self.list_sessions()? {
+            if let SessionListItem::Session(summary) = item {
+                return Ok(summary.id);
+            }
         }
-    }
-
-    fn last_session_file_id_exists(&self, id: &str) -> Result<bool, SessionError> {
-        Ok(self
-            .sessions
-            .lock()
-            .expect("session lock")
-            .all_ids()?
-            .iter()
-            .any(|session_id| session_id == id))
-    }
-
-    pub fn forget_last_session(&self) -> Result<(), SessionError> {
-        clear_last_session(&self.paths)
-    }
-
-    pub fn touch_session(&self, id: &str) -> Result<SessionDocument, SessionError> {
-        let document = self.get_session(id)?;
-        self.remember_session(&document.id)?;
-        Ok(document)
+        Err(SessionError::NoSessions)
     }
 
     pub fn get_session(&self, id: &str) -> Result<SessionDocument, SessionError> {
@@ -191,9 +160,6 @@ impl Runtime {
             .lock()
             .expect("session lock")
             .remove(&resolved.id)?;
-        if self.last_session_id().ok().as_deref() == Some(resolved.id.as_str()) {
-            let _ = self.forget_last_session();
-        }
         Ok(())
     }
 
@@ -216,23 +182,12 @@ impl Runtime {
         all: bool,
         dry_run: bool,
     ) -> Result<crate::retention::PurgeReport, SessionError> {
-        let last_id = read_last_session(&self.paths).ok();
         let mut store = self.sessions.lock().expect("session lock");
-        let report = if all {
+        if all {
             store.purge_all(dry_run)
         } else {
             store.purge_by_retention(self.config.session_retention, dry_run)
-        }?;
-        if !dry_run {
-            if let Some(id) = last_id {
-                let still_exists = store.all_ids()?.iter().any(|session_id| session_id == &id);
-                if !still_exists {
-                    drop(store);
-                    let _ = clear_last_session(&self.paths);
-                }
-            }
         }
-        Ok(report)
     }
 }
 
@@ -389,7 +344,48 @@ mod degradation_tests {
     }
 
     #[test]
-    fn remember_session_round_trip() {
+    fn default_session_is_most_recently_modified() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = DelvePaths::from_root(dir.path());
+        let runtime = Runtime::open(paths);
+        let request = sample_request();
+        let older = runtime
+            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request)
+            .expect("older");
+        let newer = runtime
+            .save_session(&empty_tree("2026-08-25T01:00:00Z"), &request)
+            .expect("newer");
+        assert_eq!(runtime.default_session_id().expect("default"), newer);
+        assert_ne!(runtime.default_session_id().expect("default"), older);
+    }
+
+    #[test]
+    fn default_session_prefers_delve_session_env() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = DelvePaths::from_root(dir.path());
+        let runtime = Runtime::open(paths);
+        let request = sample_request();
+        let older = runtime
+            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request)
+            .expect("older");
+        let newer = runtime
+            .save_session(&empty_tree("2026-08-25T01:00:00Z"), &request)
+            .expect("newer");
+
+        unsafe {
+            std::env::set_var(crate::default_session::DELVE_SESSION_ENV, &older);
+        }
+
+        assert_eq!(runtime.default_session_id().expect("default"), older);
+        assert_ne!(runtime.default_session_id().expect("default"), newer);
+
+        unsafe {
+            std::env::remove_var(crate::default_session::DELVE_SESSION_ENV);
+        }
+    }
+
+    #[test]
+    fn stale_delve_session_falls_through_to_most_recently_modified() {
         let dir = tempfile::tempdir().expect("tempdir");
         let paths = DelvePaths::from_root(dir.path());
         let runtime = Runtime::open(paths);
@@ -397,71 +393,10 @@ mod degradation_tests {
         let id = runtime
             .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request)
             .expect("save");
-        runtime.remember_session(&id).expect("remember");
-        assert_eq!(runtime.last_session_id().expect("last"), id);
-    }
-
-    #[test]
-    fn stale_last_session_cleared_on_lookup() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let paths = DelvePaths::from_root(dir.path());
-        let runtime = Runtime::open(paths.clone());
-        runtime
-            .remember_session("01JSTALELAST")
-            .expect("remember stale id");
-
-        assert!(matches!(
-            runtime.last_session_id(),
-            Err(SessionError::NoLastSession)
-        ));
-        assert!(matches!(
-            runtime.default_session_id(),
-            Err(SessionError::NoLastSession)
-        ));
-        assert!(matches!(
-            read_last_session(&paths),
-            Err(SessionError::NoLastSession)
-        ));
-    }
-
-    #[test]
-    fn stale_last_session_cleared_after_purge_all() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let paths = DelvePaths::from_root(dir.path());
-        let runtime = Runtime::open(paths.clone());
-        let request = sample_request();
-        let id = runtime
-            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request)
-            .expect("save");
-        runtime.remember_session(&id).expect("remember");
-        assert_eq!(runtime.last_session_id().expect("last"), id);
-
-        runtime.purge_sessions(true, false).expect("purge all");
-
-        assert!(matches!(
-            runtime.last_session_id(),
-            Err(SessionError::NoLastSession)
-        ));
-        assert!(matches!(
-            read_last_session(&paths),
-            Err(SessionError::NoLastSession)
-        ));
-    }
-
-    #[test]
-    fn stale_delve_session_falls_through_to_last_session_file() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let paths = DelvePaths::from_root(dir.path());
-        let runtime = Runtime::open(paths);
-        let request = sample_request();
-        let id = runtime
-            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request)
-            .expect("save");
-        runtime.remember_session(&id).expect("remember");
 
         unsafe {
             std::env::set_var(
-                crate::last_session::DELVE_SESSION_ENV,
+                crate::default_session::DELVE_SESSION_ENV,
                 "01JSTALEDELVESESSION",
             );
         }
@@ -469,30 +404,49 @@ mod degradation_tests {
         assert_eq!(runtime.default_session_id().expect("default"), id);
 
         unsafe {
-            std::env::remove_var(crate::last_session::DELVE_SESSION_ENV);
+            std::env::remove_var(crate::default_session::DELVE_SESSION_ENV);
         }
     }
 
     #[test]
-    fn stale_delve_session_without_last_session_errors() {
+    fn stale_delve_session_without_sessions_errors() {
         let dir = tempfile::tempdir().expect("tempdir");
         let paths = DelvePaths::from_root(dir.path());
         let runtime = Runtime::open(paths);
 
         unsafe {
             std::env::set_var(
-                crate::last_session::DELVE_SESSION_ENV,
+                crate::default_session::DELVE_SESSION_ENV,
                 "01JSTALEDELVESESSION",
             );
         }
 
         assert!(matches!(
             runtime.default_session_id(),
-            Err(SessionError::NoLastSession)
+            Err(SessionError::NoSessions)
         ));
 
         unsafe {
-            std::env::remove_var(crate::last_session::DELVE_SESSION_ENV);
+            std::env::remove_var(crate::default_session::DELVE_SESSION_ENV);
         }
+    }
+
+    #[test]
+    fn default_session_follows_updated_at_after_branch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = DelvePaths::from_root(dir.path());
+        let runtime = Runtime::open(paths);
+        let request = sample_request();
+        let older = runtime
+            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request)
+            .expect("older");
+        let newer = runtime
+            .save_session(&empty_tree("2026-08-25T01:00:00Z"), &request)
+            .expect("newer");
+        let mut document = runtime.get_session(&older).expect("get older");
+        document.touch_updated_at();
+        runtime.update_session(&document).expect("update");
+        assert_eq!(runtime.default_session_id().expect("default"), older);
+        assert_ne!(runtime.default_session_id().expect("default"), newer);
     }
 }

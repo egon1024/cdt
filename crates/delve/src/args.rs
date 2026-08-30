@@ -53,7 +53,7 @@ pub struct SessionCommand {
 pub enum SessionSubcommand {
     /// List stored sessions.
     List,
-    /// Print the current default session id (last used).
+    /// Print the current default session id.
     Current,
     /// Show a stored session by id or prefix.
     Show(SessionShowArgs),
@@ -77,7 +77,7 @@ pub enum SessionSubcommand {
 
 #[derive(Debug, Parser)]
 pub struct SessionBranchArgs {
-    /// Session id or prefix. When omitted, uses the last session.
+    /// Session id or prefix. When omitted, uses the default session.
     pub id: Option<String>,
     /// Node display index from `session outline`.
     #[arg(long, conflicts_with = "at_path")]
@@ -98,25 +98,25 @@ pub struct SessionBranchArgs {
 
 #[derive(Debug, Parser)]
 pub struct SessionOutlineArgs {
-    /// Session id or prefix. When omitted, uses the last session.
+    /// Session id or prefix. When omitted, uses the default session.
     pub id: Option<String>,
 }
 
 #[derive(Debug, Parser)]
 pub struct SessionEventsArgs {
-    /// Session id or prefix. When omitted, uses the last session.
+    /// Session id or prefix. When omitted, uses the default session.
     pub id: Option<String>,
 }
 
 #[derive(Debug, Parser)]
 pub struct SessionExploreArgs {
-    /// Session id or prefix. When omitted, reopens the last used session.
+    /// Session id or prefix. When omitted, uses the default session.
     pub id: Option<String>,
 }
 
 #[derive(Debug, Parser)]
 pub struct SessionShowArgs {
-    /// Session id or prefix. When omitted, uses the last session.
+    /// Session id or prefix. When omitted, uses the default session.
     pub id: Option<String>,
     /// Emit the stored trace as JSON (`event: complete`).
     #[arg(long)]

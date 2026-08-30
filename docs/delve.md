@@ -23,9 +23,9 @@ Each `delve trace` that saves creates a **new** session id. Re-running a trace d
 
 ### Default session
 
-The **default session** is resolved in order: an explicit id on the command line, then `DELVE_SESSION` when set (non-empty after trimming) and the session still exists, then the last-session file (`$XDG_STATE_HOME/cdt/delve/last-session`) when it points at an existing session. The last-session file is updated when you trace, explore, or otherwise touch a session; if it references a removed session, delve clears it on the next lookup (including after `session purge`). Commands that accept an optional `[id]` (`show`, `outline`, `events`, `explore`, `branch`) use the default when you omit the id. `delve session current` prints that resolved id; `delve session list` marks it with `@` in the first column (`*` means pinned).
+The **default session** is resolved in order: an explicit id on the command line, then `DELVE_SESSION` when set (non-empty after trimming) and the session still exists, then the most recently modified stored session (`updated_at`). Commands that accept an optional `[id]` (`show`, `outline`, `events`, `explore`, `branch`) use the default when you omit the id. `delve session current` prints that resolved id; `delve session list` marks it with `@` in the first column (`*` means pinned).
 
-`DELVE_SESSION` is a read override for scoped scripts — delve does not set it. If it points at a removed session, delve ignores it and falls through to the last-session file. Tracing still updates the last-session file.
+`DELVE_SESSION` is an override for scripts and scoped shells — delve does not set it. If it points at a removed session, delve ignores it and falls through to the most recently modified session.
 
 Session ids accept a full ULID or a unique short prefix (like git).
 
@@ -84,9 +84,9 @@ Installed packages also ship `man delve` (CLI synopsis) and this guide at `/usr/
 | `delve session purge` | Apply retention policy now |
 | `delve session purge --all` | Remove all unpinned sessions |
 | `delve session purge --dry-run` | Report what would be removed |
-| `delve session explore [id]` | Interactive tree explorer (TUI); omit id to reopen the last session |
-| `delve session outline [id]` | Indented resolution tree on stdout; omit id for the last session |
-| `delve session events [id]` | Structured JSON explore tree on stdout; omit id for the last session |
+| `delve session explore [id]` | Interactive tree explorer (TUI); omit id for the default session |
+| `delve session outline [id]` | Indented resolution tree on stdout; omit id for the default session |
+| `delve session events [id]` | Structured JSON explore tree on stdout; omit id for the default session |
 | `delve cache stats` | Response cache statistics |
 | `delve cache purge` | Remove expired cache entries |
 | `delve cache purge --all` | Clear the entire response cache |
@@ -217,7 +217,6 @@ New traces store full DNS response sections (header flags, question, answer, aut
 | Response cache | `$XDG_CACHE_HOME/cdt/delve/cache.sqlite` |
 | Sessions (SQLite) | `$XDG_DATA_HOME/cdt/delve/sessions.sqlite` |
 | Sessions (NDJSON fallback) | `$XDG_DATA_HOME/cdt/delve/sessions/*.json` |
-| Last session pointer | `$XDG_STATE_HOME/cdt/delve/last-session` |
 
 On non-Linux platforms, the `directories` crate selects the equivalent config, cache, and data locations.
 

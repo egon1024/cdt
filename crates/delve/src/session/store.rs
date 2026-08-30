@@ -27,8 +27,8 @@ pub enum SessionError {
     #[error("session serialization error: {0}")]
     Serialization(String),
 
-    #[error("no last session; run a trace or specify a session id")]
-    NoLastSession,
+    #[error("no sessions stored; run a trace or specify a session id")]
+    NoSessions,
 
     #[error("session {id} uses unsupported format version {version}")]
     UnsupportedFormat { id: String, version: u32 },

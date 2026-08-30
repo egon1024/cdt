@@ -98,7 +98,6 @@ fn run_parsed_trace(options: TraceOptions, runtime: &Runtime) -> Result<(), CliE
             SessionReuseLookup::Reuse(document) => {
                 replay_session(&document, options.events);
                 print_reused_session_notice(&document);
-                runtime.remember_session(&document.id)?;
                 return Ok(());
             }
             SessionReuseLookup::ExtendedMatch { id } => {
@@ -151,7 +150,6 @@ fn run_parsed_trace(options: TraceOptions, runtime: &Runtime) -> Result<(), CliE
 
     if options.save_session {
         let session_id = runtime.save_session(&result, &request)?;
-        runtime.remember_session(&session_id)?;
         eprintln!("session: {session_id}");
     }
 
@@ -261,13 +259,13 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
         }
         SessionSubcommand::Outline(args) => {
             let (session_id, _) = resolve_session_target(args.id, Vec::new(), &runtime)?;
-            let document = runtime.touch_session(&session_id)?;
+            let document = runtime.get_session(&session_id)?;
             run_outline(&document)?;
             Ok(())
         }
         SessionSubcommand::Events(args) => {
             let (session_id, _) = resolve_session_target(args.id, Vec::new(), &runtime)?;
-            let document = runtime.touch_session(&session_id)?;
+            let document = runtime.get_session(&session_id)?;
             run_events(&document)?;
             Ok(())
         }
@@ -311,9 +309,6 @@ fn run_session_branch(args: SessionBranchArgs, runtime: &Runtime) -> Result<(), 
         &mut progress,
     )?;
     println!("{}", format_branch_report(&report));
-    if !args.dry_run && report.nodes_added > 0 {
-        runtime.remember_session(&session_id)?;
-    }
     Ok(())
 }
 
