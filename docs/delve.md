@@ -170,6 +170,22 @@ Colors and scale for the **Compare** screen latency bars (`█` characters). Bar
 
 Defaults: `50`, `150`, `500`, `2000` ms; `max_width` **20** characters.
 
+### Compare analytics (`session explore`)
+
+On the **Compare** screen, delve derives timing from stored hop data (no network I/O for stats):
+
+| Key | Action |
+|-----|--------|
+| `F` | Toggle fork-scoped full-path stats (fastest / slowest / average through the nearest fork to selection) |
+| `B` | Toggle fork sibling hop RTT breakdown at that fork |
+| `f` / `s` | Highlight fastest / slowest **answered** root-to-leaf path in the tree (overlay only; does not move selection) |
+| `Esc` | Clear path highlight |
+| `R` | Re-query every hop with cache bypass; updates RTTs **in memory** only |
+| `Shift+R` | Same refresh, then persist RTTs to the session immediately |
+| `?` | Compare-scoped help (footer shows `Press ? for help`) |
+
+Whole-tree fastest, slowest, and average are always shown in the summary strip at the top. Stats include **answered** leaf paths only (failed or referral-only terminals are excluded). When the trace was budget-truncated, the strip notes that path statistics may be incomplete.
+
 ### `trace.max_parallel_queries`
 
 Maximum number of DNS queries that `delve trace` may run concurrently when expanding a zone cut across multiple nameservers (`+expand=last` or `+expand=all`). Independent queries at the same cut share this worker pool; progress events are still emitted in stable path order. Set to `1` for fully serial execution (useful for deterministic tests). Default: **8**.
@@ -223,7 +239,7 @@ delve session show --json          # flat JSON for the default session
 
 | Command | Output |
 |---------|--------|
-| **`session explore`** | TUI with Browse (tree + detail) and Compare (full tree, aligned columns, RTT bars); `Tab` cycles screens; `?` help |
+| **`session explore`** | TUI with Browse (tree + detail) and Compare (full tree, aligned columns, RTT bars, path-timing analytics); `Tab` cycles screens; `?` help |
 | **`session outline`** | `session: <id>` header + indented tree on stdout |
 | **`session events`** | Structured JSON explore tree on stdout |
 | **`session show --json`** | Flat JSON trace snapshot on stdout |

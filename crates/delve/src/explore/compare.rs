@@ -84,6 +84,7 @@ pub fn compare_row(
     node: &VisibleNode,
     tree: &ExploreTree,
     selected: bool,
+    path_highlighted: bool,
     columns: CompareColumns,
     rtt_config: RttBarConfig,
     theme: &Theme,
@@ -106,6 +107,8 @@ pub fn compare_row(
     let failed = matches!(hop.outcome, HopOutcome::Failed { .. });
     let row_style = if selected {
         theme.tree_selected()
+    } else if path_highlighted {
+        theme.accent_bold()
     } else if failed {
         theme.failure()
     } else {
@@ -267,6 +270,7 @@ mod tests {
             &visible[1],
             &tree,
             false,
+            false,
             columns,
             RttBarConfig::default(),
             &theme,
@@ -305,6 +309,7 @@ mod tests {
             &visible[0],
             &tree,
             false,
+            false,
             columns,
             RttBarConfig::default(),
             &theme,
@@ -313,6 +318,7 @@ mod tests {
             &visible[visible.len() - 1],
             &tree,
             true,
+            false,
             columns,
             RttBarConfig::default(),
             &theme,
@@ -350,6 +356,7 @@ mod tests {
         let row = compare_row(
             &visible[0],
             &tree,
+            false,
             false,
             columns,
             RttBarConfig::default(),

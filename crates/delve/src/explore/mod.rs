@@ -5,6 +5,8 @@ mod flags;
 mod json;
 mod outline;
 mod pane_split;
+mod path_timing;
+mod refresh;
 mod rtt_bar;
 mod terminal;
 mod theme;

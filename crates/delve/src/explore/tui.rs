@@ -7,7 +7,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use dns_resolve::{HopOutcome, NodePath, TraceHop, TraceProgress};
+use dns_resolve::{HopOutcome, NodePath, RefreshProgress, TraceHop, TraceProgress};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
@@ -28,6 +28,11 @@ use super::compare::{CompareColumns, compare_row};
 use super::detail::hop_failure_line;
 use super::dig_view::hop_detail_styled;
 use super::pane_split::{AxisScrollHints, VerticalPaneSplit};
+use super::path_timing::{
+    build_compare_timing, fork_full_path_lines, fork_sibling_lines, path_on_highlight,
+    whole_tree_summary_lines,
+};
+use super::refresh::refresh_document_tree;
 use super::terminal::{cache_source_legend, cache_source_symbol};
 use super::theme::Theme;
 use super::tree::{ExploreTree, VisibleNode};
@@ -43,6 +48,8 @@ struct BrowseScrollLimits {
 struct CompareScrollLimits {
     max_scroll: u16,
     inner_height: u16,
+    first_row_line: usize,
+    total_lines: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +63,26 @@ enum BranchOverlay {
 enum BranchWorkerMessage {
     Progress(String),
     Done(Result<BranchReport, BranchError>),
+}
+
+#[derive(Debug)]
+enum RefreshWorkerMessage {
+    Progress {
+        current: usize,
+        total: usize,
+    },
+    Done(
+        Result<
+            (Box<SessionDocument>, dns_resolve::RefreshTreeReport),
+            super::refresh::RefreshError,
+        >,
+    ),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RefreshOverlay {
+    None,
+    ConfirmSave,
 }
 
 pub struct ExploreContext<'a> {
@@ -90,6 +117,10 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
     let mut alternate_server_input = String::new();
     let mut branch_rx: Option<mpsc::Receiver<BranchWorkerMessage>> = None;
     let mut branch_progress: Option<String> = None;
+    let mut refresh_rx: Option<mpsc::Receiver<RefreshWorkerMessage>> = None;
+    let mut refresh_progress: Option<(usize, usize)> = None;
+    let mut refresh_overlay = RefreshOverlay::None;
+    let mut refresh_persist_on_complete = false;
     let mut persist_warning_shown = false;
     let mut result = Ok(());
 
@@ -141,6 +172,53 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
             branch_rx = None;
         }
 
+        let mut refresh_finished = false;
+        if let Some(rx) = &refresh_rx {
+            while let Ok(message) = rx.try_recv() {
+                match message {
+                    RefreshWorkerMessage::Progress { current, total } => {
+                        refresh_progress = Some((current, total));
+                    }
+                    RefreshWorkerMessage::Done(report) => {
+                        refresh_finished = true;
+                        refresh_progress = None;
+                        match report {
+                            Ok((updated, report)) => {
+                                *document = *updated;
+                                tree = explore_tree_from_document(document);
+                                if refresh_persist_on_complete {
+                                    if let Err(error) =
+                                        super::refresh::persist_refreshed_tree(runtime, document)
+                                    {
+                                        unavailable_message =
+                                            Some(format!("failed to save refreshed RTTs: {error}"));
+                                    } else {
+                                        unavailable_message =
+                                            Some("saved refreshed RTTs to session".into());
+                                    }
+                                    refresh_overlay = RefreshOverlay::None;
+                                } else {
+                                    refresh_overlay = RefreshOverlay::ConfirmSave;
+                                    unavailable_message = Some(format!(
+                                        "refreshed {}/{} hops; save to session?",
+                                        report.hops_updated, report.hops_total
+                                    ));
+                                }
+                                refresh_persist_on_complete = false;
+                            }
+                            Err(error) => {
+                                unavailable_message = Some(error.to_string());
+                                refresh_persist_on_complete = false;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if refresh_finished {
+            refresh_rx = None;
+        }
+
         if view.should_persist_now(false) {
             persist_view_state_now(
                 runtime,
@@ -176,6 +254,8 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
             }
             let compare_limits = compare_scroll_limits(
                 Rect::from((Position::ORIGIN, terminal.size()?)),
+                &view,
+                &tree,
                 compare_visible.len(),
             );
             compare_scroll = compare_scroll.min(compare_limits.max_scroll);
@@ -228,12 +308,29 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                     branch_progress.as_deref(),
                 );
             }
+            if let Some((current, total)) = refresh_progress {
+                render_refresh_progress_overlay(frame, &theme, current, total);
+            }
+            if refresh_overlay == RefreshOverlay::ConfirmSave {
+                render_refresh_confirm_overlay(frame, &theme);
+            }
             if let Some(message) = &unavailable_message
                 && view.active_screen != ActiveScreen::Compare
                 && branch_overlay == BranchOverlay::None
                 && branch_progress.is_none()
+                && refresh_overlay == RefreshOverlay::None
+                && refresh_progress.is_none()
             {
                 render_message_overlay(frame, &theme, message);
+            }
+            if let Some(message) = &unavailable_message
+                && view.active_screen == ActiveScreen::Compare
+                && refresh_overlay == RefreshOverlay::None
+                && refresh_progress.is_none()
+                && branch_overlay == BranchOverlay::None
+                && branch_progress.is_none()
+            {
+                render_compare_notice(frame, &theme, message);
             }
         })?;
 
@@ -243,10 +340,36 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                     continue;
                 }
 
-                if branch_rx.is_some() {
+                if branch_rx.is_some() || refresh_rx.is_some() {
                     if matches!(key.code, KeyCode::Esc) {
-                        unavailable_message =
-                            Some("branch in progress; wait for completion".into());
+                        unavailable_message = Some(if refresh_rx.is_some() {
+                            "RTT refresh in progress; wait for completion".into()
+                        } else {
+                            "branch in progress; wait for completion".into()
+                        });
+                    }
+                    continue;
+                }
+
+                if refresh_overlay == RefreshOverlay::ConfirmSave {
+                    match key.code {
+                        KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                            if let Err(error) =
+                                super::refresh::persist_refreshed_tree(runtime, document)
+                            {
+                                unavailable_message =
+                                    Some(format!("failed to save refreshed RTTs: {error}"));
+                            } else {
+                                unavailable_message =
+                                    Some("saved refreshed RTTs to session".into());
+                            }
+                            refresh_overlay = RefreshOverlay::None;
+                        }
+                        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                            refresh_overlay = RefreshOverlay::None;
+                            unavailable_message = None;
+                        }
+                        _ => {}
                     }
                     continue;
                 }
@@ -362,6 +485,8 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                 visible.len(),
                                 compare_scroll_limits(
                                     Rect::from((Position::ORIGIN, terminal.size()?)),
+                                    &view,
+                                    &tree,
                                     visible.len(),
                                 ),
                             );
@@ -375,6 +500,8 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                 visible.len(),
                                 compare_scroll_limits(
                                     Rect::from((Position::ORIGIN, terminal.size()?)),
+                                    &view,
+                                    &tree,
                                     visible.len(),
                                 ),
                             );
@@ -389,6 +516,8 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                             visible.len(),
                             compare_scroll_limits(
                                 Rect::from((Position::ORIGIN, terminal.size()?)),
+                                &view,
+                                &tree,
                                 visible.len(),
                             ),
                         );
@@ -401,6 +530,8 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                             visible.len(),
                             compare_scroll_limits(
                                 Rect::from((Position::ORIGIN, terminal.size()?)),
+                                &view,
+                                &tree,
                                 visible.len(),
                             ),
                         );
@@ -445,6 +576,8 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                         } else {
                             let compare_limits = compare_scroll_limits(
                                 Rect::from((Position::ORIGIN, terminal.size()?)),
+                                &view,
+                                &tree,
                                 visible.len(),
                             );
                             handle_compare_keys(
@@ -454,6 +587,11 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                 &visible,
                                 &mut compare_scroll,
                                 compare_limits,
+                                &mut unavailable_message,
+                                &mut refresh_rx,
+                                &mut refresh_persist_on_complete,
+                                &paths,
+                                document,
                             );
                         }
                     }
@@ -543,6 +681,43 @@ fn start_branch(
         let result = branch_session(&runtime, &session_id, at, intent, false, &mut progress);
         let _ = tx.send(BranchWorkerMessage::Done(result));
     });
+}
+
+fn start_refresh(
+    paths: &DelvePaths,
+    document: &SessionDocument,
+    refresh_rx: &mut Option<mpsc::Receiver<RefreshWorkerMessage>>,
+) {
+    let (tx, rx) = mpsc::channel();
+    *refresh_rx = Some(rx);
+    let working = document.clone();
+    let paths = paths.clone();
+    std::thread::spawn(move || {
+        let runtime = Runtime::open(paths);
+        let mut progress = RefreshChannelProgress::new(tx.clone());
+        let mut working = working;
+        let result = refresh_document_tree(&mut working, &runtime, &mut progress)
+            .map(|report| (Box::new(working), report));
+        let _ = tx.send(RefreshWorkerMessage::Done(result));
+    });
+}
+
+struct RefreshChannelProgress {
+    tx: mpsc::Sender<RefreshWorkerMessage>,
+}
+
+impl RefreshChannelProgress {
+    fn new(tx: mpsc::Sender<RefreshWorkerMessage>) -> Self {
+        Self { tx }
+    }
+}
+
+impl RefreshProgress for RefreshChannelProgress {
+    fn hop_started(&mut self, current: usize, total: usize) {
+        let _ = self
+            .tx
+            .send(RefreshWorkerMessage::Progress { current, total });
+    }
 }
 
 struct ChannelProgress {
@@ -811,6 +986,7 @@ fn handle_browse_keys(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_compare_keys(
     key: event::KeyEvent,
     view: &mut ViewStateController,
@@ -818,17 +994,24 @@ fn handle_compare_keys(
     visible: &[VisibleNode],
     compare_scroll: &mut u16,
     scroll_limits: CompareScrollLimits,
+    unavailable_message: &mut Option<String>,
+    refresh_rx: &mut Option<mpsc::Receiver<RefreshWorkerMessage>>,
+    refresh_persist_on_complete: &mut bool,
+    paths: &DelvePaths,
+    document: &SessionDocument,
 ) {
     let selected_index = view.selected_visible_index(tree);
     match key.code {
         KeyCode::Down | KeyCode::Char('j') if selected_index + 1 < visible.len() => {
             let new_index = selected_index + 1;
             view.set_selection_visible_index(tree, new_index);
+            view.compare_fork = tree.compare_fork(&view.selection).map(|fork| fork.at);
             sync_compare_scroll(compare_scroll, new_index, visible.len(), scroll_limits);
         }
         KeyCode::Up | KeyCode::Char('k') => {
             let new_index = selected_index.saturating_sub(1);
             view.set_selection_visible_index(tree, new_index);
+            view.compare_fork = tree.compare_fork(&view.selection).map(|fork| fork.at);
             sync_compare_scroll(compare_scroll, new_index, visible.len(), scroll_limits);
         }
         KeyCode::PageDown => {
@@ -853,6 +1036,61 @@ fn handle_compare_keys(
         }
         KeyCode::Char('E') => view.expand_all(tree),
         KeyCode::Char('C') => view.collapse_all(tree),
+        KeyCode::Char('F') => {
+            if view.compare_fork.is_some() {
+                view.show_fork_full_path_panel = !view.show_fork_full_path_panel;
+                view.mark_dirty();
+                *unavailable_message = None;
+            } else {
+                *unavailable_message = Some("no fork context for full-path panel".into());
+            }
+        }
+        KeyCode::Char('B') => {
+            if view.compare_fork.is_some() {
+                view.show_fork_sibling_panel = !view.show_fork_sibling_panel;
+                view.mark_dirty();
+                *unavailable_message = None;
+            } else {
+                *unavailable_message = Some("no fork context for sibling breakdown".into());
+            }
+        }
+        KeyCode::Char('f') => {
+            let timing = build_compare_timing(tree, view.compare_fork.as_ref());
+            if let Some(summary) = timing.whole_tree {
+                if view.highlighted_path.as_ref() == Some(&summary.fastest.path) {
+                    view.highlighted_path = None;
+                } else {
+                    view.highlighted_path = Some(summary.fastest.path);
+                }
+                view.mark_dirty();
+            }
+        }
+        KeyCode::Char('s') => {
+            let timing = build_compare_timing(tree, view.compare_fork.as_ref());
+            if let Some(summary) = timing.whole_tree {
+                if view.highlighted_path.as_ref() == Some(&summary.slowest.path) {
+                    view.highlighted_path = None;
+                } else {
+                    view.highlighted_path = Some(summary.slowest.path);
+                }
+                view.mark_dirty();
+            }
+        }
+        KeyCode::Esc => {
+            view.highlighted_path = None;
+            view.mark_dirty();
+            *unavailable_message = None;
+        }
+        KeyCode::Char('R')
+            if key.modifiers.contains(KeyModifiers::SHIFT) && refresh_rx.is_none() =>
+        {
+            *refresh_persist_on_complete = true;
+            start_refresh(paths, document, refresh_rx);
+        }
+        KeyCode::Char('R') if refresh_rx.is_none() => {
+            *refresh_persist_on_complete = false;
+            start_refresh(paths, document, refresh_rx);
+        }
         _ => {}
     }
 }
@@ -860,21 +1098,60 @@ fn handle_compare_keys(
 fn sync_compare_scroll(
     scroll: &mut u16,
     selected_index: usize,
-    visible_rows: usize,
+    _visible_rows: usize,
     limits: CompareScrollLimits,
 ) {
-    let total_lines = compare_content_lines(visible_rows);
-    let line_index = compare_line_index(selected_index);
-    ensure_line_visible(line_index, scroll, limits.inner_height, total_lines);
+    let line_index = limits.first_row_line + selected_index;
+    ensure_line_visible(line_index, scroll, limits.inner_height, limits.total_lines);
     *scroll = (*scroll).min(limits.max_scroll);
 }
 
-fn compare_content_lines(visible_rows: usize) -> usize {
-    visible_rows + 2
+fn compare_scroll_limits(
+    terminal_area: Rect,
+    view: &ViewStateController,
+    tree: &ExploreTree,
+    visible_rows: usize,
+) -> CompareScrollLimits {
+    let body = browse_body_area(terminal_area);
+    let block = Block::default()
+        .title("Compare")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded);
+    let inner = block.inner(body);
+    let layout = compare_layout(view, tree, visible_rows);
+    CompareScrollLimits {
+        max_scroll: max_vertical_scroll(layout.total_lines, inner.height),
+        inner_height: inner.height,
+        first_row_line: layout.first_row_line,
+        total_lines: layout.total_lines,
+    }
 }
 
-fn compare_line_index(selected_index: usize) -> usize {
-    selected_index + 2
+#[derive(Debug, Clone, Copy)]
+struct CompareLayout {
+    total_lines: usize,
+    first_row_line: usize,
+}
+
+fn compare_layout(
+    view: &ViewStateController,
+    tree: &ExploreTree,
+    visible_rows: usize,
+) -> CompareLayout {
+    let timing = build_compare_timing(tree, view.compare_fork.as_ref());
+    let mut before = whole_tree_summary_lines(&timing, &Theme::from_env()).len();
+    if view.show_fork_full_path_panel {
+        before += fork_full_path_lines(&timing, &Theme::from_env()).len() + 1;
+    }
+    let first_row_line = before + 2;
+    let mut total = first_row_line + visible_rows;
+    if view.show_fork_sibling_panel {
+        total += 1 + fork_sibling_lines(&timing, &Theme::from_env()).len();
+    }
+    CompareLayout {
+        total_lines: total,
+        first_row_line,
+    }
 }
 
 fn ensure_line_visible(
@@ -896,20 +1173,6 @@ fn ensure_line_visible(
     }
 }
 
-fn compare_scroll_limits(terminal_area: Rect, visible_rows: usize) -> CompareScrollLimits {
-    let body = browse_body_area(terminal_area);
-    let block = Block::default()
-        .title("Compare")
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded);
-    let inner = block.inner(body);
-    let total_lines = compare_content_lines(visible_rows);
-    CompareScrollLimits {
-        max_scroll: max_vertical_scroll(total_lines, inner.height),
-        inner_height: inner.height,
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn render_compare(
     frame: &mut ratatui::Frame<'_>,
@@ -923,16 +1186,31 @@ fn render_compare(
 ) {
     let columns = CompareColumns::for_visible(tree, visible);
     let selected_index = view.selected_visible_index(tree);
-    let mut lines = vec![columns.header(theme), Line::from("")];
+    let timing = build_compare_timing(tree, view.compare_fork.as_ref());
+    let mut lines = whole_tree_summary_lines(&timing, theme);
+    if view.show_fork_full_path_panel {
+        lines.push(Line::from(""));
+        lines.extend(fork_full_path_lines(&timing, theme));
+    }
+    lines.push(columns.header(theme));
+    lines.push(Line::from(""));
+    let highlight = view.highlighted_path.as_deref();
     for (index, node) in visible.iter().enumerate() {
+        let path_highlighted =
+            highlight.is_some_and(|path| path_on_highlight(&node.path.path, path));
         lines.push(compare_row(
             node,
             tree,
             index == selected_index,
+            path_highlighted,
             columns,
             rtt_config,
             theme,
         ));
+    }
+    if view.show_fork_sibling_panel {
+        lines.push(Line::from(""));
+        lines.extend(fork_sibling_lines(&timing, theme));
     }
 
     let block = Block::default()
@@ -945,13 +1223,14 @@ fn render_compare(
     let clamped_scroll = compare_scroll.min(max_scroll);
     let scroll_hints = AxisScrollHints::vertical(clamped_scroll, max_scroll).format_vertical();
     let title = format!(
-        "Compare — full tree; • marks forks; latency bar scales to insane_ms{scroll_hints}"
+        "Compare — answered paths only; • marks forks; latency bar scales to insane_ms{scroll_hints}"
     );
 
     let widget = Paragraph::new(lines)
         .block(
             Block::default()
                 .title(title)
+                .title_bottom(footer_line(theme).centered())
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(theme.border_focused()),
@@ -1122,6 +1401,53 @@ fn render_message_overlay(frame: &mut ratatui::Frame<'_>, theme: &Theme, message
     let widget = Paragraph::new(message).block(
         Block::default()
             .title("Notice")
+            .borders(Borders::ALL)
+            .border_style(theme.border_focused()),
+    );
+    frame.render_widget(widget, area);
+}
+
+fn render_compare_notice(frame: &mut ratatui::Frame<'_>, theme: &Theme, message: &str) {
+    let area = Rect {
+        x: frame.area().x + 2,
+        y: frame.area().y + frame.area().height.saturating_sub(3),
+        width: frame.area().width.saturating_sub(4),
+        height: 2,
+    };
+    frame.render_widget(Clear, area);
+    let widget = Paragraph::new(message).style(theme.meta());
+    frame.render_widget(widget, area);
+}
+
+fn render_refresh_progress_overlay(
+    frame: &mut ratatui::Frame<'_>,
+    theme: &Theme,
+    current: usize,
+    total: usize,
+) {
+    let area = centered_rect(50, 20, frame.area());
+    frame.render_widget(Clear, area);
+    let widget = Paragraph::new(format!("Refreshing hop RTTs… {current}/{total}")).block(
+        Block::default()
+            .title("RTT refresh")
+            .borders(Borders::ALL)
+            .border_style(theme.border_focused()),
+    );
+    frame.render_widget(widget, area);
+}
+
+fn render_refresh_confirm_overlay(frame: &mut ratatui::Frame<'_>, theme: &Theme) {
+    let area = centered_rect(55, 25, frame.area());
+    frame.render_widget(Clear, area);
+    let widget = Paragraph::new(vec![
+        Line::from("Save refreshed RTTs to session?"),
+        Line::from(""),
+        Line::from("y/Enter  save and persist"),
+        Line::from("n/Esc     keep in-memory only"),
+    ])
+    .block(
+        Block::default()
+            .title("Persist refresh")
             .borders(Borders::ALL)
             .border_style(theme.border_focused()),
     );
@@ -1314,6 +1640,20 @@ fn help_lines(view: &ViewStateController, theme: &Theme) -> Vec<Line<'static>> {
             help_binding("E / C", "Expand all / collapse all", theme),
             help_binding("Enter", "Return to Browse", theme),
             help_binding("PgUp/PgDn", "Scroll compare view", theme),
+            help_binding("F", "Toggle fork full-path stats panel", theme),
+            help_binding("B", "Toggle fork sibling hop RTT panel", theme),
+            help_binding("f / s", "Highlight fastest / slowest answered path", theme),
+            help_binding("Esc", "Clear path highlight", theme),
+            help_binding("R", "Refresh hop RTTs (in-memory)", theme),
+            help_binding("Shift+R", "Refresh and persist to session", theme),
+            Line::from(""),
+            help_section("Compare stats", theme),
+            help_binding(
+                "",
+                "Totals sum hop RTT along answered leaf paths only",
+                theme,
+            ),
+            Line::from(""),
             help_section("RTT bar colors", theme),
             help_binding("green", "≤ green_ms (config)", theme),
             help_binding("yellow", "≤ yellow_ms", theme),
