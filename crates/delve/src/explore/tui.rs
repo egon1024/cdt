@@ -82,7 +82,7 @@ enum RefreshWorkerMessage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RefreshOverlay {
     None,
-    ConfirmSave,
+    ConfirmExitSave,
 }
 
 pub struct ExploreContext<'a> {
@@ -120,7 +120,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
     let mut refresh_rx: Option<mpsc::Receiver<RefreshWorkerMessage>> = None;
     let mut refresh_progress: Option<(usize, usize)> = None;
     let mut refresh_overlay = RefreshOverlay::None;
-    let mut refresh_persist_on_complete = false;
+    let mut unsaved_rtt_refresh = false;
     let mut persist_warning_shown = false;
     let mut result = Ok(());
 
@@ -156,6 +156,8 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                         &mut view,
                                         &mut persist_warning_shown,
                                         true,
+                                        &session_id,
+                                        unsaved_rtt_refresh,
                                     );
                                 }
                                 unavailable_message = Some(format_branch_report(&report));
@@ -186,27 +188,15 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                             Ok((updated, report)) => {
                                 *document = *updated;
                                 tree = explore_tree_from_document(document);
-                                if refresh_persist_on_complete {
-                                    if let Err(error) =
-                                        super::refresh::persist_refreshed_tree(runtime, document)
-                                    {
-                                        unavailable_message =
-                                            Some(format!("failed to save refreshed RTTs: {error}"));
-                                    } else {
-                                        unavailable_message =
-                                            Some(format_refresh_report(&report, true));
-                                    }
-                                    refresh_overlay = RefreshOverlay::None;
-                                } else {
-                                    refresh_overlay = RefreshOverlay::ConfirmSave;
-                                    unavailable_message =
-                                        Some(format_refresh_report(&report, false));
+                                if report.hops_updated > 0 {
+                                    unsaved_rtt_refresh = true;
                                 }
-                                refresh_persist_on_complete = false;
+                                if report.hops_updated > 0 || report.hops_failed > 0 {
+                                    unavailable_message = Some(format_refresh_report(&report));
+                                }
                             }
                             Err(error) => {
                                 unavailable_message = Some(error.to_string());
-                                refresh_persist_on_complete = false;
                             }
                         }
                     }
@@ -225,6 +215,8 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                 &mut view,
                 &mut persist_warning_shown,
                 false,
+                &session_id,
+                unsaved_rtt_refresh,
             );
         }
 
@@ -309,7 +301,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
             if let Some((current, total)) = refresh_progress {
                 render_refresh_progress_overlay(frame, &theme, current, total);
             }
-            if refresh_overlay == RefreshOverlay::ConfirmSave {
+            if refresh_overlay == RefreshOverlay::ConfirmExitSave {
                 render_refresh_confirm_overlay(frame, &theme);
             }
             if let Some(message) = &unavailable_message
@@ -349,7 +341,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                     continue;
                 }
 
-                if refresh_overlay == RefreshOverlay::ConfirmSave {
+                if refresh_overlay == RefreshOverlay::ConfirmExitSave {
                     match key.code {
                         KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
                             if let Err(error) =
@@ -358,14 +350,13 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                 unavailable_message =
                                     Some(format!("failed to save refreshed RTTs: {error}"));
                             } else {
-                                unavailable_message =
-                                    Some("saved refreshed RTTs to session".into());
+                                unsaved_rtt_refresh = false;
+                                break;
                             }
-                            refresh_overlay = RefreshOverlay::None;
                         }
                         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                            refresh_overlay = RefreshOverlay::None;
-                            unavailable_message = None;
+                            unsaved_rtt_refresh = false;
+                            break;
                         }
                         _ => {}
                     }
@@ -375,9 +366,15 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                 if show_help {
                     match key.code {
                         KeyCode::Char('?') | KeyCode::Esc => show_help = false,
-                        KeyCode::Char('q') => break,
+                        KeyCode::Char('q') => {
+                            if request_quit(unsaved_rtt_refresh, &mut refresh_overlay) {
+                                break;
+                            }
+                        }
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            break;
+                            if request_quit(unsaved_rtt_refresh, &mut refresh_overlay) {
+                                break;
+                            }
                         }
                         KeyCode::Char('c') => theme.toggle_color(),
                         _ => {}
@@ -411,6 +408,8 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                     &mut view,
                                     &mut persist_warning_shown,
                                     true,
+                                    &session_id,
+                                    unsaved_rtt_refresh,
                                 );
                             }
                         }
@@ -442,6 +441,8 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                 &mut view,
                                 &mut persist_warning_shown,
                                 true,
+                                &session_id,
+                                unsaved_rtt_refresh,
                             );
                         }
                         KeyCode::Char('a') => {
@@ -458,7 +459,11 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                         KeyCode::Enter | KeyCode::Char(' ') => {
                             unavailable_message = None;
                         }
-                        KeyCode::Char('q') => break,
+                        KeyCode::Char('q') => {
+                            if request_quit(unsaved_rtt_refresh, &mut refresh_overlay) {
+                                break;
+                            }
+                        }
                         KeyCode::Esc => unavailable_message = None,
                         _ => {}
                     }
@@ -468,9 +473,17 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                 }
 
                 match key.code {
-                    KeyCode::Char('q') => break,
+                    KeyCode::Char('q') => {
+                        if request_quit(unsaved_rtt_refresh, &mut refresh_overlay) {
+                            break;
+                        }
+                    }
                     KeyCode::Char('?') => show_help = true,
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        if request_quit(unsaved_rtt_refresh, &mut refresh_overlay) {
+                            break;
+                        }
+                    }
                     KeyCode::Char('c') => {
                         theme.toggle_color();
                         view.mark_dirty();
@@ -587,7 +600,6 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                 compare_limits,
                                 &mut unavailable_message,
                                 &mut refresh_rx,
-                                &mut refresh_persist_on_complete,
                                 &paths,
                                 document,
                             );
@@ -605,6 +617,8 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
         &mut view,
         &mut persist_warning_shown,
         true,
+        &session_id,
+        unsaved_rtt_refresh,
     );
 
     disable_raw_mode()?;
@@ -626,6 +640,7 @@ fn explore_tree_from_document(document: &SessionDocument) -> ExploreTree {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn persist_view_state_now(
     runtime: &Runtime,
     document: &mut SessionDocument,
@@ -633,6 +648,8 @@ fn persist_view_state_now(
     view: &mut ViewStateController,
     persist_warning_shown: &mut bool,
     force: bool,
+    session_id: &str,
+    unsaved_rtt_refresh: bool,
 ) {
     if !persist_view_state {
         return;
@@ -640,14 +657,29 @@ fn persist_view_state_now(
     if !view.should_persist_now(force) {
         return;
     }
-    apply_view_state(document, view);
-    if let Err(error) = runtime.update_session(document) {
+    let mut to_save = document.clone();
+    if unsaved_rtt_refresh {
+        if let Ok(saved) = runtime.get_session(session_id) {
+            to_save.trees = saved.trees;
+        }
+    }
+    apply_view_state(&mut to_save, view);
+    if let Err(error) = runtime.update_session(&to_save) {
         if !*persist_warning_shown {
             *persist_warning_shown = true;
             eprintln!("warning: failed to persist explore view state: {error}");
         }
     } else {
         view.persisted();
+    }
+}
+
+fn request_quit(unsaved_rtt_refresh: bool, refresh_overlay: &mut RefreshOverlay) -> bool {
+    if unsaved_rtt_refresh {
+        *refresh_overlay = RefreshOverlay::ConfirmExitSave;
+        false
+    } else {
+        true
     }
 }
 
@@ -994,7 +1026,6 @@ fn handle_compare_keys(
     scroll_limits: CompareScrollLimits,
     unavailable_message: &mut Option<String>,
     refresh_rx: &mut Option<mpsc::Receiver<RefreshWorkerMessage>>,
-    refresh_persist_on_complete: &mut bool,
     paths: &DelvePaths,
     document: &SessionDocument,
 ) {
@@ -1070,14 +1101,7 @@ fn handle_compare_keys(
             view.mark_dirty();
             *unavailable_message = None;
         }
-        KeyCode::Char('r') | KeyCode::Char('R')
-            if key.modifiers.contains(KeyModifiers::SHIFT) && refresh_rx.is_none() =>
-        {
-            *refresh_persist_on_complete = true;
-            start_refresh(paths, document, refresh_rx);
-        }
         KeyCode::Char('r') | KeyCode::Char('R') if refresh_rx.is_none() => {
-            *refresh_persist_on_complete = false;
             start_refresh(paths, document, refresh_rx);
         }
         _ => {}
@@ -1429,14 +1453,14 @@ fn render_refresh_confirm_overlay(frame: &mut ratatui::Frame<'_>, theme: &Theme)
     let area = centered_rect(55, 25, frame.area());
     frame.render_widget(Clear, area);
     let widget = Paragraph::new(vec![
-        Line::from("Save refreshed RTTs to session?"),
+        Line::from("Save refreshed RTTs before quitting?"),
         Line::from(""),
-        Line::from("y/Enter  save and persist"),
-        Line::from("n/Esc     keep in-memory only"),
+        Line::from("y/Enter  save and quit"),
+        Line::from("n/Esc     quit without saving"),
     ])
     .block(
         Block::default()
-            .title("Persist refresh")
+            .title("Unsaved RTT refresh")
             .borders(Borders::ALL)
             .border_style(theme.border_focused()),
     );
@@ -1584,13 +1608,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
-fn format_refresh_report(report: &dns_resolve::RefreshTreeReport, saved: bool) -> String {
-    if saved {
-        return format!(
-            "saved refreshed RTTs to session ({}/{} hops updated)",
-            report.hops_updated, report.hops_total
-        );
-    }
+fn format_refresh_report(report: &dns_resolve::RefreshTreeReport) -> String {
     if report.hops_updated == 0 && report.hops_failed > 0 {
         return format!(
             "refresh failed for all {} hops; RTTs unchanged",
@@ -1599,12 +1617,12 @@ fn format_refresh_report(report: &dns_resolve::RefreshTreeReport, saved: bool) -
     }
     if report.hops_failed > 0 {
         return format!(
-            "refreshed {}/{} hops ({} failed); save to session?",
+            "refreshed {}/{} hops ({} failed)",
             report.hops_updated, report.hops_total, report.hops_failed
         );
     }
     format!(
-        "refreshed {}/{} hops; save to session?",
+        "refreshed {}/{} hops",
         report.hops_updated, report.hops_total
     )
 }
@@ -1613,7 +1631,7 @@ fn help_lines(view: &ViewStateController, theme: &Theme) -> Vec<Line<'static>> {
     let mut lines = vec![
         help_section("Global", theme),
         help_binding("?", "Show this help", theme),
-        help_binding("q", "Quit", theme),
+        help_binding("q", "Quit (prompts to save refreshed RTTs)", theme),
         help_binding("Ctrl+C", "Quit", theme),
         help_binding("c", "Toggle colors", theme),
         help_binding("Tab / Shift-Tab", "Cycle screens", theme),
@@ -1658,7 +1676,6 @@ fn help_lines(view: &ViewStateController, theme: &Theme) -> Vec<Line<'static>> {
             help_binding("f / s", "Highlight fastest / slowest answered path", theme),
             help_binding("Esc", "Clear path highlight", theme),
             help_binding("r", "Refresh hop RTTs in memory", theme),
-            help_binding("Shift+r", "Refresh and persist to session", theme),
             Line::from(""),
             help_section("Compare stats", theme),
             help_binding(
