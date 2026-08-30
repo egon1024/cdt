@@ -138,21 +138,33 @@ impl Runtime {
 
     pub fn default_session_id(&self) -> Result<String, SessionError> {
         if let Some(id) = read_env_session() {
-            return Ok(id);
+            match self.get_session(&id) {
+                Ok(_) => return Ok(id),
+                Err(SessionError::NotFound { .. }) => {}
+                Err(error) => return Err(error),
+            }
         }
         self.resolve_last_session_id()
     }
 
     fn resolve_last_session_id(&self) -> Result<String, SessionError> {
         let id = read_last_session(&self.paths)?;
-        match self.get_session(&id) {
-            Ok(_) => Ok(id),
-            Err(SessionError::NotFound { .. }) => {
-                let _ = clear_last_session(&self.paths);
-                Err(SessionError::NoLastSession)
-            }
-            Err(error) => Err(error),
+        if self.last_session_file_id_exists(&id)? {
+            Ok(id)
+        } else {
+            let _ = clear_last_session(&self.paths);
+            Err(SessionError::NoLastSession)
         }
+    }
+
+    fn last_session_file_id_exists(&self, id: &str) -> Result<bool, SessionError> {
+        Ok(self
+            .sessions
+            .lock()
+            .expect("session lock")
+            .all_ids()?
+            .iter()
+            .any(|session_id| session_id == id))
     }
 
     pub fn forget_last_session(&self) -> Result<(), SessionError> {
@@ -204,12 +216,23 @@ impl Runtime {
         all: bool,
         dry_run: bool,
     ) -> Result<crate::retention::PurgeReport, SessionError> {
+        let last_id = read_last_session(&self.paths).ok();
         let mut store = self.sessions.lock().expect("session lock");
-        if all {
+        let report = if all {
             store.purge_all(dry_run)
         } else {
             store.purge_by_retention(self.config.session_retention, dry_run)
+        }?;
+        if !dry_run {
+            if let Some(id) = last_id {
+                let still_exists = store.all_ids()?.iter().any(|session_id| session_id == &id);
+                if !still_exists {
+                    drop(store);
+                    let _ = clear_last_session(&self.paths);
+                }
+            }
         }
+        Ok(report)
     }
 }
 
@@ -423,5 +446,53 @@ mod degradation_tests {
             read_last_session(&paths),
             Err(SessionError::NoLastSession)
         ));
+    }
+
+    #[test]
+    fn stale_delve_session_falls_through_to_last_session_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = DelvePaths::from_root(dir.path());
+        let runtime = Runtime::open(paths);
+        let request = sample_request();
+        let id = runtime
+            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request)
+            .expect("save");
+        runtime.remember_session(&id).expect("remember");
+
+        unsafe {
+            std::env::set_var(
+                crate::last_session::DELVE_SESSION_ENV,
+                "01JSTALEDELVESESSION",
+            );
+        }
+
+        assert_eq!(runtime.default_session_id().expect("default"), id);
+
+        unsafe {
+            std::env::remove_var(crate::last_session::DELVE_SESSION_ENV);
+        }
+    }
+
+    #[test]
+    fn stale_delve_session_without_last_session_errors() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = DelvePaths::from_root(dir.path());
+        let runtime = Runtime::open(paths);
+
+        unsafe {
+            std::env::set_var(
+                crate::last_session::DELVE_SESSION_ENV,
+                "01JSTALEDELVESESSION",
+            );
+        }
+
+        assert!(matches!(
+            runtime.default_session_id(),
+            Err(SessionError::NoLastSession)
+        ));
+
+        unsafe {
+            std::env::remove_var(crate::last_session::DELVE_SESSION_ENV);
+        }
     }
 }

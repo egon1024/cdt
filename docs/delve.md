@@ -23,9 +23,9 @@ Each `delve trace` that saves creates a **new** session id. Re-running a trace d
 
 ### Default session
 
-The **default session** is resolved in order: an explicit id on the command line, then `DELVE_SESSION` when set (non-empty after trimming), then the last-session file (`$XDG_STATE_HOME/cdt/delve/last-session`) updated when you trace, explore, or otherwise touch a session. Commands that accept an optional `[id]` (`show`, `outline`, `events`, `explore`, `branch`) use the default when you omit the id. `delve session current` prints that resolved id; `delve session list` marks it with `@` in the first column (`*` means pinned).
+The **default session** is resolved in order: an explicit id on the command line, then `DELVE_SESSION` when set (non-empty after trimming) and the session still exists, then the last-session file (`$XDG_STATE_HOME/cdt/delve/last-session`) when it points at an existing session. The last-session file is updated when you trace, explore, or otherwise touch a session; if it references a removed session, delve clears it on the next lookup (including after `session purge`). Commands that accept an optional `[id]` (`show`, `outline`, `events`, `explore`, `branch`) use the default when you omit the id. `delve session current` prints that resolved id; `delve session list` marks it with `@` in the first column (`*` means pinned).
 
-`DELVE_SESSION` is a read override for scoped scripts — delve does not set it. Tracing still updates the last-session file.
+`DELVE_SESSION` is a read override for scoped scripts — delve does not set it. If it points at a removed session, delve ignores it and falls through to the last-session file. Tracing still updates the last-session file.
 
 Session ids accept a full ULID or a unique short prefix (like git).
 
