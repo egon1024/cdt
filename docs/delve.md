@@ -159,16 +159,23 @@ explore:
 
 ### `explore.rtt_bar`
 
-Colors and scale for the **Compare** screen latency bars (`█` characters). Bar length is proportional to RTT, scaled to `insane_ms`. Each character is colored by the RTT it represents:
+Colors and fixed width for the **Compare** screen latency bars (`█` characters). The bar
+column is always `max_width` characters wide (default **20**). The longest RTT among
+visible hops fills the full width; other hops scale proportionally. Remaining space is
+blank. Each filled character is colored by the RTT it represents on that scale:
 
 | Threshold | Bar color |
 |-----------|-----------|
 | `green_ms` | Green — typical fast query |
 | `yellow_ms` | Yellow — a little slow |
 | `orange_ms` | Orange — unusually slow |
-| `insane_ms` | Red — bar scale cap; longer RTTs fill the bar to full width |
+| above `orange_ms` | Red |
 
-Defaults: `50`, `150`, `500`, `2000` ms; `max_width` **20** characters.
+`insane_ms` keeps color thresholds strictly ordered when config is normalized; it does
+not cap bar length.
+
+Defaults: `green_ms` **50**, `yellow_ms` **150**, `orange_ms` **500**, `insane_ms`
+**2000**, `max_width` **20** characters.
 
 ### Compare analytics (`session explore`)
 

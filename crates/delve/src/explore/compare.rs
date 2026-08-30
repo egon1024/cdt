@@ -80,6 +80,7 @@ impl CompareColumns {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn compare_row(
     node: &VisibleNode,
     tree: &ExploreTree,
@@ -87,6 +88,7 @@ pub fn compare_row(
     path_highlighted: bool,
     columns: CompareColumns,
     rtt_config: RttBarConfig,
+    scale_max_rtt_ms: u32,
     theme: &Theme,
 ) -> Line<'static> {
     let hop = tree.hop_at(&node.path).expect("visible hop");
@@ -153,6 +155,7 @@ pub fn compare_row(
     ];
     spans.extend(rtt_bar_spans(
         hop.rtt_ms.min(u32::MAX as u64) as u32,
+        scale_max_rtt_ms,
         rtt_config,
         theme,
     ));
@@ -226,6 +229,7 @@ fn column_starts(line: &Line) -> Vec<usize> {
 mod tests {
     use super::*;
     use crate::config::RttBarConfig;
+    use crate::explore::rtt_bar::max_rtt_ms_for_visible;
     use dns_resolve::{HopOutcome, TraceHop, TraceTreeRequest, build_linear_tree};
 
     fn hop(zone: &str, server: &str, rtt_ms: u64) -> TraceHop {
@@ -265,6 +269,7 @@ mod tests {
         let tree = super::super::tree::build_explore_tree(&trace);
         let visible = tree.visible_nodes(&tree.default_expanded_paths());
         let columns = CompareColumns::for_visible(&tree, &visible);
+        let scale_max_rtt_ms = max_rtt_ms_for_visible(&tree, &visible);
         let theme = Theme::from_env();
         let row = compare_row(
             &visible[1],
@@ -273,6 +278,7 @@ mod tests {
             false,
             columns,
             RttBarConfig::default(),
+            scale_max_rtt_ms,
             &theme,
         );
         let text = row
@@ -303,6 +309,7 @@ mod tests {
         let expanded = tree.default_expanded_paths();
         let visible = tree.visible_nodes(&expanded);
         let columns = CompareColumns::for_visible(&tree, &visible);
+        let scale_max_rtt_ms = max_rtt_ms_for_visible(&tree, &visible);
         let theme = Theme::from_env();
         let header = columns.header(&theme);
         let shallow = compare_row(
@@ -312,6 +319,7 @@ mod tests {
             false,
             columns,
             RttBarConfig::default(),
+            scale_max_rtt_ms,
             &theme,
         );
         let deep = compare_row(
@@ -321,6 +329,7 @@ mod tests {
             false,
             columns,
             RttBarConfig::default(),
+            scale_max_rtt_ms,
             &theme,
         );
 
@@ -353,6 +362,7 @@ mod tests {
         let tree = super::super::tree::build_explore_tree(&trace);
         let visible = tree.visible_nodes(&[]);
         let columns = CompareColumns::for_visible(&tree, &visible);
+        let scale_max_rtt_ms = max_rtt_ms_for_visible(&tree, &visible);
         let row = compare_row(
             &visible[0],
             &tree,
@@ -360,6 +370,7 @@ mod tests {
             false,
             columns,
             RttBarConfig::default(),
+            scale_max_rtt_ms,
             &Theme::from_env(),
         );
         let text = row

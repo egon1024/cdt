@@ -33,6 +33,7 @@ use super::path_timing::{
     whole_tree_summary_lines,
 };
 use super::refresh::refresh_document_tree;
+use super::rtt_bar::max_rtt_ms_for_visible;
 use super::terminal::{cache_source_legend, cache_source_symbol};
 use super::theme::Theme;
 use super::tree::{ExploreTree, VisibleNode};
@@ -1199,6 +1200,7 @@ fn render_compare(
 ) {
     let columns = CompareColumns::for_visible(tree, visible);
     let selected_index = view.selected_visible_index(tree);
+    let scale_max_rtt_ms = max_rtt_ms_for_visible(tree, visible);
     let timing = build_compare_timing(tree, view.compare_fork.as_ref());
     let mut lines = whole_tree_summary_lines(&timing, theme);
     if view.show_fork_full_path_panel {
@@ -1218,6 +1220,7 @@ fn render_compare(
             path_highlighted,
             columns,
             rtt_config,
+            scale_max_rtt_ms,
             theme,
         ));
     }
@@ -1236,7 +1239,7 @@ fn render_compare(
     let clamped_scroll = compare_scroll.min(max_scroll);
     let scroll_hints = AxisScrollHints::vertical(clamped_scroll, max_scroll).format_vertical();
     let title = format!(
-        "Compare — answered paths only; • marks forks; latency bar scales to insane_ms{scroll_hints}"
+        "Compare — answered paths only; • marks forks; latency bar scales to visible max{scroll_hints}"
     );
 
     let widget = Paragraph::new(lines)
@@ -1688,7 +1691,7 @@ fn help_lines(view: &ViewStateController, theme: &Theme) -> Vec<Line<'static>> {
             help_binding("green", "≤ green_ms (config)", theme),
             help_binding("yellow", "≤ yellow_ms", theme),
             help_binding("orange", "≤ orange_ms", theme),
-            help_binding("red", "> orange_ms up to insane_ms", theme),
+            help_binding("red", "> orange_ms", theme),
         ]);
     }
     lines
