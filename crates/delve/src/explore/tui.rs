@@ -86,6 +86,30 @@ enum RefreshOverlay {
     ConfirmExitSave,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ScreenNotice {
+    screen: ActiveScreen,
+    message: String,
+}
+
+fn set_screen_notice(
+    notice: &mut Option<ScreenNotice>,
+    screen: ActiveScreen,
+    message: impl Into<String>,
+) {
+    *notice = Some(ScreenNotice {
+        screen,
+        message: message.into(),
+    });
+}
+
+fn screen_notice_message(notice: &Option<ScreenNotice>, screen: ActiveScreen) -> Option<&str> {
+    notice
+        .as_ref()
+        .filter(|entry| entry.screen == screen)
+        .map(|entry| entry.message.as_str())
+}
+
 pub struct ExploreContext<'a> {
     pub runtime: &'a Runtime,
     pub document: &'a mut SessionDocument,
@@ -113,7 +137,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
     let mut compare_scroll = 0u16;
     let rtt_bar_config = runtime.config.explore_rtt_bar;
     let mut show_help = false;
-    let mut unavailable_message: Option<String> = None;
+    let mut screen_notice: Option<ScreenNotice> = None;
     let mut branch_overlay = BranchOverlay::None;
     let mut alternate_server_input = String::new();
     let mut branch_rx: Option<mpsc::Receiver<BranchWorkerMessage>> = None;
@@ -161,10 +185,18 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                         unsaved_rtt_refresh,
                                     );
                                 }
-                                unavailable_message = Some(format_branch_report(&report));
+                                set_screen_notice(
+                                    &mut screen_notice,
+                                    ActiveScreen::Browse,
+                                    format_branch_report(&report),
+                                );
                             }
                             Err(error) => {
-                                unavailable_message = Some(error.to_string());
+                                set_screen_notice(
+                                    &mut screen_notice,
+                                    ActiveScreen::Browse,
+                                    error.to_string(),
+                                );
                             }
                         }
                     }
@@ -193,11 +225,19 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                     unsaved_rtt_refresh = true;
                                 }
                                 if report.hops_updated > 0 || report.hops_failed > 0 {
-                                    unavailable_message = Some(format_refresh_report(&report));
+                                    set_screen_notice(
+                                        &mut screen_notice,
+                                        ActiveScreen::Compare,
+                                        format_refresh_report(&report),
+                                    );
                                 }
                             }
                             Err(error) => {
-                                unavailable_message = Some(error.to_string());
+                                set_screen_notice(
+                                    &mut screen_notice,
+                                    ActiveScreen::Compare,
+                                    error.to_string(),
+                                );
                             }
                         }
                     }
@@ -299,14 +339,15 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                     branch_progress.as_deref(),
                 );
             }
-            if let Some((current, total)) = refresh_progress {
+            if let Some((current, total)) = refresh_progress
+                && view.active_screen == ActiveScreen::Compare
+            {
                 render_refresh_progress_overlay(frame, &theme, current, total);
             }
             if refresh_overlay == RefreshOverlay::ConfirmExitSave {
                 render_refresh_confirm_overlay(frame, &theme);
             }
-            if let Some(message) = &unavailable_message
-                && view.active_screen != ActiveScreen::Compare
+            if let Some(message) = screen_notice_message(&screen_notice, ActiveScreen::Browse)
                 && branch_overlay == BranchOverlay::None
                 && branch_progress.is_none()
                 && refresh_overlay == RefreshOverlay::None
@@ -314,8 +355,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
             {
                 render_message_overlay(frame, &theme, message);
             }
-            if let Some(message) = &unavailable_message
-                && view.active_screen == ActiveScreen::Compare
+            if let Some(message) = screen_notice_message(&screen_notice, ActiveScreen::Compare)
                 && refresh_overlay == RefreshOverlay::None
                 && refresh_progress.is_none()
                 && branch_overlay == BranchOverlay::None
@@ -333,11 +373,15 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
 
                 if branch_rx.is_some() || refresh_rx.is_some() {
                     if matches!(key.code, KeyCode::Esc) {
-                        unavailable_message = Some(if refresh_rx.is_some() {
-                            "RTT refresh in progress; wait for completion".into()
-                        } else {
-                            "branch in progress; wait for completion".into()
-                        });
+                        set_screen_notice(
+                            &mut screen_notice,
+                            view.active_screen,
+                            if refresh_rx.is_some() {
+                                "RTT refresh in progress; wait for completion".to_string()
+                            } else {
+                                "branch in progress; wait for completion".to_string()
+                            },
+                        );
                     }
                     continue;
                 }
@@ -348,8 +392,11 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                             if let Err(error) =
                                 super::refresh::persist_refreshed_tree(runtime, document)
                             {
-                                unavailable_message =
-                                    Some(format!("failed to save refreshed RTTs: {error}"));
+                                set_screen_notice(
+                                    &mut screen_notice,
+                                    view.active_screen,
+                                    format!("failed to save refreshed RTTs: {error}"),
+                                );
                             } else {
                                 unsaved_rtt_refresh = false;
                                 break;
@@ -389,7 +436,11 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                         KeyCode::Enter => {
                             let target = alternate_server_input.trim();
                             if target.is_empty() {
-                                unavailable_message = Some("server address required".into());
+                                set_screen_notice(
+                                    &mut screen_notice,
+                                    ActiveScreen::Browse,
+                                    "server address required",
+                                );
                             } else {
                                 start_branch(
                                     &paths,
@@ -455,20 +506,23 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                     continue;
                 }
 
-                if unavailable_message.is_some() {
+                if screen_notice
+                    .as_ref()
+                    .is_some_and(|notice| notice.screen == view.active_screen)
+                {
                     match key.code {
                         KeyCode::Enter | KeyCode::Char(' ') => {
-                            unavailable_message = None;
+                            screen_notice = None;
                         }
                         KeyCode::Char('q') => {
                             if request_quit(unsaved_rtt_refresh, &mut refresh_overlay) {
                                 break;
                             }
                         }
-                        KeyCode::Esc => unavailable_message = None,
+                        KeyCode::Esc => screen_notice = None,
                         _ => {}
                     }
-                    if unavailable_message.is_none() {
+                    if screen_notice.is_none() {
                         continue;
                     }
                 }
@@ -599,7 +653,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                 &visible,
                                 &mut compare_scroll,
                                 compare_limits,
-                                &mut unavailable_message,
+                                &mut screen_notice,
                                 &mut refresh_rx,
                                 &paths,
                                 document,
@@ -1025,7 +1079,7 @@ fn handle_compare_keys(
     visible: &[VisibleNode],
     compare_scroll: &mut u16,
     scroll_limits: CompareScrollLimits,
-    unavailable_message: &mut Option<String>,
+    screen_notice: &mut Option<ScreenNotice>,
     refresh_rx: &mut Option<mpsc::Receiver<RefreshWorkerMessage>>,
     paths: &DelvePaths,
     document: &SessionDocument,
@@ -1061,18 +1115,26 @@ fn handle_compare_keys(
             if view.compare_fork.is_some() {
                 view.show_fork_full_path_panel = !view.show_fork_full_path_panel;
                 view.mark_dirty();
-                *unavailable_message = None;
+                *screen_notice = None;
             } else {
-                *unavailable_message = Some("no fork context for full-path panel".into());
+                set_screen_notice(
+                    screen_notice,
+                    ActiveScreen::Compare,
+                    "no fork context for full-path panel",
+                );
             }
         }
         KeyCode::Char('B') => {
             if view.compare_fork.is_some() {
                 view.show_fork_sibling_panel = !view.show_fork_sibling_panel;
                 view.mark_dirty();
-                *unavailable_message = None;
+                *screen_notice = None;
             } else {
-                *unavailable_message = Some("no fork context for sibling breakdown".into());
+                set_screen_notice(
+                    screen_notice,
+                    ActiveScreen::Compare,
+                    "no fork context for sibling breakdown",
+                );
             }
         }
         KeyCode::Char('f') => {
@@ -1100,7 +1162,7 @@ fn handle_compare_keys(
         KeyCode::Esc => {
             view.highlighted_path = None;
             view.mark_dirty();
-            *unavailable_message = None;
+            *screen_notice = None;
         }
         KeyCode::Char('r') | KeyCode::Char('R') if refresh_rx.is_none() => {
             start_refresh(paths, document, refresh_rx);
@@ -1844,6 +1906,17 @@ mod tests {
         assert!(text.contains("Cycle screens"));
         assert!(text.contains("Expand all / collapse all"));
         assert!(text.contains("Branch from selection"));
+    }
+
+    #[test]
+    fn screen_notice_only_matches_own_screen() {
+        let mut notice = None;
+        set_screen_notice(&mut notice, ActiveScreen::Compare, "refreshed 3 hops");
+        assert_eq!(
+            screen_notice_message(&notice, ActiveScreen::Compare),
+            Some("refreshed 3 hops")
+        );
+        assert_eq!(screen_notice_message(&notice, ActiveScreen::Browse), None);
     }
 
     fn sample_hop() -> dns_resolve::TraceHop {
