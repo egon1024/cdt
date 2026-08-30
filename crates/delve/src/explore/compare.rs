@@ -5,6 +5,7 @@ use dns_resolve::HopOutcome;
 
 use crate::config::RttBarConfig;
 
+use super::detail::effective_server_name;
 use super::rtt_bar::rtt_bar_spans;
 use super::theme::Theme;
 use super::tree::{ExploreTree, VisibleNode};
@@ -14,6 +15,7 @@ pub struct CompareColumns {
     pub prefix_width: usize,
     pub zone_width: usize,
     pub server_width: usize,
+    pub server_name_width: usize,
     pub rcode_width: usize,
     pub rtt_width: usize,
 }
@@ -21,6 +23,8 @@ pub struct CompareColumns {
 impl CompareColumns {
     pub const MAX_ZONE_WIDTH: usize = 20;
     pub const MAX_SERVER_WIDTH: usize = 28;
+    pub const MAX_SERVER_NAME_WIDTH: usize = 28;
+    pub const MIN_SERVER_NAME_WIDTH: usize = 4;
     pub const MIN_RCODE_WIDTH: usize = 7;
     pub const INDENT_WIDTH: usize = 2;
 
@@ -30,12 +34,15 @@ impl CompareColumns {
 
         let mut zone_width = 4;
         let mut server_width = 6;
+        let mut server_name_width = Self::MIN_SERVER_NAME_WIDTH;
         let mut rcode_width = Self::MIN_RCODE_WIDTH;
 
         for node in visible {
             let hop = tree.hop_at(&node.path).expect("visible hop");
             zone_width = zone_width.max(display_width(hop.zone.as_str()));
             server_width = server_width.max(display_width(hop.server.as_str()));
+            server_name_width =
+                server_name_width.max(display_width(hop_server_name(hop).as_str()));
             if matches!(hop.outcome, HopOutcome::Failed { .. }) {
                 rcode_width = rcode_width.max(display_width("FAILED"));
             } else {
@@ -47,6 +54,7 @@ impl CompareColumns {
             prefix_width,
             zone_width: zone_width.min(Self::MAX_ZONE_WIDTH),
             server_width: server_width.min(Self::MAX_SERVER_WIDTH),
+            server_name_width: server_name_width.min(Self::MAX_SERVER_NAME_WIDTH),
             rcode_width,
             rtt_width: 7,
         }
@@ -58,6 +66,8 @@ impl CompareColumns {
             Span::styled(pad_left_display("zone", self.zone_width), theme.label()),
             Span::raw("  "),
             Span::styled(pad_left_display("server", self.server_width), theme.label()),
+            Span::raw("  "),
+            Span::styled(pad_left_display("name", self.server_name_width), theme.label()),
             Span::raw("  "),
             Span::styled(pad_left_display("rcode", self.rcode_width), theme.label()),
             Span::raw("  "),
@@ -102,6 +112,7 @@ pub fn compare_row(
 
     let zone = truncate_field(&hop.zone, columns.zone_width);
     let server = truncate_field(&hop.server, columns.server_width);
+    let server_name = truncate_field(&hop_server_name(hop), columns.server_name_width);
     let rcode = if failed {
         pad_left_display("FAILED", columns.rcode_width)
     } else {
@@ -117,6 +128,11 @@ pub fn compare_row(
         Span::styled(pad_left_display(zone, columns.zone_width), theme.zone()),
         Span::raw("  "),
         Span::styled(pad_left_display(server, columns.server_width), row_style),
+        Span::raw("  "),
+        Span::styled(
+            pad_left_display(server_name, columns.server_name_width),
+            theme.label(),
+        ),
         Span::raw("  "),
         Span::styled(
             rcode,
@@ -137,6 +153,10 @@ pub fn compare_row(
     ));
 
     Line::from(spans)
+}
+
+fn hop_server_name(hop: &dns_resolve::TraceHop) -> String {
+    effective_server_name(&hop.server, hop.server_name.as_deref()).unwrap_or_default()
 }
 
 fn children_count(node: &VisibleNode, tree: &ExploreTree) -> usize {
@@ -308,5 +328,36 @@ mod tests {
         assert_eq!(header_starts[5], deep_starts[5]);
         assert_eq!(header_starts[7], shallow_starts[7]);
         assert_eq!(header_starts[7], deep_starts[7]);
+        assert_eq!(header_starts[9], shallow_starts[9]);
+        assert_eq!(header_starts[9], deep_starts[9]);
+    }
+
+    #[test]
+    fn shows_effective_server_name_for_root_hints() {
+        let trace = build_linear_tree(
+            vec![hop(".", "198.41.0.4", 96)],
+            TraceTreeRequest {
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                started_at: "2026-08-25T00:00:00Z".into(),
+            },
+        );
+        let tree = super::super::tree::build_explore_tree(&trace);
+        let visible = tree.visible_nodes(&[]);
+        let columns = CompareColumns::for_visible(&tree, &visible);
+        let row = compare_row(
+            &visible[0],
+            &tree,
+            false,
+            columns,
+            RttBarConfig::default(),
+            &Theme::from_env(),
+        );
+        let text = row
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(text.contains("a.root-servers.net"));
     }
 }
