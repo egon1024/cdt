@@ -1044,11 +1044,6 @@ fn render_browse(
     frame.render_widget(tree_widget, tree_area);
 
     let detail_lines = detail_content(tree, visible.get(selected_index), theme);
-    let detail_focus_hint = if view.browse_pane == BrowsePane::Detail {
-        " — j/k scroll when focused"
-    } else {
-        ""
-    };
     let detail_block = Block::default()
         .title("Details")
         .title_bottom(footer_line(theme).centered())
@@ -1067,8 +1062,7 @@ fn render_browse(
     let clamped_detail_scroll = detail_scroll.min(detail_max_scroll);
     let detail_scroll_hints =
         AxisScrollHints::vertical(clamped_detail_scroll, detail_max_scroll).format_vertical();
-    let detail_title =
-        format!("Details{detail_focus_hint}  [w toggles focus]{detail_scroll_hints}");
+    let detail_title = format!("Details{detail_scroll_hints}");
     let detail_widget = Paragraph::new(detail_lines)
         .block(
             Block::default()
