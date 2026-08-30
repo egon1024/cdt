@@ -188,7 +188,7 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
     runtime.emit_warnings();
     match command.command {
         SessionSubcommand::List => {
-            let default_id = runtime.last_session_id().ok();
+            let default_id = runtime.default_session_id().ok();
             for item in runtime.list_sessions()? {
                 match item {
                     crate::session::SessionListItem::Session(summary) => {
@@ -216,7 +216,7 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
             Ok(())
         }
         SessionSubcommand::Current => {
-            let id = runtime.last_session_id()?;
+            let id = runtime.default_session_id()?;
             println!("{id}");
             Ok(())
         }
@@ -354,8 +354,8 @@ fn resolve_session_target(
             return Ok((id, args));
         }
     }
-    let last = runtime.last_session_id()?;
-    Ok((last, args))
+    let default = runtime.default_session_id()?;
+    Ok((default, args))
 }
 
 fn print_session(document: &SessionDocument, json: bool) {

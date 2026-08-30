@@ -4,7 +4,9 @@ use dns_cache::{ResponseCache, SqliteCache};
 use dns_resolve::TraceTree;
 
 use crate::config::DelveConfig;
-use crate::last_session::{clear_last_session, read_last_session, write_last_session};
+use crate::last_session::{
+    clear_last_session, default_session_id, read_last_session, write_last_session,
+};
 use crate::paths::DelvePaths;
 use crate::retention::retention_label;
 use crate::session::SessionStore;
@@ -132,6 +134,10 @@ impl Runtime {
 
     pub fn last_session_id(&self) -> Result<String, SessionError> {
         read_last_session(&self.paths)
+    }
+
+    pub fn default_session_id(&self) -> Result<String, SessionError> {
+        default_session_id(&self.paths)
     }
 
     pub fn forget_last_session(&self) -> Result<(), SessionError> {
