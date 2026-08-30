@@ -165,9 +165,18 @@ visible hops fills the full width; other hops scale proportionally. Remaining sp
 blank. Each filled character is colored by the RTT it represents on that scale.
 
 On terminals that report **256-color** or **truecolor** support (or common modern
-emulators such as Kitty, WezTerm, iTerm, Windows Terminal), bars use a smooth
-**green → yellow → orange → red** gradient between the configured thresholds. Basic
-8/16-color terminals keep stepped bands instead.
+emulators such as Kitty, WezTerm, iTerm, Windows Terminal), bars use a smooth gradient
+between **step** colors. Each segment transitions only toward the next milestone:
+
+| Range | Gradient |
+|-------|----------|
+| `0` → `green_ms` | green → yellow (fully yellow at `green_ms`) |
+| `green_ms` → `yellow_ms` | solid yellow |
+| `yellow_ms` → `orange_ms` | yellow → orange (fully orange at `orange_ms`) |
+| `orange_ms` → `insane_ms` | orange → red (fully red at `insane_ms`) |
+
+Hops that do not reach a later milestone still show a partial transition toward it.
+Basic 8/16-color terminals keep stepped bands instead.
 
 | Threshold | Bar color |
 |-----------|-----------|

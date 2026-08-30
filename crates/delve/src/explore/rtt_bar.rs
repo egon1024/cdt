@@ -82,32 +82,29 @@ fn style_for_rtt_stepped(rtt_ms: u32, config: RttBarConfig, theme: &Theme) -> St
 }
 
 fn rtt_gradient_rgb(rtt_ms: u32, config: RttBarConfig) -> (u8, u8, u8) {
-    let stops = [
-        (0, (72, 198, 108)),
-        (config.green_ms, (72, 198, 108)),
-        (config.yellow_ms, (255, 214, 48)),
-        (config.orange_ms, (255, 132, 32)),
-        (config.insane_ms, (214, 48, 48)),
-    ];
-    interpolate_color_stops(rtt_ms, &stops)
-}
+    const GREEN: (u8, u8, u8) = (72, 198, 108);
+    const YELLOW: (u8, u8, u8) = (255, 214, 48);
+    const ORANGE: (u8, u8, u8) = (255, 132, 32);
+    const RED: (u8, u8, u8) = (214, 48, 48);
 
-fn interpolate_color_stops(ms: u32, stops: &[(u32, (u8, u8, u8))]) -> (u8, u8, u8) {
-    if ms <= stops[0].0 {
-        return stops[0].1;
+    if rtt_ms <= config.green_ms {
+        let t = rtt_ms as f32 / config.green_ms as f32;
+        return lerp_rgb(GREEN, YELLOW, t);
     }
-    for window in stops.windows(2) {
-        let (start_ms, start_rgb) = window[0];
-        let (end_ms, end_rgb) = window[1];
-        if ms <= end_ms {
-            if end_ms == start_ms {
-                return end_rgb;
-            }
-            let t = (ms - start_ms) as f32 / (end_ms - start_ms) as f32;
-            return lerp_rgb(start_rgb, end_rgb, t);
-        }
+    if rtt_ms <= config.yellow_ms {
+        return YELLOW;
     }
-    stops.last().map(|(_, rgb)| *rgb).unwrap_or((214, 48, 48))
+    if rtt_ms <= config.orange_ms {
+        let span = config.orange_ms - config.yellow_ms;
+        let t = (rtt_ms - config.yellow_ms) as f32 / span as f32;
+        return lerp_rgb(YELLOW, ORANGE, t);
+    }
+    if rtt_ms <= config.insane_ms {
+        let span = config.insane_ms - config.orange_ms;
+        let t = (rtt_ms - config.orange_ms) as f32 / span as f32;
+        return lerp_rgb(ORANGE, RED, t);
+    }
+    RED
 }
 
 fn lerp_rgb(start: (u8, u8, u8), end: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
@@ -224,16 +221,50 @@ mod tests {
         let first = spans[0].style.fg;
         let last = spans[19].style.fg;
         assert_ne!(first, last);
-        assert_eq!(first, Some(Color::Rgb(72, 198, 108)));
         assert_eq!(last, Some(Color::Rgb(214, 48, 48)));
+        let Color::Rgb(red, green, blue) = first.unwrap() else {
+            panic!("expected rgb color");
+        };
+        assert!(green > blue);
+        assert!(red >= 72);
     }
 
     #[test]
-    fn gradient_interpolates_between_thresholds() {
+    fn gradient_reaches_yellow_at_green_ms() {
         let cfg = config();
-        let mid = rtt_gradient_rgb(75, cfg);
-        assert!(mid.0 > 72);
+        assert_eq!(rtt_gradient_rgb(0, cfg), (72, 198, 108));
+        assert_eq!(rtt_gradient_rgb(cfg.green_ms, cfg), (255, 214, 48));
+    }
+
+    #[test]
+    fn gradient_holds_yellow_until_yellow_ms() {
+        let cfg = config();
+        assert_eq!(rtt_gradient_rgb(75, cfg), (255, 214, 48));
+        assert_eq!(rtt_gradient_rgb(cfg.yellow_ms, cfg), (255, 214, 48));
+    }
+
+    #[test]
+    fn gradient_reaches_orange_at_orange_ms() {
+        let cfg = config();
+        let mid = rtt_gradient_rgb(150, cfg);
+        assert_eq!(mid.0, 255);
         assert!(mid.1 < 214);
+        assert!(mid.1 > 48);
+        assert_eq!(rtt_gradient_rgb(cfg.orange_ms, cfg), (255, 132, 32));
+    }
+
+    #[test]
+    fn gradient_reaches_red_at_insane_ms() {
+        let cfg = config();
+        assert_eq!(rtt_gradient_rgb(cfg.insane_ms, cfg), (214, 48, 48));
+    }
+
+    #[test]
+    fn gradient_interpolates_toward_next_step_before_milestone() {
+        let cfg = config();
+        let early = rtt_gradient_rgb(25, cfg);
+        assert!(early.1 > 198);
+        assert!(early.0 > 72);
     }
 
     #[test]

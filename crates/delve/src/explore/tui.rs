@@ -1694,7 +1694,7 @@ fn help_lines(view: &ViewStateController, theme: &Theme) -> Vec<Line<'static>> {
                     theme.color_capability,
                     ColorCapability::Indexed | ColorCapability::Truecolor
                 ) {
-                    "Smooth green→red gradient on capable terminals"
+                    "Gradient toward next step: green→yellow, then yellow→orange, then orange→red"
                 } else {
                     "Stepped bands: green / yellow / orange / red"
                 },
