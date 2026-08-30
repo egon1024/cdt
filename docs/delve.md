@@ -25,7 +25,7 @@ Each `delve trace` that saves creates a **new** session id. Re-running a trace d
 
 The **default session** is resolved in order: an explicit id on the command line, then `DELVE_SESSION` when set (non-empty after trimming) and the session still exists, then the most recently modified stored session (`updated_at`). Commands that accept an optional `[id]` (`show`, `outline`, `events`, `explore`, `branch`) use the default when you omit the id. `delve session current` prints that resolved id; `delve session list` marks it with `@` in the first column (`*` means pinned).
 
-`DELVE_SESSION` is an override for scripts and scoped shells — delve does not set it. If it points at a removed session, delve ignores it and falls through to the most recently modified session.
+`DELVE_SESSION` is an override for scripts and scoped shells — delve does not set it. If it points at a removed session, delve prints a warning to stderr and falls through to the most recently modified session.
 
 Session ids accept a full ULID or a unique short prefix (like git).
 

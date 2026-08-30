@@ -4,7 +4,7 @@ use dns_cache::{ResponseCache, SqliteCache};
 use dns_resolve::TraceTree;
 
 use crate::config::DelveConfig;
-use crate::default_session::read_env_session;
+use crate::default_session::{read_env_session, stale_delve_session_warning};
 use crate::paths::DelvePaths;
 use crate::retention::retention_label;
 use crate::session::SessionStore;
@@ -130,7 +130,9 @@ impl Runtime {
         if let Some(id) = read_env_session() {
             match self.get_session(&id) {
                 Ok(_) => return Ok(id),
-                Err(SessionError::NotFound { .. }) => {}
+                Err(SessionError::NotFound { .. }) => {
+                    eprintln!("{}", stale_delve_session_warning(&id));
+                }
                 Err(error) => return Err(error),
             }
         }

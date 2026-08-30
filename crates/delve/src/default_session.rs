@@ -16,9 +16,23 @@ pub fn read_env_session() -> Option<String> {
     }
 }
 
+pub fn stale_delve_session_warning(env_value: &str) -> String {
+    format!(
+        "warning: DELVE_SESSION={env_value} is not a stored session; using the most recently modified session"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_delve_session_warning_message() {
+        assert_eq!(
+            stale_delve_session_warning("01JSTALEDELVESESSION"),
+            "warning: DELVE_SESSION=01JSTALEDELVESESSION is not a stored session; using the most recently modified session"
+        );
+    }
 
     #[test]
     fn env_session_trimmed_and_empty_ignored() {
