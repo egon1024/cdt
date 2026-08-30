@@ -194,15 +194,13 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                             Some(format!("failed to save refreshed RTTs: {error}"));
                                     } else {
                                         unavailable_message =
-                                            Some("saved refreshed RTTs to session".into());
+                                            Some(format_refresh_report(&report, true));
                                     }
                                     refresh_overlay = RefreshOverlay::None;
                                 } else {
                                     refresh_overlay = RefreshOverlay::ConfirmSave;
-                                    unavailable_message = Some(format!(
-                                        "refreshed {}/{} hops; save to session?",
-                                        report.hops_updated, report.hops_total
-                                    ));
+                                    unavailable_message =
+                                        Some(format_refresh_report(&report, false));
                                 }
                                 refresh_persist_on_complete = false;
                             }
@@ -1072,13 +1070,13 @@ fn handle_compare_keys(
             view.mark_dirty();
             *unavailable_message = None;
         }
-        KeyCode::Char('R')
+        KeyCode::Char('r') | KeyCode::Char('R')
             if key.modifiers.contains(KeyModifiers::SHIFT) && refresh_rx.is_none() =>
         {
             *refresh_persist_on_complete = true;
             start_refresh(paths, document, refresh_rx);
         }
-        KeyCode::Char('R') if refresh_rx.is_none() => {
+        KeyCode::Char('r') | KeyCode::Char('R') if refresh_rx.is_none() => {
             *refresh_persist_on_complete = false;
             start_refresh(paths, document, refresh_rx);
         }
@@ -1586,6 +1584,31 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
+fn format_refresh_report(report: &dns_resolve::RefreshTreeReport, saved: bool) -> String {
+    if saved {
+        return format!(
+            "saved refreshed RTTs to session ({}/{} hops updated)",
+            report.hops_updated, report.hops_total
+        );
+    }
+    if report.hops_updated == 0 && report.hops_failed > 0 {
+        return format!(
+            "refresh failed for all {} hops; RTTs unchanged",
+            report.hops_total
+        );
+    }
+    if report.hops_failed > 0 {
+        return format!(
+            "refreshed {}/{} hops ({} failed); save to session?",
+            report.hops_updated, report.hops_total, report.hops_failed
+        );
+    }
+    format!(
+        "refreshed {}/{} hops; save to session?",
+        report.hops_updated, report.hops_total
+    )
+}
+
 fn help_lines(view: &ViewStateController, theme: &Theme) -> Vec<Line<'static>> {
     let mut lines = vec![
         help_section("Global", theme),
@@ -1634,8 +1657,8 @@ fn help_lines(view: &ViewStateController, theme: &Theme) -> Vec<Line<'static>> {
             help_binding("B", "Toggle fork sibling hop RTT panel", theme),
             help_binding("f / s", "Highlight fastest / slowest answered path", theme),
             help_binding("Esc", "Clear path highlight", theme),
-            help_binding("R", "Refresh hop RTTs (in-memory)", theme),
-            help_binding("Shift+R", "Refresh and persist to session", theme),
+            help_binding("r", "Refresh hop RTTs in memory", theme),
+            help_binding("Shift+r", "Refresh and persist to session", theme),
             Line::from(""),
             help_section("Compare stats", theme),
             help_binding(

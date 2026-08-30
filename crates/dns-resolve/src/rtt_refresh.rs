@@ -1,7 +1,6 @@
 //! Hop-by-hop RTT refresh for stored trace trees.
 
 use std::net::IpAddr;
-use std::str::FromStr;
 use std::thread;
 
 use dns_core::name::DomainName;
@@ -9,7 +8,8 @@ use dns_core::parse_record_type;
 use dns_core::response::Transport;
 use hickory_proto::rr::RecordType;
 
-use crate::{TraceConfig, TraceHop, TraceNode, TraceTree};
+use crate::trace::server_target_from_hop;
+use crate::{TraceConfig, TraceNode, TraceTree};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefreshHopResult {
@@ -55,21 +55,31 @@ pub fn refresh_tree_rtts(
     progress: &mut dyn RefreshProgress,
 ) -> RefreshTreeReport {
     let mut snapshots = Vec::new();
-    collect_hop_snapshots(&tree.root, &[], &mut snapshots);
-    let total = snapshots.len();
+    let mut parse_failures = Vec::new();
+    collect_hop_snapshots(&tree.root, &[], &mut snapshots, &mut parse_failures);
+    let total = snapshots.len() + parse_failures.len();
     let max_parallel = config.max_parallel_queries.max(1);
-    let outcomes = if max_parallel == 1 {
+    let mut outcomes = parse_failures;
+    let queried = if max_parallel == 1 {
         snapshots
             .into_iter()
             .enumerate()
             .map(|(index, snapshot)| {
-                progress.hop_started(index + 1, total);
+                progress.hop_started(outcomes.len() + index + 1, total);
                 query_hop_nocache(config, snapshot)
             })
             .collect()
     } else {
-        refresh_parallel(config, snapshots, max_parallel, progress)
+        refresh_parallel(
+            config,
+            snapshots,
+            max_parallel,
+            progress,
+            outcomes.len(),
+            total,
+        )
     };
+    outcomes.extend(queried);
 
     let mut hops_updated = 0usize;
     let mut hops_failed = 0usize;
@@ -110,9 +120,10 @@ fn refresh_parallel(
     snapshots: Vec<HopSnapshot>,
     max_parallel: usize,
     progress: &mut dyn RefreshProgress,
+    completed: usize,
+    total: usize,
 ) -> Vec<HopQueryOutcome> {
-    let total = snapshots.len();
-    let mut outcomes = Vec::with_capacity(total);
+    let mut outcomes = Vec::with_capacity(snapshots.len());
     let mut next_index = 0usize;
     while next_index < snapshots.len() {
         let batch_end = (next_index + max_parallel).min(snapshots.len());
@@ -131,7 +142,7 @@ fn refresh_parallel(
         });
         for outcome in batch_outcomes {
             outcomes.push(outcome);
-            progress.hop_started(outcomes.len(), total);
+            progress.hop_started(completed + outcomes.len(), total);
         }
         next_index = batch_end;
     }
@@ -157,24 +168,36 @@ fn query_hop_nocache(config: &TraceConfig, snapshot: HopSnapshot) -> HopQueryOut
     }
 }
 
-fn collect_hop_snapshots(node: &TraceNode, prefix: &[usize], out: &mut Vec<HopSnapshot>) {
-    if let Some(snapshot) = hop_snapshot(node, prefix) {
-        out.push(snapshot);
+fn collect_hop_snapshots(
+    node: &TraceNode,
+    prefix: &[usize],
+    out: &mut Vec<HopSnapshot>,
+    failures: &mut Vec<HopQueryOutcome>,
+) {
+    match hop_snapshot(node, prefix) {
+        Ok(snapshot) => out.push(snapshot),
+        Err(error) => failures.push(HopQueryOutcome {
+            path: prefix.to_vec(),
+            previous_rtt_ms: node.hop.rtt_ms,
+            result: Err(error),
+        }),
     }
     for (index, child) in node.children.iter().enumerate() {
         let mut child_prefix = prefix.to_vec();
         child_prefix.push(index);
-        collect_hop_snapshots(child, &child_prefix, out);
+        collect_hop_snapshots(child, &child_prefix, out, failures);
     }
 }
 
-fn hop_snapshot(node: &TraceNode, path: &[usize]) -> Option<HopSnapshot> {
+fn hop_snapshot(node: &TraceNode, path: &[usize]) -> Result<HopSnapshot, String> {
     let hop = &node.hop;
-    let server = IpAddr::from_str(&hop.server).ok()?;
-    let qname = DomainName::parse(&hop.qname).ok()?;
-    let qtype = parse_record_type(&hop.qtype).ok()?;
+    let server = server_target_from_hop(hop)
+        .map_err(|error| error.to_string())?
+        .address;
+    let qname = DomainName::parse(&hop.qname).map_err(|error| error.to_string())?;
+    let qtype = parse_record_type(&hop.qtype).map_err(|error| error.to_string())?;
     let transport = transport_from_hop(hop);
-    Some(HopSnapshot {
+    Ok(HopSnapshot {
         path: path.to_vec(),
         server,
         qname,
@@ -184,7 +207,7 @@ fn hop_snapshot(node: &TraceNode, path: &[usize]) -> Option<HopSnapshot> {
     })
 }
 
-fn transport_from_hop(hop: &TraceHop) -> Transport {
+fn transport_from_hop(hop: &crate::TraceHop) -> Transport {
     match hop.transport.to_ascii_lowercase().as_str() {
         "tcp" => Transport::Tcp,
         _ => Transport::Udp,
