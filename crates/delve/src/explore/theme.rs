@@ -165,4 +165,36 @@ impl Theme {
             Style::default().add_modifier(Modifier::BOLD)
         }
     }
+
+    pub fn rtt_green(&self) -> Style {
+        if self.color_enabled {
+            Style::default().fg(Color::Green)
+        } else {
+            Style::default()
+        }
+    }
+
+    pub fn rtt_yellow(&self) -> Style {
+        if self.color_enabled {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default()
+        }
+    }
+
+    pub fn rtt_orange(&self) -> Style {
+        if self.color_enabled {
+            Style::default().fg(Color::Rgb(255, 165, 0))
+        } else {
+            Style::default()
+        }
+    }
+
+    pub fn rtt_red(&self) -> Style {
+        if self.color_enabled {
+            Style::default().fg(Color::Red)
+        } else {
+            Style::default()
+        }
+    }
 }

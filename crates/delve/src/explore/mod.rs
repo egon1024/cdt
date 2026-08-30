@@ -1,9 +1,11 @@
+mod compare;
 mod detail;
 mod dig_view;
 mod flags;
 mod json;
 mod outline;
 mod pane_split;
+mod rtt_bar;
 mod terminal;
 mod theme;
 mod tree;

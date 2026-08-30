@@ -148,7 +148,27 @@ session:
   retention: 180d
 trace:
   max_parallel_queries: 8
+explore:
+  rtt_bar:
+    green_ms: 50
+    yellow_ms: 150
+    orange_ms: 500
+    insane_ms: 2000
+    max_width: 20
 ```
+
+### `explore.rtt_bar`
+
+Colors and scale for the **Compare** screen latency bars (`█` characters). Bar length is proportional to RTT, scaled to `insane_ms`. Each character is colored by the RTT it represents:
+
+| Threshold | Bar color |
+|-----------|-----------|
+| `green_ms` | Green — typical fast query |
+| `yellow_ms` | Yellow — a little slow |
+| `orange_ms` | Orange — unusually slow |
+| `insane_ms` | Red — bar scale cap; longer RTTs fill the bar to full width |
+
+Defaults: `50`, `150`, `500`, `2000` ms; `max_width` **20** characters.
 
 ### `trace.max_parallel_queries`
 
@@ -203,7 +223,7 @@ delve session show --json          # flat JSON for the default session
 
 | Command | Output |
 |---------|--------|
-| **`session explore`** | TUI with colored tree + dig-style detail pane; session id in title bar; `?` help, `c` toggle colors, `Tab` / `Shift-Tab` cycle panes |
+| **`session explore`** | TUI with Browse (tree + detail) and Compare (full tree, aligned columns, RTT bars); `Tab` cycles screens; `?` help |
 | **`session outline`** | `session: <id>` header + indented tree on stdout |
 | **`session events`** | Structured JSON explore tree on stdout |
 | **`session show --json`** | Flat JSON trace snapshot on stdout |

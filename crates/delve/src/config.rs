@@ -5,6 +5,49 @@ use crate::paths::DelvePaths;
 const DEFAULT_RETENTION: &str = "180d";
 const DEFAULT_MAX_QUERIES: usize = 64;
 const DEFAULT_MAX_PARALLEL_QUERIES: usize = 8;
+const DEFAULT_RTT_GREEN_MS: u32 = 50;
+const DEFAULT_RTT_YELLOW_MS: u32 = 150;
+const DEFAULT_RTT_ORANGE_MS: u32 = 500;
+const DEFAULT_RTT_INSANE_MS: u32 = 2000;
+const DEFAULT_RTT_BAR_WIDTH: u16 = 20;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RttBarConfig {
+    pub green_ms: u32,
+    pub yellow_ms: u32,
+    pub orange_ms: u32,
+    pub insane_ms: u32,
+    pub max_width: u16,
+}
+
+impl Default for RttBarConfig {
+    fn default() -> Self {
+        Self {
+            green_ms: DEFAULT_RTT_GREEN_MS,
+            yellow_ms: DEFAULT_RTT_YELLOW_MS,
+            orange_ms: DEFAULT_RTT_ORANGE_MS,
+            insane_ms: DEFAULT_RTT_INSANE_MS,
+            max_width: DEFAULT_RTT_BAR_WIDTH,
+        }
+    }
+}
+
+impl RttBarConfig {
+    pub fn normalized(self) -> Self {
+        let green_ms = self.green_ms.max(1);
+        let yellow_ms = self.yellow_ms.max(green_ms + 1);
+        let orange_ms = self.orange_ms.max(yellow_ms + 1);
+        let insane_ms = self.insane_ms.max(orange_ms + 1);
+        let max_width = self.max_width.clamp(4, 40);
+        Self {
+            green_ms,
+            yellow_ms,
+            orange_ms,
+            insane_ms,
+            max_width,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionRetention {
@@ -21,6 +64,7 @@ pub struct DelveConfig {
     /// Used by explore view-state persistence (Phase 5).
     #[allow(dead_code)]
     pub explore_persist_view_state: bool,
+    pub explore_rtt_bar: RttBarConfig,
 }
 
 impl Default for DelveConfig {
@@ -30,6 +74,7 @@ impl Default for DelveConfig {
             trace_max_queries_per_action: DEFAULT_MAX_QUERIES,
             trace_max_parallel_queries: DEFAULT_MAX_PARALLEL_QUERIES,
             explore_persist_view_state: true,
+            explore_rtt_bar: RttBarConfig::default(),
         }
     }
 }
@@ -58,6 +103,16 @@ struct TraceSection {
 #[derive(Debug, Deserialize, Default)]
 struct ExploreSection {
     persist_view_state: Option<bool>,
+    rtt_bar: Option<RttBarSection>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RttBarSection {
+    green_ms: Option<u32>,
+    yellow_ms: Option<u32>,
+    orange_ms: Option<u32>,
+    insane_ms: Option<u32>,
+    max_width: Option<u16>,
 }
 
 impl DelveConfig {
@@ -129,6 +184,7 @@ impl DelveConfig {
         };
 
         let explore_persist_view_state = parsed.explore.persist_view_state.unwrap_or(true);
+        let explore_rtt_bar = parse_rtt_bar_config(parsed.explore.rtt_bar, &mut warnings);
 
         (
             Self {
@@ -136,10 +192,42 @@ impl DelveConfig {
                 trace_max_queries_per_action,
                 trace_max_parallel_queries,
                 explore_persist_view_state,
+                explore_rtt_bar,
             },
             warnings,
         )
     }
+}
+
+fn parse_rtt_bar_config(
+    section: Option<RttBarSection>,
+    warnings: &mut Vec<String>,
+) -> RttBarConfig {
+    let defaults = RttBarConfig::default();
+    let section = section.unwrap_or_default();
+    let mut config = RttBarConfig {
+        green_ms: section.green_ms.unwrap_or(defaults.green_ms),
+        yellow_ms: section.yellow_ms.unwrap_or(defaults.yellow_ms),
+        orange_ms: section.orange_ms.unwrap_or(defaults.orange_ms),
+        insane_ms: section.insane_ms.unwrap_or(defaults.insane_ms),
+        max_width: section.max_width.unwrap_or(defaults.max_width),
+    };
+    if section.green_ms.is_some()
+        || section.yellow_ms.is_some()
+        || section.orange_ms.is_some()
+        || section.insane_ms.is_some()
+    {
+        let normalized = config.normalized();
+        if normalized != config {
+            warnings.push(
+                "warning: explore.rtt_bar thresholds adjusted to be strictly increasing".into(),
+            );
+        }
+        config = normalized;
+    } else if section.max_width.is_some() {
+        config.max_width = config.max_width.clamp(4, 40);
+    }
+    config
 }
 
 pub fn parse_retention(raw: &str) -> Result<SessionRetention, String> {
@@ -201,5 +289,15 @@ mod tests {
     #[test]
     fn default_persist_view_state_is_true() {
         assert!(DelveConfig::default().explore_persist_view_state);
+    }
+
+    #[test]
+    fn default_rtt_bar_config_matches_expected_thresholds() {
+        let config = DelveConfig::default().explore_rtt_bar;
+        assert_eq!(config.green_ms, 50);
+        assert_eq!(config.yellow_ms, 150);
+        assert_eq!(config.orange_ms, 500);
+        assert_eq!(config.insane_ms, 2000);
+        assert_eq!(config.max_width, 20);
     }
 }
