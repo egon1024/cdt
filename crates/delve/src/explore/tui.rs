@@ -653,11 +653,9 @@ fn handle_compare_keys(key: event::KeyEvent, view: &mut ViewStateController, tre
         .map(|node| node.children.len())
         .unwrap_or(0);
     match key.code {
-        KeyCode::Down | KeyCode::Char('j') => {
-            if view.compare_row + 1 < row_count {
-                view.compare_row += 1;
-                view.mark_dirty();
-            }
+        KeyCode::Down | KeyCode::Char('j') if view.compare_row + 1 < row_count => {
+            view.compare_row += 1;
+            view.mark_dirty();
         }
         KeyCode::Up | KeyCode::Char('k') => {
             view.compare_row = view.compare_row.saturating_sub(1);
