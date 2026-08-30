@@ -591,6 +591,12 @@ fn handle_browse_keys(
     detail_scroll: &mut u16,
     tree_scroll_x: &mut u16,
 ) {
+    if key.code == KeyCode::Char('w') {
+        view.browse_pane = view.browse_pane.cycle_forward();
+        view.mark_dirty();
+        return;
+    }
+
     if view.browse_pane == BrowsePane::Detail {
         match key.code {
             KeyCode::Down | KeyCode::Char('j') => {
@@ -614,10 +620,6 @@ fn handle_browse_keys(
     }
 
     match key.code {
-        KeyCode::Char('w') => {
-            view.browse_pane = view.browse_pane.cycle_forward();
-            view.mark_dirty();
-        }
         KeyCode::Down | KeyCode::Char('j') if selected_index + 1 < visible.len() => {
             view.set_selection_visible_index(tree, selected_index + 1);
             *detail_scroll = 0;
@@ -748,9 +750,9 @@ fn render_browse(
 
     let detail_lines = detail_content(tree, visible.get(selected_index), theme);
     let detail_title = if view.browse_pane == BrowsePane::Detail {
-        "Details  [focused — j/k scroll]".to_string()
+        "Details  [w toggles focus — j/k scroll when focused]".to_string()
     } else {
-        "Details  [w to focus]".to_string()
+        "Details  [w toggles focus]".to_string()
     };
     let detail_widget = Paragraph::new(detail_lines)
         .block(
@@ -1033,7 +1035,7 @@ fn help_lines(view: &ViewStateController, theme: &Theme) -> Vec<Line<'static>> {
     if view.active_screen == ActiveScreen::Browse {
         lines.extend([
             help_section("Browse", theme),
-            help_binding("w", "Focus detail pane", theme),
+            help_binding("w", "Toggle tree/detail focus", theme),
             help_binding("j/k, ↑/↓", "Move selection", theme),
             help_binding("Space, Enter", "Toggle expand", theme),
             help_binding("E / C", "Expand all / collapse all", theme),
@@ -1098,6 +1100,34 @@ mod tests {
         let pane = BrowsePane::Tree;
         assert_eq!(pane.cycle_forward(), BrowsePane::Detail);
         assert_eq!(BrowsePane::Detail.cycle_forward(), BrowsePane::Tree);
+    }
+
+    #[test]
+    fn browse_w_toggles_focus_from_detail_pane() {
+        let tree = super::super::tree::build_explore_tree(&dns_resolve::build_linear_tree(
+            vec![sample_hop()],
+            dns_resolve::TraceTreeRequest {
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                started_at: "2026-08-25T00:00:00Z".into(),
+            },
+        ));
+        let mut view = ViewStateController::default_for_tree(&tree);
+        let visible = tree.visible_nodes(&view.expanded_paths);
+        let mut detail_scroll = 0;
+        let mut tree_scroll_x = 0;
+
+        view.browse_pane = BrowsePane::Detail;
+        handle_browse_keys(
+            event::KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE),
+            &mut view,
+            &tree,
+            &visible,
+            0,
+            &mut detail_scroll,
+            &mut tree_scroll_x,
+        );
+        assert_eq!(view.browse_pane, BrowsePane::Tree);
     }
 
     #[test]
