@@ -244,8 +244,10 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
             Ok(())
         }
         SessionSubcommand::Purge(args) => {
-            let report = runtime.purge_sessions(args.all, args.dry_run)?;
-            let noun = if args.all {
+            let report = runtime.purge_sessions(args.id.as_deref(), args.all, args.dry_run)?;
+            let noun = if args.id.is_some() {
+                "session"
+            } else if args.all {
                 "unpinned sessions"
             } else {
                 "sessions"

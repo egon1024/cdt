@@ -45,7 +45,7 @@ With `+events`, reuse replays stored hop events and emits a final `complete` eve
 
 Unpinned sessions are subject to **retention** (`session.retention` in config; default **180d**). Purge runs when the session store is opened (any command that touches sessions). **Pinned** sessions are skipped by automatic retention and by `delve session purge` (but not by explicit `delve session rm <id>`).
 
-Use `delve session pin <id>` to keep a session across retention. Use `delve session purge --all` to remove every unpinned session regardless of age.
+Use `delve session pin <id>` to keep a session across retention. Use `delve session purge --all` to remove every unpinned session regardless of age. Use `delve session purge <id>` to apply retention to one session (skips pinned sessions and sessions still within retention).
 
 ## Response cache
 
@@ -82,6 +82,7 @@ Installed packages also ship `man delve` (CLI synopsis) and this guide at `/usr/
 | `delve session pin <id>` | Exempt from retention purge |
 | `delve session unpin <id>` | Allow retention purge again |
 | `delve session purge` | Apply retention policy now |
+| `delve session purge <id>` | Apply retention to one session (skips pinned and in-retention sessions) |
 | `delve session purge --all` | Remove all unpinned sessions |
 | `delve session purge --dry-run` | Report what would be removed |
 | `delve session explore [id]` | Interactive tree explorer (TUI); omit id for the default session |
@@ -169,7 +170,7 @@ When sessions are removed, stderr shows a notice only if the count is greater th
 purged 3 sessions older than 180d
 ```
 
-Manual removal: `delve session rm <id>`, `delve session purge`, or `delve session purge --all` (unpinned only; pinned sessions are kept).
+Manual removal: `delve session rm <id>`, `delve session purge`, `delve session purge <id>`, or `delve session purge --all` (unpinned only for purge; pinned sessions are kept unless you use `rm`).
 
 ## Session explore, outline, and events
 

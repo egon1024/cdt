@@ -279,6 +279,49 @@ impl SessionStore for SqliteSessionStore {
         })
     }
 
+    fn purge_session(
+        &mut self,
+        id: &str,
+        retention: SessionRetention,
+        dry_run: bool,
+    ) -> Result<PurgeReport> {
+        if retention == SessionRetention::Never {
+            return Ok(PurgeReport {
+                removed: 0,
+                skipped_unparseable: 0,
+            });
+        }
+
+        let document = self.get(id)?;
+        if document.pinned {
+            return Ok(PurgeReport {
+                removed: 0,
+                skipped_unparseable: 0,
+            });
+        }
+
+        let now = OffsetDateTime::now_utc();
+        match is_expired(&document.updated_at, retention, now) {
+            Some(true) => {
+                if !dry_run {
+                    self.remove(id)?;
+                }
+                Ok(PurgeReport {
+                    removed: 1,
+                    skipped_unparseable: 0,
+                })
+            }
+            Some(false) => Ok(PurgeReport {
+                removed: 0,
+                skipped_unparseable: 0,
+            }),
+            None => Ok(PurgeReport {
+                removed: 0,
+                skipped_unparseable: 1,
+            }),
+        }
+    }
+
     fn purge_all(&mut self, dry_run: bool) -> Result<PurgeReport> {
         let ids = self.all_ids()?;
         let mut removed = 0;
@@ -498,6 +541,48 @@ mod tests {
         assert_eq!(report.removed, 1);
         assert!(store.get(&old_id).is_err());
         assert!(store.get(&pinned_id).is_ok());
+    }
+
+    #[test]
+    fn purge_session_applies_retention_to_one_session() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("sessions.sqlite");
+        let mut store = SqliteSessionStore::open(&path).expect("open");
+        let old_id = store
+            .save(&sample_result("2020-01-01T00:00:00Z"), &sample_request())
+            .expect("old");
+        let recent_id = store
+            .save(&sample_result("2026-08-25T00:00:00Z"), &sample_request())
+            .expect("recent");
+
+        let report = store
+            .purge_session(&old_id, SessionRetention::Days(30), false)
+            .expect("purge old");
+        assert_eq!(report.removed, 1);
+        assert!(store.get(&old_id).is_err());
+        assert!(store.get(&recent_id).is_ok());
+
+        let report = store
+            .purge_session(&recent_id, SessionRetention::Days(30), false)
+            .expect("purge recent");
+        assert_eq!(report.removed, 0);
+        assert!(store.get(&recent_id).is_ok());
+    }
+
+    #[test]
+    fn purge_session_skips_pinned_session() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("sessions.sqlite");
+        let mut store = SqliteSessionStore::open(&path).expect("open");
+        let id = store
+            .save(&sample_result("2020-01-01T00:00:00Z"), &sample_request())
+            .expect("save");
+        store.set_pinned(&id, true).expect("pin");
+        let report = store
+            .purge_session(&id, SessionRetention::Days(30), false)
+            .expect("purge");
+        assert_eq!(report.removed, 0);
+        assert!(store.get(&id).is_ok());
     }
 
     #[test]

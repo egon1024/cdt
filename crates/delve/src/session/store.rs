@@ -50,6 +50,12 @@ pub trait SessionStore: Send {
         retention: SessionRetention,
         dry_run: bool,
     ) -> Result<PurgeReport>;
+    fn purge_session(
+        &mut self,
+        id: &str,
+        retention: SessionRetention,
+        dry_run: bool,
+    ) -> Result<PurgeReport>;
     fn purge_all(&mut self, dry_run: bool) -> Result<PurgeReport>;
 }
 
@@ -95,6 +101,16 @@ impl SessionStore for OpenSessionStore {
         dry_run: bool,
     ) -> Result<PurgeReport> {
         self.inner.purge_by_retention(retention, dry_run)
+    }
+
+    fn purge_session(
+        &mut self,
+        id: &str,
+        retention: SessionRetention,
+        dry_run: bool,
+    ) -> Result<PurgeReport> {
+        let resolved = self.resolve_lookup_id(id)?;
+        self.inner.purge_session(&resolved, retention, dry_run)
     }
 
     fn purge_all(&mut self, dry_run: bool) -> Result<PurgeReport> {
