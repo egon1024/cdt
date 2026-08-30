@@ -470,7 +470,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                 }
 
                 match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => break,
+                    KeyCode::Char('q') => break,
                     KeyCode::Char('?') => show_help = true,
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
                     KeyCode::Char('c') => {
@@ -1014,21 +1014,12 @@ fn handle_compare_keys(
             view.compare_fork = tree.compare_fork(&view.selection).map(|fork| fork.at);
             sync_compare_scroll(compare_scroll, new_index, visible.len(), scroll_limits);
         }
-        KeyCode::PageDown => {
-            *compare_scroll = (*compare_scroll + 10).min(scroll_limits.max_scroll);
-        }
-        KeyCode::PageUp => {
-            *compare_scroll = compare_scroll.saturating_sub(10);
-        }
         KeyCode::Char(' ') => {
             if let Some(node) = visible.get(selected_index)
                 && node.expandable
             {
                 view.toggle_expansion(&node.path);
             }
-        }
-        KeyCode::Home => {
-            *compare_scroll = 0;
         }
         KeyCode::Enter => {
             view.active_screen = ActiveScreen::Browse;
@@ -1599,7 +1590,7 @@ fn help_lines(view: &ViewStateController, theme: &Theme) -> Vec<Line<'static>> {
     let mut lines = vec![
         help_section("Global", theme),
         help_binding("?", "Show this help", theme),
-        help_binding("q, Esc", "Quit", theme),
+        help_binding("q", "Quit", theme),
         help_binding("Ctrl+C", "Quit", theme),
         help_binding("c", "Toggle colors", theme),
         help_binding("Tab / Shift-Tab", "Cycle screens", theme),
@@ -1635,11 +1626,10 @@ fn help_lines(view: &ViewStateController, theme: &Theme) -> Vec<Line<'static>> {
     } else {
         lines.extend([
             help_section("Compare", theme),
-            help_binding("j/k, ↑/↓", "Move selection", theme),
+            help_binding("j/k, ↑/↓", "Move selection (scrolls view)", theme),
             help_binding("Space", "Toggle expand", theme),
             help_binding("E / C", "Expand all / collapse all", theme),
             help_binding("Enter", "Return to Browse", theme),
-            help_binding("PgUp/PgDn", "Scroll compare view", theme),
             help_binding("F", "Toggle fork full-path stats panel", theme),
             help_binding("B", "Toggle fork sibling hop RTT panel", theme),
             help_binding("f / s", "Highlight fastest / slowest answered path", theme),
