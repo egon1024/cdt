@@ -10,7 +10,7 @@ use crossterm::terminal::{
 use dns_resolve::{HopOutcome, NodePath, TraceHop, TraceProgress};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::block::BorderType;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
@@ -29,6 +29,12 @@ use super::terminal::{cache_source_legend, cache_source_symbol};
 use super::theme::Theme;
 use super::tree::{ExploreTree, VisibleNode};
 use super::view_state::{ActiveScreen, BrowsePane, ViewStateController, apply_view_state};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BrowseScrollLimits {
+    detail_max_scroll: u16,
+    tree_max_scroll_x: u16,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BranchOverlay {
@@ -140,6 +146,16 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
         if selected_index >= visible.len() {
             view.set_selection_visible_index(&tree, visible.len().saturating_sub(1));
         }
+
+        let scroll_limits = browse_scroll_limits(
+            Rect::from((Position::ORIGIN, terminal.size()?)),
+            &tree,
+            &visible,
+            selected_index,
+            &theme,
+        );
+        detail_scroll = detail_scroll.min(scroll_limits.detail_max_scroll);
+        tree_scroll_x = tree_scroll_x.min(scroll_limits.tree_max_scroll_x);
 
         terminal.draw(|frame| {
             let header = screen_indicator(&view, &tree, &theme);
@@ -354,6 +370,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                 selected_index,
                                 &mut detail_scroll,
                                 &mut tree_scroll_x,
+                                scroll_limits,
                             );
                         } else {
                             handle_compare_keys(key, &mut view, &tree);
@@ -582,6 +599,105 @@ fn jump_to_compare(
     select_screen(view, ActiveScreen::Compare, tree, message);
 }
 
+fn browse_body_area(terminal_area: Rect) -> Rect {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(terminal_area)[1]
+}
+
+fn browse_pane_areas(body_area: Rect) -> (Rect, Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(body_area);
+    (chunks[0], chunks[1])
+}
+
+fn browse_scroll_limits(
+    terminal_area: Rect,
+    tree: &ExploreTree,
+    visible: &[VisibleNode],
+    selected_index: usize,
+    theme: &Theme,
+) -> BrowseScrollLimits {
+    let (tree_area, detail_area) = browse_pane_areas(browse_body_area(terminal_area));
+
+    let color_hint = if theme.color_enabled { "on" } else { "off" };
+    let tree_title = format!("{} {}  [tree]  color:{color_hint}", tree.qname, tree.qtype);
+    let tree_block = Block::default()
+        .title(tree_title)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded);
+    let tree_inner = tree_block.inner(tree_area);
+    let mut max_line_width = 0usize;
+    for node in visible {
+        let indent = "  ".repeat(node.depth);
+        let marker = if node.expandable {
+            if node.expanded {
+                theme.symbols.tree_expand
+            } else {
+                theme.symbols.tree_collapse
+            }
+        } else {
+            "  "
+        };
+        let hop = tree.hop_at(&node.path).expect("visible node hop");
+        let line = hop_tree_line(&indent, marker, hop, theme);
+        max_line_width = max_line_width.max(line_display_width(&line));
+    }
+    let tree_max_scroll_x = max_horizontal_scroll(max_line_width, tree_inner.width);
+
+    let detail_title = "Details";
+    let detail_block = Block::default()
+        .title(detail_title)
+        .title_bottom(footer_line(theme).centered())
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded);
+    let detail_inner = detail_block.inner(detail_area);
+    let detail_lines = detail_content(tree, visible.get(selected_index), theme);
+    let detail_max_scroll = max_vertical_scroll(
+        wrapped_line_count(&detail_lines, detail_inner.width),
+        detail_inner.height,
+    );
+
+    BrowseScrollLimits {
+        detail_max_scroll,
+        tree_max_scroll_x,
+    }
+}
+
+fn wrapped_line_count(lines: &[Line<'_>], width: u16) -> usize {
+    let width = width as usize;
+    if width == 0 {
+        return lines.len();
+    }
+    lines
+        .iter()
+        .map(|line| {
+            let line_width = line_display_width(line);
+            if line_width == 0 {
+                1
+            } else {
+                line_width.div_ceil(width)
+            }
+        })
+        .sum()
+}
+
+fn max_vertical_scroll(wrapped_lines: usize, inner_height: u16) -> u16 {
+    wrapped_lines
+        .saturating_sub(inner_height as usize)
+        .min(u16::MAX as usize) as u16
+}
+
+fn max_horizontal_scroll(line_width: usize, inner_width: u16) -> u16 {
+    line_width
+        .saturating_sub(inner_width as usize)
+        .min(u16::MAX as usize) as u16
+}
+
+#[allow(clippy::too_many_arguments)]
 fn handle_browse_keys(
     key: event::KeyEvent,
     view: &mut ViewStateController,
@@ -590,6 +706,7 @@ fn handle_browse_keys(
     selected_index: usize,
     detail_scroll: &mut u16,
     tree_scroll_x: &mut u16,
+    scroll_limits: BrowseScrollLimits,
 ) {
     if key.code == KeyCode::Char('w') {
         view.browse_pane = view.browse_pane.cycle_forward();
@@ -600,13 +717,13 @@ fn handle_browse_keys(
     if view.browse_pane == BrowsePane::Detail {
         match key.code {
             KeyCode::Down | KeyCode::Char('j') => {
-                *detail_scroll = detail_scroll.saturating_add(1);
+                *detail_scroll = (*detail_scroll + 1).min(scroll_limits.detail_max_scroll);
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 *detail_scroll = detail_scroll.saturating_sub(1);
             }
             KeyCode::PageDown | KeyCode::Char(' ') => {
-                *detail_scroll = detail_scroll.saturating_add(10);
+                *detail_scroll = (*detail_scroll + 10).min(scroll_limits.detail_max_scroll);
             }
             KeyCode::PageUp => {
                 *detail_scroll = detail_scroll.saturating_sub(10);
@@ -632,7 +749,7 @@ fn handle_browse_keys(
             *tree_scroll_x = tree_scroll_x.saturating_sub(1);
         }
         KeyCode::Right | KeyCode::Char('l') => {
-            *tree_scroll_x = tree_scroll_x.saturating_add(1);
+            *tree_scroll_x = (*tree_scroll_x + 1).min(scroll_limits.tree_max_scroll_x);
         }
         KeyCode::Enter | KeyCode::Char(' ') => {
             if let Some(node) = visible.get(selected_index)
@@ -698,9 +815,10 @@ fn render_browse(
         .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
         .split(area);
 
-    let tree_viewport_width = chunks[0].width.saturating_sub(2);
+    let color_hint = if theme.color_enabled { "on" } else { "off" };
+    let session_hint = format!("session:{session_id}  ");
     let mut max_line_width = 0usize;
-    let mut tree_rows = Vec::with_capacity(visible.len());
+    let mut raw_tree_lines = Vec::with_capacity(visible.len());
 
     for (index, node) in visible.iter().enumerate() {
         let indent = "  ".repeat(node.depth);
@@ -716,36 +834,39 @@ fn render_browse(
         let hop = tree.hop_at(&node.path).expect("visible node hop");
         let line = hop_tree_line(&indent, marker, hop, theme);
         max_line_width = max_line_width.max(line_display_width(&line));
-        let line = if view.browse_pane == BrowsePane::Tree && index == selected_index {
-            apply_tree_selection(line, theme)
-        } else {
-            line
-        };
-        tree_rows.push(scroll_line(line, tree_scroll_x));
+        let selected = view.browse_pane == BrowsePane::Tree && index == selected_index;
+        raw_tree_lines.push((line, selected));
     }
 
-    let _max_tree_scroll = max_line_width
-        .saturating_sub(tree_viewport_width as usize)
-        .min(u16::MAX as usize) as u16;
-
-    let color_hint = if theme.color_enabled { "on" } else { "off" };
-    let session_hint = format!("session:{session_id}  ");
     let tree_title = format!(
         "{session_hint}{} {}  [tree]  color:{color_hint}",
         tree.qname, tree.qtype
     );
-    let tree_widget = List::new(tree_rows.into_iter().map(ListItem::new).collect::<Vec<_>>())
-        .block(
-            Block::default()
-                .title(tree_title)
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(if view.browse_pane == BrowsePane::Tree {
-                    theme.border_focused()
-                } else {
-                    theme.border_unfocused()
-                }),
-        );
+    let tree_block = Block::default()
+        .title(tree_title)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(if view.browse_pane == BrowsePane::Tree {
+            theme.border_focused()
+        } else {
+            theme.border_unfocused()
+        });
+    let tree_inner = tree_block.inner(chunks[0]);
+    let clamped_tree_scroll_x =
+        tree_scroll_x.min(max_horizontal_scroll(max_line_width, tree_inner.width));
+    let tree_rows = raw_tree_lines
+        .into_iter()
+        .map(|(line, selected)| {
+            let line = if selected {
+                apply_tree_selection(line, theme)
+            } else {
+                line
+            };
+            ListItem::new(scroll_line(line, clamped_tree_scroll_x))
+        })
+        .collect::<Vec<_>>();
+
+    let tree_widget = List::new(tree_rows).block(tree_block);
     frame.render_widget(tree_widget, chunks[0]);
 
     let detail_lines = detail_content(tree, visible.get(selected_index), theme);
@@ -754,21 +875,26 @@ fn render_browse(
     } else {
         "Details  [w toggles focus]".to_string()
     };
+    let detail_block = Block::default()
+        .title(detail_title)
+        .title_bottom(footer_line(theme).centered())
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(if view.browse_pane == BrowsePane::Detail {
+            theme.border_focused()
+        } else {
+            theme.border_unfocused()
+        });
+    let detail_inner = detail_block.inner(chunks[1]);
+    let detail_max_scroll = max_vertical_scroll(
+        wrapped_line_count(&detail_lines, detail_inner.width),
+        detail_inner.height,
+    );
+    let clamped_detail_scroll = detail_scroll.min(detail_max_scroll);
     let detail_widget = Paragraph::new(detail_lines)
-        .block(
-            Block::default()
-                .title(detail_title)
-                .title_bottom(footer_line(theme).centered())
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(if view.browse_pane == BrowsePane::Detail {
-                    theme.border_focused()
-                } else {
-                    theme.border_unfocused()
-                }),
-        )
+        .block(detail_block)
         .wrap(Wrap { trim: false })
-        .scroll((detail_scroll, 0));
+        .scroll((clamped_detail_scroll, 0));
     frame.render_widget(detail_widget, chunks[1]);
 }
 
@@ -1103,6 +1229,47 @@ mod tests {
     }
 
     #[test]
+    fn detail_scroll_max_is_zero_when_content_fits() {
+        let lines = vec![Line::from("short line")];
+        assert_eq!(max_vertical_scroll(wrapped_line_count(&lines, 80), 20), 0);
+    }
+
+    #[test]
+    fn detail_scroll_stops_at_bottom_when_pressing_down() {
+        let tree = super::super::tree::build_explore_tree(&dns_resolve::build_linear_tree(
+            vec![sample_hop()],
+            dns_resolve::TraceTreeRequest {
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                started_at: "2026-08-25T00:00:00Z".into(),
+            },
+        ));
+        let mut view = ViewStateController::default_for_tree(&tree);
+        let visible = tree.visible_nodes(&view.expanded_paths);
+        let mut detail_scroll = 0;
+        let mut tree_scroll_x = 0;
+        let limits = BrowseScrollLimits {
+            detail_max_scroll: 3,
+            tree_max_scroll_x: 0,
+        };
+
+        view.browse_pane = BrowsePane::Detail;
+        for _ in 0..20 {
+            handle_browse_keys(
+                event::KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+                &mut view,
+                &tree,
+                &visible,
+                0,
+                &mut detail_scroll,
+                &mut tree_scroll_x,
+                limits,
+            );
+        }
+        assert_eq!(detail_scroll, 3);
+    }
+
+    #[test]
     fn browse_w_toggles_focus_from_detail_pane() {
         let tree = super::super::tree::build_explore_tree(&dns_resolve::build_linear_tree(
             vec![sample_hop()],
@@ -1126,6 +1293,10 @@ mod tests {
             0,
             &mut detail_scroll,
             &mut tree_scroll_x,
+            BrowseScrollLimits {
+                detail_max_scroll: 0,
+                tree_max_scroll_x: 0,
+            },
         );
         assert_eq!(view.browse_pane, BrowsePane::Tree);
     }
