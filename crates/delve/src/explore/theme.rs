@@ -1,8 +1,11 @@
 use ratatui::style::{Color, Modifier, Style};
 
+use super::terminal::{self, ColorCapability};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Theme {
     pub color_enabled: bool,
+    pub color_capability: ColorCapability,
     pub symbols: super::terminal::UiSymbols,
 }
 
@@ -10,12 +13,25 @@ impl Theme {
     pub fn from_env() -> Self {
         Self {
             color_enabled: std::env::var("NO_COLOR").is_err(),
+            color_capability: terminal::detect_color_capability(),
             symbols: super::terminal::ui_symbols(),
         }
     }
 
     pub fn toggle_color(&mut self) {
         self.color_enabled = !self.color_enabled;
+    }
+
+    pub fn color_status_hint(&self) -> &'static str {
+        if !self.color_enabled {
+            "off"
+        } else {
+            match self.color_capability {
+                ColorCapability::Basic => "on",
+                ColorCapability::Indexed => "256",
+                ColorCapability::Truecolor => "rgb",
+            }
+        }
     }
 
     pub fn accent(&self) -> Style {

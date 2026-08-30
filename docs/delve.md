@@ -162,7 +162,12 @@ explore:
 Colors and fixed width for the **Compare** screen latency bars (`█` characters). The bar
 column is always `max_width` characters wide (default **20**). The longest RTT among
 visible hops fills the full width; other hops scale proportionally. Remaining space is
-blank. Each filled character is colored by the RTT it represents on that scale:
+blank. Each filled character is colored by the RTT it represents on that scale.
+
+On terminals that report **256-color** or **truecolor** support (or common modern
+emulators such as Kitty, WezTerm, iTerm, Windows Terminal), bars use a smooth
+**green → yellow → orange → red** gradient between the configured thresholds. Basic
+8/16-color terminals keep stepped bands instead.
 
 | Threshold | Bar color |
 |-----------|-----------|
@@ -173,6 +178,9 @@ blank. Each filled character is colored by the RTT it represents on that scale:
 
 `insane_ms` keeps color thresholds strictly ordered when config is normalized; it does
 not cap bar length.
+
+Override detection with `DELVE_TRUECOLOR=1` (force gradient) or `DELVE_BASIC_COLORS=1`
+(force stepped bands).
 
 Defaults: `green_ms` **50**, `yellow_ms` **150**, `orange_ms` **500**, `insane_ms`
 **2000**, `max_width` **20** characters.

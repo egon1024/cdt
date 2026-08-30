@@ -34,7 +34,7 @@ use super::path_timing::{
 };
 use super::refresh::refresh_document_tree;
 use super::rtt_bar::max_rtt_ms_for_visible;
-use super::terminal::{cache_source_legend, cache_source_symbol};
+use super::terminal::{ColorCapability, cache_source_legend, cache_source_symbol};
 use super::theme::Theme;
 use super::tree::{ExploreTree, VisibleNode};
 use super::view_state::{ActiveScreen, BrowsePane, ViewStateController, apply_view_state};
@@ -878,7 +878,7 @@ fn browse_scroll_limits(
 ) -> BrowseScrollLimits {
     let (tree_area, detail_area) = browse_pane_areas(browse_body_area(terminal_area), browse_split);
 
-    let color_hint = if theme.color_enabled { "on" } else { "off" };
+    let color_hint = theme.color_status_hint();
     let tree_title = format!("{} {}  [tree]  color:{color_hint}", tree.qname, tree.qtype);
     let tree_block = Block::default()
         .title(tree_title)
@@ -1271,7 +1271,7 @@ fn render_browse(
 ) {
     let (tree_area, detail_area) = view.browse_split.split(area);
 
-    let color_hint = if theme.color_enabled { "on" } else { "off" };
+    let color_hint = theme.color_status_hint();
     let session_hint = format!("session:{session_id}  ");
     let mut max_line_width = 0usize;
     let mut raw_tree_lines = Vec::with_capacity(visible.len());
@@ -1688,6 +1688,18 @@ fn help_lines(view: &ViewStateController, theme: &Theme) -> Vec<Line<'static>> {
             ),
             Line::from(""),
             help_section("RTT bar colors", theme),
+            help_binding(
+                "",
+                if matches!(
+                    theme.color_capability,
+                    ColorCapability::Indexed | ColorCapability::Truecolor
+                ) {
+                    "Smooth green→red gradient on capable terminals"
+                } else {
+                    "Stepped bands: green / yellow / orange / red"
+                },
+                theme,
+            ),
             help_binding("green", "≤ green_ms (config)", theme),
             help_binding("yellow", "≤ yellow_ms", theme),
             help_binding("orange", "≤ orange_ms", theme),

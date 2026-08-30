@@ -1,8 +1,9 @@
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::text::Span;
 
 use crate::config::RttBarConfig;
 
+use super::terminal::{self, ColorCapability};
 use super::theme::Theme;
 
 /// Fixed-width latency bar for Compare. `scale_max_rtt_ms` is the longest RTT among
@@ -52,10 +53,23 @@ pub fn max_rtt_ms_for_visible(
 }
 
 pub fn style_for_rtt(rtt_ms: u32, config: RttBarConfig, theme: &Theme) -> Style {
-    let config = config.normalized();
     if !theme.color_enabled {
         return Style::default();
     }
+    match theme.color_capability {
+        ColorCapability::Basic => style_for_rtt_stepped(rtt_ms, config, theme),
+        ColorCapability::Indexed => {
+            let (red, green, blue) = rtt_gradient_rgb(rtt_ms, config);
+            Style::default().fg(Color::Indexed(terminal::rgb_to_ansi256(red, green, blue)))
+        }
+        ColorCapability::Truecolor => {
+            let (red, green, blue) = rtt_gradient_rgb(rtt_ms, config);
+            Style::default().fg(Color::Rgb(red, green, blue))
+        }
+    }
+}
+
+fn style_for_rtt_stepped(rtt_ms: u32, config: RttBarConfig, theme: &Theme) -> Style {
     if rtt_ms <= config.green_ms {
         theme.rtt_green()
     } else if rtt_ms <= config.yellow_ms {
@@ -65,6 +79,48 @@ pub fn style_for_rtt(rtt_ms: u32, config: RttBarConfig, theme: &Theme) -> Style 
     } else {
         theme.rtt_red()
     }
+}
+
+fn rtt_gradient_rgb(rtt_ms: u32, config: RttBarConfig) -> (u8, u8, u8) {
+    let stops = [
+        (0, (72, 198, 108)),
+        (config.green_ms, (72, 198, 108)),
+        (config.yellow_ms, (255, 214, 48)),
+        (config.orange_ms, (255, 132, 32)),
+        (config.insane_ms, (214, 48, 48)),
+    ];
+    interpolate_color_stops(rtt_ms, &stops)
+}
+
+fn interpolate_color_stops(ms: u32, stops: &[(u32, (u8, u8, u8))]) -> (u8, u8, u8) {
+    if ms <= stops[0].0 {
+        return stops[0].1;
+    }
+    for window in stops.windows(2) {
+        let (start_ms, start_rgb) = window[0];
+        let (end_ms, end_rgb) = window[1];
+        if ms <= end_ms {
+            if end_ms == start_ms {
+                return end_rgb;
+            }
+            let t = (ms - start_ms) as f32 / (end_ms - start_ms) as f32;
+            return lerp_rgb(start_rgb, end_rgb, t);
+        }
+    }
+    stops.last().map(|(_, rgb)| *rgb).unwrap_or((214, 48, 48))
+}
+
+fn lerp_rgb(start: (u8, u8, u8), end: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
+    let t = t.clamp(0.0, 1.0);
+    (
+        lerp_channel(start.0, end.0, t),
+        lerp_channel(start.1, end.1, t),
+        lerp_channel(start.2, end.2, t),
+    )
+}
+
+fn lerp_channel(start: u8, end: u8, t: f32) -> u8 {
+    (f32::from(start) + (f32::from(end) - f32::from(start)) * t).round() as u8
 }
 
 #[cfg(test)]
@@ -102,6 +158,13 @@ mod tests {
             insane_ms: 500,
             max_width: 20,
         }
+    }
+
+    fn theme_with_capability(capability: ColorCapability) -> Theme {
+        let mut theme = Theme::from_env();
+        theme.color_enabled = true;
+        theme.color_capability = capability;
+        theme
     }
 
     #[test]
@@ -146,12 +209,31 @@ mod tests {
 
     #[test]
     fn filled_characters_receive_threshold_colors() {
-        let mut theme = Theme::from_env();
-        theme.color_enabled = true;
+        let theme = theme_with_capability(ColorCapability::Basic);
         let cfg = config();
         let spans = rtt_bar_spans(200, 200, cfg, &theme);
         assert!(spans[0].style != Style::default());
         assert!(spans[19].style != Style::default());
+    }
+
+    #[test]
+    fn truecolor_gradient_varies_across_bar() {
+        let theme = theme_with_capability(ColorCapability::Truecolor);
+        let cfg = config();
+        let spans = rtt_bar_spans(500, 500, cfg, &theme);
+        let first = spans[0].style.fg;
+        let last = spans[19].style.fg;
+        assert_ne!(first, last);
+        assert_eq!(first, Some(Color::Rgb(72, 198, 108)));
+        assert_eq!(last, Some(Color::Rgb(214, 48, 48)));
+    }
+
+    #[test]
+    fn gradient_interpolates_between_thresholds() {
+        let cfg = config();
+        let mid = rtt_gradient_rgb(75, cfg);
+        assert!(mid.0 > 72);
+        assert!(mid.1 < 214);
     }
 
     #[test]
