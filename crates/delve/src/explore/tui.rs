@@ -144,6 +144,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
     let mut branch_progress: Option<String> = None;
     let mut refresh_rx: Option<mpsc::Receiver<RefreshWorkerMessage>> = None;
     let mut refresh_progress: Option<(usize, usize)> = None;
+    let mut refresh_origin_screen: Option<ActiveScreen> = None;
     let mut refresh_overlay = RefreshOverlay::None;
     let mut unsaved_rtt_refresh = false;
     let mut persist_warning_shown = false;
@@ -227,7 +228,9 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                 if report.hops_updated > 0 || report.hops_failed > 0 {
                                     set_screen_notice(
                                         &mut screen_notice,
-                                        ActiveScreen::Compare,
+                                        refresh_origin_screen
+                                            .take()
+                                            .unwrap_or(ActiveScreen::Browse),
                                         format_refresh_report(&report),
                                     );
                                 }
@@ -235,7 +238,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                             Err(error) => {
                                 set_screen_notice(
                                     &mut screen_notice,
-                                    ActiveScreen::Compare,
+                                    refresh_origin_screen.take().unwrap_or(ActiveScreen::Browse),
                                     error.to_string(),
                                 );
                             }
@@ -246,6 +249,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
         }
         if refresh_finished {
             refresh_rx = None;
+            refresh_origin_screen = None;
         }
 
         if view.should_persist_now(false) {
@@ -339,9 +343,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                     branch_progress.as_deref(),
                 );
             }
-            if let Some((current, total)) = refresh_progress
-                && view.active_screen == ActiveScreen::Compare
-            {
+            if let Some((current, total)) = refresh_progress {
                 render_refresh_progress_overlay(frame, &theme, current, total);
             }
             if refresh_overlay == RefreshOverlay::ConfirmExitSave {
@@ -612,6 +614,15 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                         detail_scroll = 0;
                         compare_scroll = 0;
                     }
+                    KeyCode::Char('r') | KeyCode::Char('R') if refresh_rx.is_none() => {
+                        start_refresh(
+                            &paths,
+                            document,
+                            &mut refresh_rx,
+                            &mut refresh_origin_screen,
+                            view.active_screen,
+                        );
+                    }
                     KeyCode::Char('+') | KeyCode::Char('=') => {
                         if view.active_screen == ActiveScreen::Browse {
                             view.browse_split.grow_first();
@@ -654,9 +665,6 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                 &mut compare_scroll,
                                 compare_limits,
                                 &mut screen_notice,
-                                &mut refresh_rx,
-                                &paths,
-                                document,
                             );
                         }
                     }
@@ -772,9 +780,12 @@ fn start_refresh(
     paths: &DelvePaths,
     document: &SessionDocument,
     refresh_rx: &mut Option<mpsc::Receiver<RefreshWorkerMessage>>,
+    refresh_origin_screen: &mut Option<ActiveScreen>,
+    origin_screen: ActiveScreen,
 ) {
     let (tx, rx) = mpsc::channel();
     *refresh_rx = Some(rx);
+    *refresh_origin_screen = Some(origin_screen);
     let working = document.clone();
     let paths = paths.clone();
     std::thread::spawn(move || {
@@ -1071,7 +1082,6 @@ fn handle_browse_keys(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn handle_compare_keys(
     key: event::KeyEvent,
     view: &mut ViewStateController,
@@ -1080,9 +1090,6 @@ fn handle_compare_keys(
     compare_scroll: &mut u16,
     scroll_limits: CompareScrollLimits,
     screen_notice: &mut Option<ScreenNotice>,
-    refresh_rx: &mut Option<mpsc::Receiver<RefreshWorkerMessage>>,
-    paths: &DelvePaths,
-    document: &SessionDocument,
 ) {
     let selected_index = view.selected_visible_index(tree);
     match key.code {
@@ -1163,9 +1170,6 @@ fn handle_compare_keys(
             view.highlighted_path = None;
             view.mark_dirty();
             *screen_notice = None;
-        }
-        KeyCode::Char('r') | KeyCode::Char('R') if refresh_rx.is_none() => {
-            start_refresh(paths, document, refresh_rx);
         }
         _ => {}
     }
@@ -1702,6 +1706,8 @@ fn help_lines(view: &ViewStateController, theme: &Theme) -> Vec<Line<'static>> {
         help_binding("Tab / Shift-Tab", "Cycle screens", theme),
         help_binding("1 / 2", "Select Browse / Compare", theme),
         help_binding("m", "Jump to Compare", theme),
+        help_binding("r", "Refresh hop RTTs in memory", theme),
+        help_binding("E / C", "Expand all / collapse all", theme),
         Line::from(""),
     ];
     if view.active_screen == ActiveScreen::Browse {
@@ -1740,7 +1746,6 @@ fn help_lines(view: &ViewStateController, theme: &Theme) -> Vec<Line<'static>> {
             help_binding("B", "Toggle fork sibling hop RTT panel", theme),
             help_binding("f / s", "Highlight fastest / slowest answered path", theme),
             help_binding("Esc", "Clear path highlight", theme),
-            help_binding("r", "Refresh hop RTTs in memory", theme),
             Line::from(""),
             help_section("Compare stats", theme),
             help_binding(
@@ -1905,6 +1910,7 @@ mod tests {
             .join("\n");
         assert!(text.contains("Cycle screens"));
         assert!(text.contains("Expand all / collapse all"));
+        assert!(text.contains("Refresh hop RTTs"));
         assert!(text.contains("Branch from selection"));
     }
 

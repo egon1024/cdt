@@ -204,8 +204,9 @@ On the **Compare** screen, delve derives timing from stored hop data (no network
 | `B` | Toggle fork sibling hop RTT breakdown at that fork |
 | `f` / `s` | Highlight fastest / slowest **answered** root-to-leaf path in the tree (overlay only; does not move selection) |
 | `Esc` | Clear path highlight |
-| `r` | Re-query every hop with cache bypass; updates RTTs **in memory** only (prompt to save on quit) |
-| `?` | Compare-scoped help (footer shows `Press ? for help`) |
+| `?` | Screen-scoped help (footer shows `Press ? for help`) |
+
+Press **`r`** on **Browse** or **Compare** to re-query every hop with cache bypass. RTTs update **in memory** only; delve prompts to save on quit.
 
 Whole-tree fastest, slowest, and average are always shown in the summary strip at the top. Stats include **answered** leaf paths only (failed or referral-only terminals are excluded). When the trace was budget-truncated, the strip notes that path statistics may be incomplete.
 
