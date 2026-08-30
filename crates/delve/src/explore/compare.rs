@@ -41,8 +41,7 @@ impl CompareColumns {
             let hop = tree.hop_at(&node.path).expect("visible hop");
             zone_width = zone_width.max(display_width(hop.zone.as_str()));
             server_width = server_width.max(display_width(hop.server.as_str()));
-            server_name_width =
-                server_name_width.max(display_width(hop_server_name(hop).as_str()));
+            server_name_width = server_name_width.max(display_width(hop_server_name(hop).as_str()));
             if matches!(hop.outcome, HopOutcome::Failed { .. }) {
                 rcode_width = rcode_width.max(display_width("FAILED"));
             } else {
@@ -67,7 +66,10 @@ impl CompareColumns {
             Span::raw("  "),
             Span::styled(pad_left_display("server", self.server_width), theme.label()),
             Span::raw("  "),
-            Span::styled(pad_left_display("name", self.server_name_width), theme.label()),
+            Span::styled(
+                pad_left_display("name", self.server_name_width),
+                theme.label(),
+            ),
             Span::raw("  "),
             Span::styled(pad_left_display("rcode", self.rcode_width), theme.label()),
             Span::raw("  "),
