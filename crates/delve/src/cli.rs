@@ -287,13 +287,13 @@ fn run_session_branch(args: SessionBranchArgs, runtime: &Runtime) -> Result<(), 
             path: "missing --at-hop or --at-path".into(),
         }));
     }
-    if !args.expand && args.server.is_none() {
+    if !args.expand && args.server.is_none() && !args.dry_run {
         return Err(CliError::Branch(BranchError::MissingTarget));
     }
     let (session_id, _) = resolve_session_target(args.id, Vec::new(), runtime)?;
     let document = runtime.get_session(&session_id)?;
     let at = resolve_branch_target(&document, args.at_hop, args.at_path.as_deref())?;
-    let intent = if args.expand {
+    let intent = if args.expand || args.server.is_none() {
         BranchIntentArg::ExpandCut
     } else {
         BranchIntentArg::AlternateServer {
