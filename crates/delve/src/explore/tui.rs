@@ -225,14 +225,16 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                 if report.hops_updated > 0 {
                                     unsaved_rtt_refresh = true;
                                 }
-                                if report.hops_updated > 0 || report.hops_failed > 0 {
+                                if report.hops_failed > 0 {
                                     set_screen_notice(
                                         &mut screen_notice,
                                         refresh_origin_screen
                                             .take()
                                             .unwrap_or(ActiveScreen::Browse),
-                                        format_refresh_report(&report),
+                                        format_refresh_failure(&report),
                                     );
+                                } else {
+                                    refresh_origin_screen = None;
                                 }
                             }
                             Err(error) => {
@@ -1677,23 +1679,18 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
-fn format_refresh_report(report: &dns_resolve::RefreshTreeReport) -> String {
-    if report.hops_updated == 0 && report.hops_failed > 0 {
-        return format!(
+fn format_refresh_failure(report: &dns_resolve::RefreshTreeReport) -> String {
+    if report.hops_updated == 0 {
+        format!(
             "refresh failed for all {} hops; RTTs unchanged",
             report.hops_total
-        );
-    }
-    if report.hops_failed > 0 {
-        return format!(
+        )
+    } else {
+        format!(
             "refreshed {}/{} hops ({} failed)",
             report.hops_updated, report.hops_total, report.hops_failed
-        );
+        )
     }
-    format!(
-        "refreshed {}/{} hops",
-        report.hops_updated, report.hops_total
-    )
 }
 
 fn help_lines(view: &ViewStateController, theme: &Theme) -> Vec<Line<'static>> {
