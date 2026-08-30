@@ -40,6 +40,12 @@ struct BrowseScrollLimits {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CompareScrollLimits {
+    max_scroll: u16,
+    inner_height: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BranchOverlay {
     None,
     Menu,
@@ -168,11 +174,11 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
             if view.compare_row >= compare_visible.len() {
                 view.compare_row = compare_visible.len().saturating_sub(1);
             }
-            let compare_max_scroll = compare_scroll_max(
+            let compare_limits = compare_scroll_limits(
                 Rect::from((Position::ORIGIN, terminal.size()?)),
                 compare_visible.len(),
             );
-            compare_scroll = compare_scroll.min(compare_max_scroll);
+            compare_scroll = compare_scroll.min(compare_limits.max_scroll);
         }
 
         terminal.draw(|frame| {
@@ -348,11 +354,57 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                         theme.toggle_color();
                         view.mark_dirty();
                     }
-                    KeyCode::Tab => cycle_screen_forward(&mut view, &tree),
-                    KeyCode::BackTab => cycle_screen_backward(&mut view, &tree),
+                    KeyCode::Tab => {
+                        if cycle_screen_forward(&mut view, &tree) {
+                            sync_compare_scroll(
+                                &mut compare_scroll,
+                                view.selected_visible_index(&tree),
+                                visible.len(),
+                                compare_scroll_limits(
+                                    Rect::from((Position::ORIGIN, terminal.size()?)),
+                                    visible.len(),
+                                ),
+                            );
+                        }
+                    }
+                    KeyCode::BackTab => {
+                        if cycle_screen_backward(&mut view, &tree) {
+                            sync_compare_scroll(
+                                &mut compare_scroll,
+                                view.selected_visible_index(&tree),
+                                visible.len(),
+                                compare_scroll_limits(
+                                    Rect::from((Position::ORIGIN, terminal.size()?)),
+                                    visible.len(),
+                                ),
+                            );
+                        }
+                    }
                     KeyCode::Char('1') => select_screen(&mut view, ActiveScreen::Browse, &tree),
-                    KeyCode::Char('2') => select_screen(&mut view, ActiveScreen::Compare, &tree),
-                    KeyCode::Char('m') => jump_to_compare(&mut view, &tree),
+                    KeyCode::Char('2') => {
+                        select_screen(&mut view, ActiveScreen::Compare, &tree);
+                        sync_compare_scroll(
+                            &mut compare_scroll,
+                            view.selected_visible_index(&tree),
+                            visible.len(),
+                            compare_scroll_limits(
+                                Rect::from((Position::ORIGIN, terminal.size()?)),
+                                visible.len(),
+                            ),
+                        );
+                    }
+                    KeyCode::Char('m') => {
+                        jump_to_compare(&mut view, &tree);
+                        sync_compare_scroll(
+                            &mut compare_scroll,
+                            view.selected_visible_index(&tree),
+                            visible.len(),
+                            compare_scroll_limits(
+                                Rect::from((Position::ORIGIN, terminal.size()?)),
+                                visible.len(),
+                            ),
+                        );
+                    }
                     KeyCode::Char('E') => {
                         view.expand_all(&tree);
                         detail_scroll = 0;
@@ -391,7 +443,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                 scroll_limits,
                             );
                         } else {
-                            let compare_max_scroll = compare_scroll_max(
+                            let compare_limits = compare_scroll_limits(
                                 Rect::from((Position::ORIGIN, terminal.size()?)),
                                 visible.len(),
                             );
@@ -401,8 +453,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                 &tree,
                                 &visible,
                                 &mut compare_scroll,
-                                compare_max_scroll,
-                                rtt_bar_config,
+                                compare_limits,
                             );
                         }
                     }
@@ -565,21 +616,25 @@ fn activate_compare(view: &mut ViewStateController, tree: &ExploreTree) {
     view.mark_dirty();
 }
 
-fn cycle_screen_forward(view: &mut ViewStateController, tree: &ExploreTree) {
+fn cycle_screen_forward(view: &mut ViewStateController, tree: &ExploreTree) -> bool {
     if view.active_screen == ActiveScreen::Browse {
         activate_compare(view, tree);
+        true
     } else {
         view.active_screen = ActiveScreen::Browse;
         view.mark_dirty();
+        false
     }
 }
 
-fn cycle_screen_backward(view: &mut ViewStateController, tree: &ExploreTree) {
+fn cycle_screen_backward(view: &mut ViewStateController, tree: &ExploreTree) -> bool {
     if view.active_screen == ActiveScreen::Compare {
         view.active_screen = ActiveScreen::Browse;
         view.mark_dirty();
+        false
     } else {
         activate_compare(view, tree);
+        true
     }
 }
 
@@ -762,26 +817,28 @@ fn handle_compare_keys(
     tree: &ExploreTree,
     visible: &[VisibleNode],
     compare_scroll: &mut u16,
-    compare_max_scroll: u16,
-    _rtt_config: RttBarConfig,
+    scroll_limits: CompareScrollLimits,
 ) {
+    let selected_index = view.selected_visible_index(tree);
     match key.code {
-        KeyCode::Down | KeyCode::Char('j') if view.compare_row + 1 < visible.len() => {
-            view.compare_row += 1;
-            view.set_selection_visible_index(tree, view.compare_row);
+        KeyCode::Down | KeyCode::Char('j') if selected_index + 1 < visible.len() => {
+            let new_index = selected_index + 1;
+            view.set_selection_visible_index(tree, new_index);
+            sync_compare_scroll(compare_scroll, new_index, visible.len(), scroll_limits);
         }
         KeyCode::Up | KeyCode::Char('k') => {
-            view.compare_row = view.compare_row.saturating_sub(1);
-            view.set_selection_visible_index(tree, view.compare_row);
+            let new_index = selected_index.saturating_sub(1);
+            view.set_selection_visible_index(tree, new_index);
+            sync_compare_scroll(compare_scroll, new_index, visible.len(), scroll_limits);
         }
         KeyCode::PageDown => {
-            *compare_scroll = (*compare_scroll + 10).min(compare_max_scroll);
+            *compare_scroll = (*compare_scroll + 10).min(scroll_limits.max_scroll);
         }
         KeyCode::PageUp => {
             *compare_scroll = compare_scroll.saturating_sub(10);
         }
         KeyCode::Char(' ') => {
-            if let Some(node) = visible.get(view.compare_row)
+            if let Some(node) = visible.get(selected_index)
                 && node.expandable
             {
                 view.toggle_expansion(&node.path);
@@ -800,15 +857,57 @@ fn handle_compare_keys(
     }
 }
 
-fn compare_scroll_max(terminal_area: Rect, visible_rows: usize) -> u16 {
+fn sync_compare_scroll(
+    scroll: &mut u16,
+    selected_index: usize,
+    visible_rows: usize,
+    limits: CompareScrollLimits,
+) {
+    let total_lines = compare_content_lines(visible_rows);
+    let line_index = compare_line_index(selected_index);
+    ensure_line_visible(line_index, scroll, limits.inner_height, total_lines);
+    *scroll = (*scroll).min(limits.max_scroll);
+}
+
+fn compare_content_lines(visible_rows: usize) -> usize {
+    visible_rows + 2
+}
+
+fn compare_line_index(selected_index: usize) -> usize {
+    selected_index + 2
+}
+
+fn ensure_line_visible(
+    line_index: usize,
+    scroll: &mut u16,
+    viewport_height: u16,
+    total_lines: usize,
+) {
+    let viewport = viewport_height as usize;
+    if viewport == 0 {
+        return;
+    }
+    let scroll_usize = *scroll as usize;
+    if line_index < scroll_usize {
+        *scroll = line_index as u16;
+    } else if line_index >= scroll_usize + viewport {
+        let max_scroll = total_lines.saturating_sub(viewport);
+        *scroll = (line_index + 1).saturating_sub(viewport).min(max_scroll) as u16;
+    }
+}
+
+fn compare_scroll_limits(terminal_area: Rect, visible_rows: usize) -> CompareScrollLimits {
     let body = browse_body_area(terminal_area);
     let block = Block::default()
         .title("Compare")
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded);
     let inner = block.inner(body);
-    let content_lines = visible_rows + 2;
-    max_vertical_scroll(content_lines, inner.height)
+    let total_lines = compare_content_lines(visible_rows);
+    CompareScrollLimits {
+        max_scroll: max_vertical_scroll(total_lines, inner.height),
+        inner_height: inner.height,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -823,12 +922,13 @@ fn render_compare(
     theme: &Theme,
 ) {
     let columns = CompareColumns::for_visible(tree, visible);
+    let selected_index = view.selected_visible_index(tree);
     let mut lines = vec![columns.header(theme), Line::from("")];
     for (index, node) in visible.iter().enumerate() {
         lines.push(compare_row(
             node,
             tree,
-            index == view.compare_row,
+            index == selected_index,
             columns,
             rtt_config,
             theme,

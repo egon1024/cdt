@@ -84,20 +84,9 @@ impl AxisScrollHints {
 }
 
 fn format_directional_hints(hints: AxisScrollHints, backward: char, forward: char) -> String {
-    if !hints.backward && !hints.forward {
-        return String::new();
-    }
-    let mut rendered = String::from("  ");
-    if hints.backward {
-        rendered.push(backward);
-    }
-    if hints.forward {
-        if hints.backward {
-            rendered.push(' ');
-        }
-        rendered.push(forward);
-    }
-    rendered
+    let backward_glyph = if hints.backward { backward } else { ' ' };
+    let forward_glyph = if hints.forward { forward } else { ' ' };
+    format!("  {backward_glyph} {forward_glyph}")
 }
 
 #[cfg(test)]
@@ -129,10 +118,10 @@ mod tests {
 
     #[test]
     fn vertical_scroll_hints_only_show_available_directions() {
-        assert_eq!(AxisScrollHints::vertical(0, 0).format_vertical(), "");
-        assert_eq!(AxisScrollHints::vertical(0, 5).format_vertical(), "  ▼");
+        assert_eq!(AxisScrollHints::vertical(0, 0).format_vertical(), "     ");
+        assert_eq!(AxisScrollHints::vertical(0, 5).format_vertical(), "    ▼");
         assert_eq!(AxisScrollHints::vertical(3, 5).format_vertical(), "  ▲ ▼");
-        assert_eq!(AxisScrollHints::vertical(5, 5).format_vertical(), "  ▲");
+        assert_eq!(AxisScrollHints::vertical(5, 5).format_vertical(), "  ▲  ");
     }
 
     #[test]
@@ -141,6 +130,13 @@ mod tests {
             AxisScrollHints::horizontal(2, 4).format_horizontal(),
             "  ◀ ▶"
         );
-        assert_eq!(AxisScrollHints::horizontal(0, 2).format_horizontal(), "  ▶");
+        assert_eq!(
+            AxisScrollHints::horizontal(0, 2).format_horizontal(),
+            "    ▶"
+        );
+        assert_eq!(
+            AxisScrollHints::horizontal(0, 0).format_horizontal(),
+            "     "
+        );
     }
 }

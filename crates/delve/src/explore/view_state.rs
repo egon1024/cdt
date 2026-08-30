@@ -148,6 +148,7 @@ impl ViewStateController {
     pub fn set_selection_visible_index(&mut self, tree: &ExploreTree, index: usize) {
         if let Some(path) = tree.selection_for_visible_index(index, &self.expanded_paths) {
             self.selection = path;
+            self.compare_row = index;
             self.mark_dirty();
         }
     }
@@ -180,6 +181,7 @@ impl ViewStateController {
     pub fn collapse_all(&mut self, tree: &ExploreTree) {
         self.expanded_paths.clear();
         self.selection = tree.nearest_visible_ancestor(&self.selection, &self.expanded_paths);
+        self.compare_row = self.selected_visible_index(tree);
         self.mark_dirty();
     }
 }
@@ -212,17 +214,28 @@ pub fn restore_from_state(tree: &ExploreTree, state: &ExploreViewState) -> ViewS
         expanded_paths
     };
 
-    ViewStateController {
-        active_screen: ActiveScreen::from_str(&state.active_screen),
-        expanded_paths,
-        selection,
-        browse_pane: BrowsePane::from_str(&state.pane),
-        compare_fork: None,
-        compare_row: state.compare_focus_row,
-        browse_split: VerticalPaneSplit::from_stored(state.browse_split_percent),
-        dirty: false,
-        last_change: None,
-    }
+    with_synced_compare_row(
+        ViewStateController {
+            active_screen: ActiveScreen::from_str(&state.active_screen),
+            expanded_paths,
+            selection,
+            browse_pane: BrowsePane::from_str(&state.pane),
+            compare_fork: None,
+            compare_row: state.compare_focus_row,
+            browse_split: VerticalPaneSplit::from_stored(state.browse_split_percent),
+            dirty: false,
+            last_change: None,
+        },
+        tree,
+    )
+}
+
+fn with_synced_compare_row(
+    mut controller: ViewStateController,
+    tree: &ExploreTree,
+) -> ViewStateController {
+    controller.compare_row = controller.selected_visible_index(tree);
+    controller
 }
 
 pub fn apply_view_state(document: &mut SessionDocument, controller: &ViewStateController) {
@@ -378,6 +391,17 @@ mod tests {
 
         let restored = ViewStateController::from_document(&tree, &document);
         assert_eq!(restored.browse_split.first_percent, 65);
+    }
+
+    #[test]
+    fn browse_selection_updates_compare_row() {
+        let tree = sample_tree();
+        let mut controller = ViewStateController::default_for_tree(&tree);
+        controller.expand_all(&tree);
+        controller.set_selection_visible_index(&tree, 1);
+        assert_eq!(controller.compare_row, 1);
+        controller.set_selection_visible_index(&tree, 0);
+        assert_eq!(controller.compare_row, 0);
     }
 
     #[test]
