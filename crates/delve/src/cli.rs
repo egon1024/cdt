@@ -273,8 +273,9 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
         }
         SessionSubcommand::Explore(args) => {
             let (session_id, _) = resolve_session_target(args.id, Vec::new(), &runtime)?;
-            let document = runtime.touch_session(&session_id)?;
-            run_explore(&document)?;
+            let document = runtime.get_session(&session_id)?;
+            let mut document = document;
+            run_explore(&runtime, &mut document)?;
             Ok(())
         }
         SessionSubcommand::Branch(args) => run_session_branch(args, &runtime),

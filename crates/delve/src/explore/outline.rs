@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::detail::{hop_detail_lines, hop_summary_line, render_indented_block};
+use super::detail::{hop_detail_lines, hop_failure_line, hop_summary_line, render_indented_block};
 use super::terminal::UiSymbols;
 use super::tree::ExploreTree;
 use dns_resolve::{TraceNode, TraceTree};
@@ -41,6 +41,9 @@ fn render_trace_node(
         "{prefix}{branch}[{display_index}] {}\n",
         hop_summary_line(&node.hop, symbols)
     ));
+    if let Some(failure) = hop_failure_line(&node.hop) {
+        output.push_str(&render_indented_block(&[failure], &detail_indent));
+    }
     output.push_str(&render_indented_block(
         &hop_detail_lines(&node.hop, symbols),
         &detail_indent,
@@ -111,9 +114,13 @@ mod tests {
     }
 
     #[test]
-    fn outline_prints_display_indices() {
+    fn outline_display_index_matches_tree_resolution() {
         let tree = build_explore_tree(&sample_trace());
         let outline = render_outline(&tree, UNICODE);
-        assert!(outline.contains("[0]"));
+        let trace = tree.trace();
+        for (index, path) in trace.display_order().into_iter().enumerate() {
+            assert!(outline.contains(&format!("[{index}]")));
+            assert_eq!(trace.path_for_display_index(index), Some(path));
+        }
     }
 }

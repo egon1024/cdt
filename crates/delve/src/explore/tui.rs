@@ -1,11 +1,13 @@
 use std::io;
+use std::sync::mpsc;
+use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use dns_resolve::TraceHop;
+use dns_resolve::{HopOutcome, NodePath, TraceHop, TraceProgress};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -14,185 +16,199 @@ use ratatui::widgets::block::BorderType;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use crate::branch::{
+    BranchError, BranchIntentArg, BranchReport, ServerTargetInput, branch_session,
+};
+use crate::paths::DelvePaths;
+use crate::runtime::Runtime;
+use crate::session::SessionDocument;
+
+use super::detail::hop_failure_line;
 use super::dig_view::hop_detail_styled;
 use super::terminal::{cache_source_legend, cache_source_symbol};
 use super::theme::Theme;
-use super::tree::{ExploreNode, ExploreTree};
-
-#[derive(Debug, Clone)]
-struct VisibleNode {
-    node: NodeRef,
-    depth: usize,
-    expandable: bool,
-    expanded: bool,
-}
-
-#[derive(Debug, Clone)]
-enum NodeRef {
-    Delegation { hop_index: usize, path: Vec<usize> },
-    Resolve { target: String, path: Vec<usize> },
-    Hop { hop_index: usize },
-}
+use super::tree::{ExploreTree, VisibleNode};
+use super::view_state::{ActiveScreen, BrowsePane, ViewStateController, apply_view_state};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Pane {
-    Tree,
-    Detail,
+enum BranchOverlay {
+    None,
+    Menu,
+    AlternateInput,
 }
 
-impl Pane {
-    const ORDER: [Self; 2] = [Self::Tree, Self::Detail];
-
-    fn cycle_forward(self) -> Self {
-        let index = Self::index_of(self);
-        Self::ORDER[(index + 1) % Self::ORDER.len()]
-    }
-
-    fn cycle_backward(self) -> Self {
-        let index = Self::index_of(self);
-        let len = Self::ORDER.len();
-        Self::ORDER[(index + len - 1) % len]
-    }
-
-    fn index_of(pane: Self) -> usize {
-        Self::ORDER
-            .iter()
-            .position(|candidate| *candidate == pane)
-            .unwrap_or(0)
-    }
+#[derive(Debug)]
+enum BranchWorkerMessage {
+    Progress(String),
+    Done(Result<BranchReport, BranchError>),
 }
 
-pub fn run_tui(tree: &ExploreTree, session_id: &str) -> io::Result<()> {
+pub struct ExploreContext<'a> {
+    pub runtime: &'a Runtime,
+    pub document: &'a mut SessionDocument,
+    pub persist_view_state: bool,
+}
+
+pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
+    let runtime = ctx.runtime;
+    let document = ctx.document;
+    let persist_view_state = ctx.persist_view_state;
+    let mut tree = explore_tree_from_document(document);
+    let session_id = document.id.clone();
+    let paths = runtime.paths.clone();
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut expanded_paths: Vec<Vec<usize>> = default_expanded_paths(tree);
-    let mut selected = 0;
-    let mut focused = Pane::Tree;
+    let mut view = ViewStateController::from_document(&tree, document);
+    let mut theme = Theme::from_env();
     let mut detail_scroll = 0u16;
     let mut tree_scroll_x = 0u16;
     let mut show_help = false;
-    let mut theme = Theme::from_env();
+    let mut unavailable_message: Option<String> = None;
+    let mut branch_overlay = BranchOverlay::None;
+    let mut alternate_server_input = String::new();
+    let mut branch_rx: Option<mpsc::Receiver<BranchWorkerMessage>> = None;
+    let mut branch_progress: Option<String> = None;
+    let mut persist_warning_shown = false;
     let mut result = Ok(());
 
     loop {
-        let visible = build_visible_nodes(tree, &expanded_paths);
-        if selected >= visible.len() {
-            selected = visible.len().saturating_sub(1);
+        let mut branch_finished = false;
+        if let Some(rx) = &branch_rx {
+            while let Ok(message) = rx.try_recv() {
+                match message {
+                    BranchWorkerMessage::Progress(text) => branch_progress = Some(text),
+                    BranchWorkerMessage::Done(report) => {
+                        branch_finished = true;
+                        branch_progress = None;
+                        branch_overlay = BranchOverlay::None;
+                        match report {
+                            Ok(report) => {
+                                if report.nodes_added > 0 {
+                                    if let Ok(updated) = runtime.get_session(&session_id) {
+                                        *document = updated;
+                                        tree = explore_tree_from_document(document);
+                                        if !view
+                                            .expanded_paths
+                                            .iter()
+                                            .any(|path| path == &view.selection)
+                                        {
+                                            view.expanded_paths.push(view.selection.clone());
+                                        }
+                                    }
+                                    view.mark_dirty();
+                                    persist_view_state_now(
+                                        runtime,
+                                        document,
+                                        persist_view_state,
+                                        &mut view,
+                                        &mut persist_warning_shown,
+                                        true,
+                                    );
+                                }
+                                unavailable_message = Some(format_branch_report(&report));
+                            }
+                            Err(error) => {
+                                unavailable_message = Some(error.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if branch_finished {
+            branch_rx = None;
+        }
+
+        if view.should_persist_now(false) {
+            persist_view_state_now(
+                runtime,
+                document,
+                persist_view_state,
+                &mut view,
+                &mut persist_warning_shown,
+                false,
+            );
+        }
+
+        let visible = tree.visible_nodes(&view.expanded_paths);
+        let selected_index = view.selected_visible_index(&tree);
+        if selected_index >= visible.len() {
+            view.set_selection_visible_index(&tree, visible.len().saturating_sub(1));
         }
 
         terminal.draw(|frame| {
+            let header = screen_indicator(&view, &tree, &theme);
+            let body = frame.area();
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-                .split(frame.area());
+                .constraints([Constraint::Length(1), Constraint::Min(0)])
+                .split(body);
 
-            let tree_viewport_width = chunks[0].width.saturating_sub(2);
-            let mut max_line_width = 0usize;
-            let mut tree_rows = Vec::with_capacity(visible.len());
+            frame.render_widget(Paragraph::new(header).style(theme.meta()), chunks[0]);
 
-            for (index, node) in visible.iter().enumerate() {
-                let indent = "  ".repeat(node.depth);
-                let marker = if node.expandable {
-                    if node.expanded {
-                        theme.symbols.tree_expand
-                    } else {
-                        theme.symbols.tree_collapse
-                    }
-                } else {
-                    "  "
-                };
-                let line = tree_line(tree, node, &indent, marker, &theme);
-                max_line_width = max_line_width.max(line_display_width(&line));
-                let line = if focused == Pane::Tree && index == selected {
-                    apply_tree_selection(line, &theme)
-                } else {
-                    line
-                };
-                tree_rows.push((index, scroll_line(line, tree_scroll_x)));
+            match view.active_screen {
+                ActiveScreen::Browse => render_browse(
+                    frame,
+                    chunks[1],
+                    &tree,
+                    &visible,
+                    selected_index,
+                    &view,
+                    detail_scroll,
+                    tree_scroll_x,
+                    &theme,
+                    &session_id,
+                ),
+                ActiveScreen::Compare => render_compare(
+                    frame,
+                    chunks[1],
+                    &tree,
+                    &view,
+                    &theme,
+                    unavailable_message.as_deref(),
+                ),
             }
-
-            let max_tree_scroll = max_line_width
-                .saturating_sub(tree_viewport_width as usize)
-                .min(u16::MAX as usize) as u16;
-            if tree_scroll_x > max_tree_scroll {
-                tree_scroll_x = max_tree_scroll;
-            }
-
-            let tree_items: Vec<ListItem> = tree_rows
-                .into_iter()
-                .map(|(_, line)| ListItem::new(line))
-                .collect();
-
-            let color_hint = if theme.color_enabled { "on" } else { "off" };
-            let scroll_hint = if tree_scroll_x > 0 {
-                format!("  x:{tree_scroll_x}")
-            } else if max_tree_scroll > 0 {
-                "  [←→ scroll]".to_string()
-            } else {
-                String::new()
-            };
-            let session_hint = format!("session:{session_id}  ");
-            let tree_title = if focused == Pane::Tree {
-                format!(
-                    "{session_hint}{} {}  [tree]  color:{color_hint}{scroll_hint}",
-                    tree.qname, tree.qtype
-                )
-            } else {
-                format!(
-                    "{session_hint}{} {}  [Tab / Shift-Tab]  color:{color_hint}{scroll_hint}",
-                    tree.qname, tree.qtype
-                )
-            };
-            let tree_widget = List::new(tree_items).block(
-                Block::default()
-                    .title(tree_title)
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(if focused == Pane::Tree {
-                        theme.border_focused()
-                    } else {
-                        theme.border_unfocused()
-                    }),
-            );
-            frame.render_widget(tree_widget, chunks[0]);
-
-            let detail_lines = detail_content(tree, visible.get(selected), &theme);
-            let detail_title = if focused == Pane::Detail {
-                "Details  [focused — j/k scroll]".to_string()
-            } else {
-                "Details  [Tab / Shift-Tab]".to_string()
-            };
-            let detail_widget = Paragraph::new(detail_lines)
-                .block(
-                    Block::default()
-                        .title(detail_title)
-                        .title_bottom(footer_line(&theme).centered())
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
-                        .border_style(if focused == Pane::Detail {
-                            theme.border_focused()
-                        } else {
-                            theme.border_unfocused()
-                        }),
-                )
-                .wrap(Wrap { trim: false })
-                .scroll((detail_scroll, 0));
-            frame.render_widget(detail_widget, chunks[1]);
 
             if show_help {
-                render_help_overlay(frame, &theme);
+                render_help_overlay(frame, &view, &theme);
+            }
+            if branch_overlay != BranchOverlay::None || branch_progress.is_some() {
+                render_branch_overlay(
+                    frame,
+                    &theme,
+                    branch_overlay,
+                    &alternate_server_input,
+                    branch_progress.as_deref(),
+                );
+            }
+            if let Some(message) = &unavailable_message
+                && view.active_screen != ActiveScreen::Compare
+                && branch_overlay == BranchOverlay::None
+                && branch_progress.is_none()
+            {
+                render_message_overlay(frame, &theme, message);
             }
         })?;
 
-        if event::poll(std::time::Duration::from_millis(100))? {
+        if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
+
+                if branch_rx.is_some() {
+                    if matches!(key.code, KeyCode::Esc) {
+                        unavailable_message =
+                            Some("branch in progress; wait for completion".into());
+                    }
+                    continue;
+                }
+
                 if show_help {
                     match key.code {
                         KeyCode::Char('?') | KeyCode::Esc => show_help = false,
@@ -205,60 +221,157 @@ pub fn run_tui(tree: &ExploreTree, session_id: &str) -> io::Result<()> {
                     }
                     continue;
                 }
+
+                if branch_overlay == BranchOverlay::AlternateInput {
+                    match key.code {
+                        KeyCode::Esc => branch_overlay = BranchOverlay::Menu,
+                        KeyCode::Enter => {
+                            let target = alternate_server_input.trim();
+                            if target.is_empty() {
+                                unavailable_message = Some("server address required".into());
+                            } else {
+                                start_branch(
+                                    &paths,
+                                    session_id.clone(),
+                                    view.selection.clone(),
+                                    BranchIntentArg::AlternateServer {
+                                        target: parse_server_target_input(target),
+                                    },
+                                    &mut branch_rx,
+                                );
+                                branch_overlay = BranchOverlay::None;
+                                alternate_server_input.clear();
+                                persist_view_state_now(
+                                    runtime,
+                                    document,
+                                    persist_view_state,
+                                    &mut view,
+                                    &mut persist_warning_shown,
+                                    true,
+                                );
+                            }
+                        }
+                        KeyCode::Backspace => {
+                            alternate_server_input.pop();
+                        }
+                        KeyCode::Char(ch) => alternate_server_input.push(ch),
+                        _ => {}
+                    }
+                    continue;
+                }
+
+                if branch_overlay == BranchOverlay::Menu {
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Char('b') => branch_overlay = BranchOverlay::None,
+                        KeyCode::Char('e') => {
+                            start_branch(
+                                &paths,
+                                session_id.clone(),
+                                view.selection.clone(),
+                                BranchIntentArg::ExpandCut,
+                                &mut branch_rx,
+                            );
+                            branch_overlay = BranchOverlay::None;
+                            persist_view_state_now(
+                                runtime,
+                                document,
+                                persist_view_state,
+                                &mut view,
+                                &mut persist_warning_shown,
+                                true,
+                            );
+                        }
+                        KeyCode::Char('a') => {
+                            branch_overlay = BranchOverlay::AlternateInput;
+                            alternate_server_input.clear();
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
+                if unavailable_message.is_some() {
+                    match key.code {
+                        KeyCode::Enter | KeyCode::Char(' ') => {
+                            unavailable_message = None;
+                        }
+                        KeyCode::Char('q') => break,
+                        KeyCode::Esc => unavailable_message = None,
+                        _ => {}
+                    }
+                    if unavailable_message.is_none() {
+                        continue;
+                    }
+                }
+
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => break,
                     KeyCode::Char('?') => show_help = true,
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
-                    KeyCode::Char('c') => theme.toggle_color(),
-                    KeyCode::Tab => focused = focused.cycle_forward(),
-                    KeyCode::BackTab => focused = focused.cycle_backward(),
-                    _ if focused == Pane::Tree => match key.code {
-                        KeyCode::Down | KeyCode::Char('j') if selected + 1 < visible.len() => {
-                            selected += 1;
-                            detail_scroll = 0;
+                    KeyCode::Char('c') => {
+                        theme.toggle_color();
+                        view.mark_dirty();
+                    }
+                    KeyCode::Tab => {
+                        cycle_screen_forward(&mut view, &tree, &mut unavailable_message)
+                    }
+                    KeyCode::BackTab => {
+                        cycle_screen_backward(&mut view, &tree, &mut unavailable_message)
+                    }
+                    KeyCode::Char('1') => select_screen(
+                        &mut view,
+                        ActiveScreen::Browse,
+                        &tree,
+                        &mut unavailable_message,
+                    ),
+                    KeyCode::Char('2') => select_screen(
+                        &mut view,
+                        ActiveScreen::Compare,
+                        &tree,
+                        &mut unavailable_message,
+                    ),
+                    KeyCode::Char('m') => {
+                        jump_to_compare(&mut view, &tree, &mut unavailable_message)
+                    }
+                    KeyCode::Char('E') => {
+                        view.expand_all(&tree);
+                        detail_scroll = 0;
+                    }
+                    KeyCode::Char('C') => {
+                        view.collapse_all(&tree);
+                        detail_scroll = 0;
+                    }
+                    KeyCode::Char('b') if view.active_screen == ActiveScreen::Browse => {
+                        branch_overlay = BranchOverlay::Menu;
+                    }
+                    _ => {
+                        if view.active_screen == ActiveScreen::Browse {
+                            handle_browse_keys(
+                                key,
+                                &mut view,
+                                &tree,
+                                &visible,
+                                selected_index,
+                                &mut detail_scroll,
+                                &mut tree_scroll_x,
+                            );
+                        } else {
+                            handle_compare_keys(key, &mut view, &tree);
                         }
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            selected = selected.saturating_sub(1);
-                            detail_scroll = 0;
-                        }
-                        KeyCode::Left | KeyCode::Char('h') => {
-                            tree_scroll_x = tree_scroll_x.saturating_sub(1);
-                        }
-                        KeyCode::Right | KeyCode::Char('l') => {
-                            tree_scroll_x = tree_scroll_x.saturating_add(1);
-                        }
-                        KeyCode::Enter | KeyCode::Char(' ') => {
-                            if let Some(node) = visible.get(selected)
-                                && node.expandable
-                            {
-                                toggle_path(&mut expanded_paths, &node.node);
-                            }
-                        }
-                        _ => {}
-                    },
-                    _ if focused == Pane::Detail => match key.code {
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            detail_scroll = detail_scroll.saturating_add(1);
-                        }
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            detail_scroll = detail_scroll.saturating_sub(1);
-                        }
-                        KeyCode::PageDown | KeyCode::Char(' ') => {
-                            detail_scroll = detail_scroll.saturating_add(10);
-                        }
-                        KeyCode::PageUp => {
-                            detail_scroll = detail_scroll.saturating_sub(10);
-                        }
-                        KeyCode::Home => {
-                            detail_scroll = 0;
-                        }
-                        _ => {}
-                    },
-                    _ => {}
+                    }
                 }
             }
         }
     }
+
+    persist_view_state_now(
+        runtime,
+        document,
+        persist_view_state,
+        &mut view,
+        &mut persist_warning_shown,
+        true,
+    );
 
     disable_raw_mode()?;
     if let Err(error) = execute!(terminal.backend_mut(), LeaveAlternateScreen) {
@@ -268,8 +381,543 @@ pub fn run_tui(tree: &ExploreTree, session_id: &str) -> io::Result<()> {
     result
 }
 
-/// Flatten per-span colors on the selected row so accent/zone styles do not
-/// override the selection background.
+fn explore_tree_from_document(document: &SessionDocument) -> ExploreTree {
+    let trace = document
+        .primary_tree()
+        .expect("v2 session must contain a trace tree");
+    if let Some(request) = document.primary_request() {
+        super::tree::build_explore_tree_with_qname(trace, 0, Some(&request.qname))
+    } else {
+        super::tree::build_explore_tree(trace)
+    }
+}
+
+fn persist_view_state_now(
+    runtime: &Runtime,
+    document: &mut SessionDocument,
+    persist_view_state: bool,
+    view: &mut ViewStateController,
+    persist_warning_shown: &mut bool,
+    force: bool,
+) {
+    if !persist_view_state {
+        return;
+    }
+    if !view.should_persist_now(force) {
+        return;
+    }
+    apply_view_state(document, view);
+    if let Err(error) = runtime.update_session(document) {
+        if !*persist_warning_shown {
+            *persist_warning_shown = true;
+            eprintln!("warning: failed to persist explore view state: {error}");
+        }
+    } else {
+        view.persisted();
+    }
+}
+
+fn parse_server_target_input(value: &str) -> ServerTargetInput {
+    if let Some(rest) = value.strip_prefix('@') {
+        if let Ok(address) = rest.parse() {
+            return ServerTargetInput::Address(address);
+        }
+    }
+    if let Ok(address) = value.parse() {
+        return ServerTargetInput::Address(address);
+    }
+    ServerTargetInput::Name(value.to_string())
+}
+
+fn start_branch(
+    paths: &DelvePaths,
+    session_id: String,
+    at: NodePath,
+    intent: BranchIntentArg,
+    branch_rx: &mut Option<mpsc::Receiver<BranchWorkerMessage>>,
+) {
+    let (tx, rx) = mpsc::channel();
+    *branch_rx = Some(rx);
+    let paths = paths.clone();
+    std::thread::spawn(move || {
+        let runtime = Runtime::open(paths);
+        let mut progress = ChannelProgress::new(tx.clone());
+        let result = branch_session(&runtime, &session_id, at, intent, false, &mut progress);
+        let _ = tx.send(BranchWorkerMessage::Done(result));
+    });
+}
+
+struct ChannelProgress {
+    tx: mpsc::Sender<BranchWorkerMessage>,
+}
+
+impl ChannelProgress {
+    fn new(tx: mpsc::Sender<BranchWorkerMessage>) -> Self {
+        Self { tx }
+    }
+}
+
+impl TraceProgress for ChannelProgress {
+    fn hop(&mut self, _hop: &TraceHop, _path: &NodePath) {}
+
+    fn message(&mut self, message: &str) {
+        let _ = self
+            .tx
+            .send(BranchWorkerMessage::Progress(message.to_string()));
+    }
+
+    fn budget_truncated(&mut self, cap: usize) {
+        let _ = self.tx.send(BranchWorkerMessage::Progress(format!(
+            "budget truncated at {cap}"
+        )));
+    }
+}
+
+fn format_branch_report(report: &BranchReport) -> String {
+    if report.dry_run {
+        return "dry run complete".into();
+    }
+    if report.nodes_added == 0 {
+        return "nothing to branch".into();
+    }
+    format!("added {} node(s)", report.nodes_added)
+}
+
+fn screen_indicator(
+    view: &ViewStateController,
+    tree: &ExploreTree,
+    theme: &Theme,
+) -> Line<'static> {
+    let compare_available = tree.compare_available(&view.selection);
+    let browse = Span::styled(
+        if view.active_screen == ActiveScreen::Browse {
+            "[Browse*]"
+        } else {
+            "[Browse]"
+        },
+        if view.active_screen == ActiveScreen::Browse {
+            theme.accent_bold()
+        } else {
+            theme.meta()
+        },
+    );
+    let compare_label = if compare_available {
+        if view.active_screen == ActiveScreen::Compare {
+            "[Compare*]"
+        } else {
+            "[Compare]"
+        }
+    } else {
+        "[Compare (unavailable)]"
+    };
+    let compare = Span::styled(
+        compare_label,
+        if view.active_screen == ActiveScreen::Compare {
+            theme.accent_bold()
+        } else {
+            theme.meta()
+        },
+    );
+    Line::from(vec![browse, Span::raw("  "), compare])
+}
+
+fn cycle_screen_forward(
+    view: &mut ViewStateController,
+    tree: &ExploreTree,
+    message: &mut Option<String>,
+) {
+    if view.active_screen == ActiveScreen::Browse {
+        if tree.compare_available(&view.selection) {
+            view.active_screen = ActiveScreen::Compare;
+            view.compare_fork = tree.compare_fork(&view.selection).map(|fork| fork.at);
+            view.mark_dirty();
+        } else {
+            *message = Some("Compare requires a node with multiple alternate paths".into());
+        }
+    } else {
+        view.active_screen = ActiveScreen::Browse;
+        view.mark_dirty();
+    }
+}
+
+fn cycle_screen_backward(
+    view: &mut ViewStateController,
+    tree: &ExploreTree,
+    message: &mut Option<String>,
+) {
+    if view.active_screen == ActiveScreen::Compare {
+        view.active_screen = ActiveScreen::Browse;
+        view.mark_dirty();
+    } else if tree.compare_available(&view.selection) {
+        view.active_screen = ActiveScreen::Compare;
+        view.compare_fork = tree.compare_fork(&view.selection).map(|fork| fork.at);
+        view.mark_dirty();
+    } else {
+        *message = Some("Compare requires a node with multiple alternate paths".into());
+    }
+}
+
+fn select_screen(
+    view: &mut ViewStateController,
+    screen: ActiveScreen,
+    tree: &ExploreTree,
+    message: &mut Option<String>,
+) {
+    if screen == ActiveScreen::Compare && !tree.compare_available(&view.selection) {
+        *message = Some("Compare requires a node with multiple alternate paths".into());
+        return;
+    }
+    view.active_screen = screen;
+    if screen == ActiveScreen::Compare {
+        view.compare_fork = tree.compare_fork(&view.selection).map(|fork| fork.at);
+    }
+    view.mark_dirty();
+}
+
+fn jump_to_compare(
+    view: &mut ViewStateController,
+    tree: &ExploreTree,
+    message: &mut Option<String>,
+) {
+    select_screen(view, ActiveScreen::Compare, tree, message);
+}
+
+fn handle_browse_keys(
+    key: event::KeyEvent,
+    view: &mut ViewStateController,
+    tree: &ExploreTree,
+    visible: &[VisibleNode],
+    selected_index: usize,
+    detail_scroll: &mut u16,
+    tree_scroll_x: &mut u16,
+) {
+    if view.browse_pane == BrowsePane::Detail {
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                *detail_scroll = detail_scroll.saturating_add(1);
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                *detail_scroll = detail_scroll.saturating_sub(1);
+            }
+            KeyCode::PageDown | KeyCode::Char(' ') => {
+                *detail_scroll = detail_scroll.saturating_add(10);
+            }
+            KeyCode::PageUp => {
+                *detail_scroll = detail_scroll.saturating_sub(10);
+            }
+            KeyCode::Home => {
+                *detail_scroll = 0;
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    match key.code {
+        KeyCode::Char('w') => {
+            view.browse_pane = view.browse_pane.cycle_forward();
+            view.mark_dirty();
+        }
+        KeyCode::Down | KeyCode::Char('j') if selected_index + 1 < visible.len() => {
+            view.set_selection_visible_index(tree, selected_index + 1);
+            *detail_scroll = 0;
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            view.set_selection_visible_index(tree, selected_index.saturating_sub(1));
+            *detail_scroll = 0;
+        }
+        KeyCode::Left | KeyCode::Char('h') => {
+            *tree_scroll_x = tree_scroll_x.saturating_sub(1);
+        }
+        KeyCode::Right | KeyCode::Char('l') => {
+            *tree_scroll_x = tree_scroll_x.saturating_add(1);
+        }
+        KeyCode::Enter | KeyCode::Char(' ') => {
+            if let Some(node) = visible.get(selected_index)
+                && node.expandable
+            {
+                view.toggle_expansion(&node.path);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn handle_compare_keys(key: event::KeyEvent, view: &mut ViewStateController, tree: &ExploreTree) {
+    let fork = tree.compare_fork(&view.selection);
+    let Some(fork) = fork else {
+        return;
+    };
+    let row_count = tree
+        .node_at(&fork.at)
+        .map(|node| node.children.len())
+        .unwrap_or(0);
+    match key.code {
+        KeyCode::Down | KeyCode::Char('j') => {
+            if view.compare_row + 1 < row_count {
+                view.compare_row += 1;
+                view.mark_dirty();
+            }
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            view.compare_row = view.compare_row.saturating_sub(1);
+            view.mark_dirty();
+        }
+        KeyCode::Enter => {
+            let mut path = fork.at.path.clone();
+            path.push(view.compare_row);
+            let selection = NodePath {
+                tree: fork.at.tree,
+                path,
+            };
+            if tree.node_at(&selection).is_some() {
+                view.selection = selection;
+                view.active_screen = ActiveScreen::Browse;
+                view.mark_dirty();
+            }
+        }
+        _ => {}
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_browse(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    tree: &ExploreTree,
+    visible: &[VisibleNode],
+    selected_index: usize,
+    view: &ViewStateController,
+    detail_scroll: u16,
+    tree_scroll_x: u16,
+    theme: &Theme,
+    session_id: &str,
+) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(area);
+
+    let tree_viewport_width = chunks[0].width.saturating_sub(2);
+    let mut max_line_width = 0usize;
+    let mut tree_rows = Vec::with_capacity(visible.len());
+
+    for (index, node) in visible.iter().enumerate() {
+        let indent = "  ".repeat(node.depth);
+        let marker = if node.expandable {
+            if node.expanded {
+                theme.symbols.tree_expand
+            } else {
+                theme.symbols.tree_collapse
+            }
+        } else {
+            "  "
+        };
+        let hop = tree.hop_at(&node.path).expect("visible node hop");
+        let line = hop_tree_line(&indent, marker, hop, theme);
+        max_line_width = max_line_width.max(line_display_width(&line));
+        let line = if view.browse_pane == BrowsePane::Tree && index == selected_index {
+            apply_tree_selection(line, theme)
+        } else {
+            line
+        };
+        tree_rows.push(scroll_line(line, tree_scroll_x));
+    }
+
+    let _max_tree_scroll = max_line_width
+        .saturating_sub(tree_viewport_width as usize)
+        .min(u16::MAX as usize) as u16;
+
+    let color_hint = if theme.color_enabled { "on" } else { "off" };
+    let session_hint = format!("session:{session_id}  ");
+    let tree_title = format!(
+        "{session_hint}{} {}  [tree]  color:{color_hint}",
+        tree.qname, tree.qtype
+    );
+    let tree_widget = List::new(tree_rows.into_iter().map(ListItem::new).collect::<Vec<_>>())
+        .block(
+            Block::default()
+                .title(tree_title)
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(if view.browse_pane == BrowsePane::Tree {
+                    theme.border_focused()
+                } else {
+                    theme.border_unfocused()
+                }),
+        );
+    frame.render_widget(tree_widget, chunks[0]);
+
+    let detail_lines = detail_content(tree, visible.get(selected_index), theme);
+    let detail_title = if view.browse_pane == BrowsePane::Detail {
+        "Details  [focused — j/k scroll]".to_string()
+    } else {
+        "Details  [w to focus]".to_string()
+    };
+    let detail_widget = Paragraph::new(detail_lines)
+        .block(
+            Block::default()
+                .title(detail_title)
+                .title_bottom(footer_line(theme).centered())
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(if view.browse_pane == BrowsePane::Detail {
+                    theme.border_focused()
+                } else {
+                    theme.border_unfocused()
+                }),
+        )
+        .wrap(Wrap { trim: false })
+        .scroll((detail_scroll, 0));
+    frame.render_widget(detail_widget, chunks[1]);
+}
+
+fn render_compare(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    tree: &ExploreTree,
+    view: &ViewStateController,
+    theme: &Theme,
+    unavailable_message: Option<&str>,
+) {
+    let fork = tree.compare_fork(&view.selection);
+    let lines = if let Some(fork) = fork {
+        let node = tree.node_at(&fork.at).expect("fork node");
+        let mut rows = vec![
+            Line::from(Span::styled("Compare paths at fork", theme.section())),
+            Line::from(""),
+        ];
+        for (index, child) in node.children.iter().enumerate() {
+            let hop = &child.hop;
+            let marker = if index == view.compare_row { ">" } else { " " };
+            let failed = matches!(hop.outcome, HopOutcome::Failed { .. });
+            let label = if failed {
+                format!("{marker} {}  FAILED", hop.server)
+            } else {
+                format!("{marker} {}  {}  {}ms", hop.server, hop.rcode, hop.rtt_ms)
+            };
+            rows.push(Line::from(Span::styled(
+                label,
+                if failed {
+                    theme.failure()
+                } else if index == view.compare_row {
+                    theme.accent_bold()
+                } else {
+                    theme.meta()
+                },
+            )));
+        }
+        rows.push(Line::from(""));
+        rows.push(Line::from(Span::styled(
+            "Enter returns to Browse at selected row",
+            theme.meta(),
+        )));
+        rows
+    } else {
+        vec![Line::from(Span::styled(
+            unavailable_message.unwrap_or("Select a node with multiple paths to compare"),
+            theme.meta(),
+        ))]
+    };
+
+    let widget = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .title("Compare")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(theme.border_focused()),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(widget, area);
+}
+
+fn render_branch_overlay(
+    frame: &mut ratatui::Frame<'_>,
+    theme: &Theme,
+    overlay: BranchOverlay,
+    alternate_input: &str,
+    progress: Option<&str>,
+) {
+    let area = centered_rect(60, 40, frame.area());
+    frame.render_widget(Clear, area);
+    let mut lines = vec![
+        Line::from(Span::styled("Branch", theme.section())),
+        Line::from(""),
+    ];
+    if let Some(progress) = progress {
+        lines.push(Line::from(progress.to_string()));
+    } else if overlay == BranchOverlay::AlternateInput {
+        lines.push(Line::from("Alternate server address:"));
+        lines.push(Line::from(format!("> {alternate_input}")));
+        lines.push(Line::from("Enter to confirm, Esc to go back"));
+    } else {
+        lines.extend([
+            Line::from("e  expand unqueried nameservers"),
+            Line::from("a  alternate server"),
+            Line::from("Esc cancel"),
+        ]);
+    }
+    let widget = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Double)
+            .border_style(theme.border_focused()),
+    );
+    frame.render_widget(widget, area);
+}
+
+fn render_message_overlay(frame: &mut ratatui::Frame<'_>, theme: &Theme, message: &str) {
+    let area = centered_rect(60, 30, frame.area());
+    frame.render_widget(Clear, area);
+    let widget = Paragraph::new(message).block(
+        Block::default()
+            .title("Notice")
+            .borders(Borders::ALL)
+            .border_style(theme.border_focused()),
+    );
+    frame.render_widget(widget, area);
+}
+
+fn hop_tree_line(indent: &str, marker: &str, hop: &TraceHop, theme: &Theme) -> Line<'static> {
+    let failed = matches!(hop.outcome, HopOutcome::Failed { .. });
+    let prefix = if failed {
+        Span::styled("✗ ", theme.failure())
+    } else {
+        Span::raw("")
+    };
+    Line::from(vec![
+        Span::raw(format!("{indent}{marker}")),
+        prefix,
+        Span::styled(format!("[{}] ", hop.zone), theme.zone()),
+        Span::raw(format!("{} {}  ", hop.qname, hop.qtype)),
+        Span::styled(hop.rcode.clone(), theme.rcode(&hop.rcode)),
+        Span::styled(
+            format!("  {}  ", cache_source_symbol(hop.from_cache, theme.symbols)),
+            theme.cache_source(hop.from_cache),
+        ),
+    ])
+}
+
+fn detail_content(
+    tree: &ExploreTree,
+    selected: Option<&VisibleNode>,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let Some(selected) = selected else {
+        return vec![Line::from(Span::styled(
+            "Select a node to inspect hop details.",
+            theme.meta(),
+        ))];
+    };
+    let hop = tree.hop_at(&selected.path).expect("hop");
+    let mut lines = hop_detail_styled(hop, theme);
+    if let Some(failure) = hop_failure_line(hop) {
+        lines.push(Line::from(Span::styled(failure, theme.failure())));
+    }
+    lines
+}
+
 fn apply_tree_selection(mut line: Line<'static>, theme: &Theme) -> Line<'static> {
     let style = theme.tree_selected();
     line.style = style;
@@ -279,12 +927,10 @@ fn apply_tree_selection(mut line: Line<'static>, theme: &Theme) -> Line<'static>
     line
 }
 
-/// Shift a line left by `offset` terminal columns, preserving span styles.
 fn scroll_line(mut line: Line<'static>, offset: u16) -> Line<'static> {
     if offset == 0 {
         return line;
     }
-
     let mut skip = offset as usize;
     let mut spans = Vec::new();
     for span in line.spans {
@@ -301,7 +947,6 @@ fn scroll_line(mut line: Line<'static>, offset: u16) -> Line<'static> {
             });
         }
     }
-
     line.spans = spans;
     line
 }
@@ -310,7 +955,6 @@ fn skip_prefix_by_width(text: &str, skip: usize) -> (String, usize) {
     if skip == 0 {
         return (text.to_string(), 0);
     }
-
     let mut consumed = 0;
     let mut start_byte = 0;
     for ch in text.chars() {
@@ -321,7 +965,6 @@ fn skip_prefix_by_width(text: &str, skip: usize) -> (String, usize) {
         consumed += width;
         start_byte += ch.len_utf8();
     }
-
     (text[start_byte..].to_string(), consumed)
 }
 
@@ -332,39 +975,6 @@ fn line_display_width(line: &Line<'_>) -> usize {
         .sum()
 }
 
-fn tree_line(
-    tree: &ExploreTree,
-    node: &VisibleNode,
-    indent: &str,
-    marker: &str,
-    theme: &Theme,
-) -> Line<'static> {
-    match &node.node {
-        NodeRef::Delegation { hop_index, .. } | NodeRef::Hop { hop_index } => {
-            let hop = tree.hop(*hop_index);
-            hop_tree_line(indent, marker, hop, theme)
-        }
-        NodeRef::Resolve { target, .. } => Line::from(vec![
-            Span::raw(format!("{indent}{marker}")),
-            Span::styled("resolve ", theme.accent()),
-            Span::raw(target.clone()),
-        ]),
-    }
-}
-
-fn hop_tree_line(indent: &str, marker: &str, hop: &TraceHop, theme: &Theme) -> Line<'static> {
-    Line::from(vec![
-        Span::raw(format!("{indent}{marker}")),
-        Span::styled(format!("[{}] ", hop.zone), theme.zone()),
-        Span::raw(format!("{} {}  ", hop.qname, hop.qtype)),
-        Span::styled(hop.rcode.clone(), theme.rcode(&hop.rcode)),
-        Span::styled(
-            format!("  {}  ", cache_source_symbol(hop.from_cache, theme.symbols)),
-            theme.cache_source(hop.from_cache),
-        ),
-    ])
-}
-
 fn footer_line(theme: &Theme) -> Line<'static> {
     Line::from(vec![
         Span::raw("Press "),
@@ -373,37 +983,10 @@ fn footer_line(theme: &Theme) -> Line<'static> {
     ])
 }
 
-fn detail_content(
-    tree: &ExploreTree,
-    selected: Option<&VisibleNode>,
-    theme: &Theme,
-) -> Vec<Line<'static>> {
-    let Some(selected) = selected else {
-        return vec![Line::from(Span::styled(
-            "Select a node to inspect hop details.",
-            theme.meta(),
-        ))];
-    };
-
-    match &selected.node {
-        NodeRef::Delegation { hop_index, .. } | NodeRef::Hop { hop_index } => {
-            hop_detail_styled(tree.hop(*hop_index), theme)
-        }
-        NodeRef::Resolve { target, .. } => vec![
-            Line::from(Span::styled("Nameserver resolution", theme.section())),
-            Line::from(vec![
-                Span::styled("target: ", theme.label()),
-                Span::raw(target.clone()),
-            ]),
-        ],
-    }
-}
-
-fn render_help_overlay(frame: &mut ratatui::Frame<'_>, theme: &Theme) {
+fn render_help_overlay(frame: &mut ratatui::Frame<'_>, view: &ViewStateController, theme: &Theme) {
     let area = centered_rect(62, 72, frame.area());
     frame.render_widget(Clear, area);
-
-    let help_text = Paragraph::new(help_lines(theme))
+    let help_text = Paragraph::new(help_lines(view, theme))
         .block(
             Block::default()
                 .title("Keyboard shortcuts")
@@ -437,45 +1020,50 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
-fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
-    vec![
-        help_section("General", theme),
+fn help_lines(view: &ViewStateController, theme: &Theme) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        help_section("Global", theme),
         help_binding("?", "Show this help", theme),
-        help_binding("Esc, ?", "Close help", theme),
         help_binding("q, Esc", "Quit", theme),
         help_binding("Ctrl+C", "Quit", theme),
-        help_binding("c", "Toggle colors (respects NO_COLOR)", theme),
-        help_binding("Tab", "Next pane", theme),
-        help_binding("Shift-Tab", "Previous pane", theme),
+        help_binding("c", "Toggle colors", theme),
+        help_binding("Tab / Shift-Tab", "Cycle screens", theme),
+        help_binding("1 / 2", "Select Browse / Compare", theme),
+        help_binding("m", "Jump to Compare", theme),
         Line::from(""),
-        help_section("Tree pane", theme),
-        help_binding("j, ↓", "Move selection down", theme),
-        help_binding("k, ↑", "Move selection up", theme),
-        help_binding("Space, Enter", "Toggle expand/collapse", theme),
-        help_binding("←, h", "Scroll line left", theme),
-        help_binding("→, l", "Scroll line right", theme),
-        Line::from(""),
-        help_section("Hop symbols", theme),
-        help_symbol_legend(
-            cache_source_legend(theme.symbols)[0].0,
-            cache_source_legend(theme.symbols)[0].1,
-            true,
-            theme,
-        ),
-        help_symbol_legend(
-            cache_source_legend(theme.symbols)[1].0,
-            cache_source_legend(theme.symbols)[1].1,
-            false,
-            theme,
-        ),
-        Line::from(""),
-        help_section("Details pane", theme),
-        help_binding("j, ↓", "Scroll down", theme),
-        help_binding("k, ↑", "Scroll up", theme),
-        help_binding("Space, PgDn", "Page down", theme),
-        help_binding("PgUp", "Page up", theme),
-        help_binding("Home", "Scroll to top", theme),
-    ]
+    ];
+    if view.active_screen == ActiveScreen::Browse {
+        lines.extend([
+            help_section("Browse", theme),
+            help_binding("w", "Focus detail pane", theme),
+            help_binding("j/k, ↑/↓", "Move selection", theme),
+            help_binding("Space, Enter", "Toggle expand", theme),
+            help_binding("E / C", "Expand all / collapse all", theme),
+            help_binding("b", "Branch from selection", theme),
+            help_binding("←/→, h/l", "Scroll tree horizontally", theme),
+            Line::from(""),
+            help_section("Hop symbols", theme),
+            help_symbol_legend(
+                cache_source_legend(theme.symbols)[0].0,
+                cache_source_legend(theme.symbols)[0].1,
+                true,
+                theme,
+            ),
+            help_symbol_legend(
+                cache_source_legend(theme.symbols)[1].0,
+                cache_source_legend(theme.symbols)[1].1,
+                false,
+                theme,
+            ),
+        ]);
+    } else {
+        lines.extend([
+            help_section("Compare", theme),
+            help_binding("j/k, ↑/↓", "Move row", theme),
+            help_binding("Enter", "Return to Browse at row", theme),
+        ]);
+    }
+    lines
 }
 
 fn help_section(title: &str, theme: &Theme) -> Line<'static> {
@@ -485,8 +1073,8 @@ fn help_section(title: &str, theme: &Theme) -> Line<'static> {
 fn help_binding(keys: &str, description: &str, theme: &Theme) -> Line<'static> {
     Line::from(vec![
         Span::raw("  "),
-        Span::styled(format!("{keys:<14}"), theme.help_key()),
-        Span::raw(format!(" {description}")),
+        Span::styled(format!("{keys:<18}"), theme.help_key()),
+        Span::raw(description.to_string()),
     ])
 }
 
@@ -503,193 +1091,31 @@ fn help_symbol_legend(
     ])
 }
 
-fn default_expanded_paths(tree: &ExploreTree) -> Vec<Vec<usize>> {
-    let mut paths = Vec::new();
-    for (index, child) in tree.children.iter().enumerate() {
-        collect_expandable_paths(child, vec![index], &mut paths);
-    }
-    paths
-}
-
-fn collect_expandable_paths(node: &ExploreNode, path: Vec<usize>, paths: &mut Vec<Vec<usize>>) {
-    if has_children(node) {
-        paths.push(path.clone());
-        match node {
-            ExploreNode::Delegation { children, .. } | ExploreNode::Resolve { children, .. } => {
-                for (index, child) in children.iter().enumerate() {
-                    let mut child_path = path.clone();
-                    child_path.push(index);
-                    collect_expandable_paths(child, child_path, paths);
-                }
-            }
-            ExploreNode::Hop { .. } => {}
-        }
-    }
-}
-
-fn has_children(node: &ExploreNode) -> bool {
-    match node {
-        ExploreNode::Delegation { children, .. } => !children.is_empty(),
-        ExploreNode::Resolve { children, .. } => !children.is_empty(),
-        ExploreNode::Hop { .. } => false,
-    }
-}
-
-fn toggle_path(expanded_paths: &mut Vec<Vec<usize>>, node_ref: &NodeRef) {
-    let Some(path) = node_path(node_ref) else {
-        return;
-    };
-    if let Some(index) = expanded_paths.iter().position(|existing| existing == &path) {
-        expanded_paths.remove(index);
-    } else {
-        expanded_paths.push(path);
-    }
-}
-
-fn node_path(node_ref: &NodeRef) -> Option<Vec<usize>> {
-    match node_ref {
-        NodeRef::Delegation { path, .. } | NodeRef::Resolve { path, .. } => Some(path.clone()),
-        NodeRef::Hop { .. } => None,
-    }
-}
-
-fn build_visible_nodes(tree: &ExploreTree, expanded_paths: &[Vec<usize>]) -> Vec<VisibleNode> {
-    let mut visible = Vec::new();
-    for (index, child) in tree.children.iter().enumerate() {
-        append_visible_node(child, vec![index], 0, expanded_paths, &mut visible);
-    }
-    visible
-}
-
-fn append_visible_node(
-    node: &ExploreNode,
-    path: Vec<usize>,
-    depth: usize,
-    expanded_paths: &[Vec<usize>],
-    visible: &mut Vec<VisibleNode>,
-) {
-    let expandable = has_children(node);
-    let expanded = expandable && expanded_paths.iter().any(|existing| existing == &path);
-
-    let node_ref = match node {
-        ExploreNode::Delegation { hop_index, .. } => NodeRef::Delegation {
-            hop_index: *hop_index,
-            path: path.clone(),
-        },
-        ExploreNode::Resolve { target, .. } => NodeRef::Resolve {
-            target: target.clone(),
-            path: path.clone(),
-        },
-        ExploreNode::Hop { hop_index } => NodeRef::Hop {
-            hop_index: *hop_index,
-        },
-    };
-
-    visible.push(VisibleNode {
-        node: node_ref,
-        depth,
-        expandable,
-        expanded,
-    });
-
-    if !expanded {
-        return;
-    }
-
-    let children = match node {
-        ExploreNode::Delegation { children, .. } | ExploreNode::Resolve { children, .. } => {
-            children
-        }
-        ExploreNode::Hop { .. } => return,
-    };
-
-    for (index, child) in children.iter().enumerate() {
-        let mut child_path = path.clone();
-        child_path.push(index);
-        append_visible_node(child, child_path, depth + 1, expanded_paths, visible);
-    }
-}
-
 #[cfg(test)]
-mod pane_tests {
-    use ratatui::style::{Color, Modifier};
-    use ratatui::text::{Line, Span};
-
-    use super::{
-        Pane, apply_tree_selection, footer_line, help_lines, line_display_width, scroll_line,
-    };
-    use crate::explore::terminal::UNICODE;
-    use crate::explore::theme::Theme;
+mod tests {
+    use super::*;
 
     #[test]
-    fn footer_line_prompts_for_help() {
-        let theme = Theme {
-            color_enabled: true,
-            symbols: UNICODE,
-        };
-        let line = footer_line(&theme);
-        let text: String = line
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        assert_eq!(text, "Press ? for help");
+    fn browse_pane_cycles_with_w() {
+        let pane = BrowsePane::Tree;
+        assert_eq!(pane.cycle_forward(), BrowsePane::Detail);
+        assert_eq!(BrowsePane::Detail.cycle_forward(), BrowsePane::Tree);
     }
 
     #[test]
-    fn tree_selection_overrides_span_colors() {
-        let theme = Theme {
-            color_enabled: true,
-            symbols: UNICODE,
-        };
-        let line = Line::from(vec![
-            Span::styled("example.com. A", theme.accent_bold()),
-            Span::styled(" NOERROR", theme.rcode("NOERROR")),
-        ]);
-
-        let selected = apply_tree_selection(line, &theme);
-        let style = theme.tree_selected();
-
-        assert_eq!(selected.style, style);
-        for span in selected.spans {
-            assert_eq!(span.style, style);
-            assert_eq!(span.style.fg, Some(Color::White));
-            assert_eq!(span.style.bg, Some(Color::Blue));
-            assert!(span.style.add_modifier.contains(Modifier::BOLD));
-        }
-    }
-
-    #[test]
-    fn scroll_line_shifts_content_left_by_display_width() {
-        let line = Line::from(vec![Span::raw("abc "), Span::raw("def")]);
-        assert_eq!(line_display_width(&line), 7);
-        let scrolled = scroll_line(line, 4);
-        assert_eq!(
-            scrolled
-                .spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect::<String>(),
-            "def"
-        );
-    }
-
-    #[test]
-    fn tab_cycles_forward_through_panes() {
-        assert_eq!(Pane::Tree.cycle_forward(), Pane::Detail);
-        assert_eq!(Pane::Detail.cycle_forward(), Pane::Tree);
-    }
-
-    #[test]
-    fn shift_tab_cycles_backward_through_panes() {
-        assert_eq!(Pane::Tree.cycle_backward(), Pane::Detail);
-        assert_eq!(Pane::Detail.cycle_backward(), Pane::Tree);
-    }
-
-    #[test]
-    fn help_overlay_lists_expected_bindings() {
+    fn help_lists_screen_bindings() {
+        let view = ViewStateController::default_for_tree(&super::super::tree::build_explore_tree(
+            &dns_resolve::build_linear_tree(
+                vec![sample_hop()],
+                dns_resolve::TraceTreeRequest {
+                    qname: "example.com.".into(),
+                    qtype: "A".into(),
+                    started_at: "2026-08-25T00:00:00Z".into(),
+                },
+            ),
+        ));
         let theme = Theme::from_env();
-        let text: String = help_lines(&theme)
+        let text = help_lines(&view, &theme)
             .into_iter()
             .map(|line| {
                 line.spans
@@ -699,12 +1125,29 @@ mod pane_tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
+        assert!(text.contains("Cycle screens"));
+        assert!(text.contains("Expand all / collapse all"));
+        assert!(text.contains("Branch from selection"));
+    }
 
-        assert!(text.contains("?              Show this help"));
-        assert!(text.contains("Shift-Tab      Previous pane"));
-        assert!(text.contains("Toggle expand/collapse"));
-        assert!(text.contains("Scroll line left"));
-        assert!(text.contains("Toggle colors"));
-        assert!(text.contains("response from cache"));
+    fn sample_hop() -> dns_resolve::TraceHop {
+        dns_resolve::TraceHop {
+            zone: ".".into(),
+            server: "1.1.1.1".into(),
+            server_name: None,
+            qname: "example.com.".into(),
+            qtype: "A".into(),
+            transport: "udp".into(),
+            rtt_ms: 10,
+            rcode: "NOERROR".into(),
+            nsid: None,
+            ede_code: None,
+            ede_text: None,
+            referral_ns: vec![],
+            glue: vec![],
+            response: Default::default(),
+            from_cache: false,
+            outcome: dns_resolve::HopOutcome::Answered,
+        }
     }
 }

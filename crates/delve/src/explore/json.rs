@@ -1,4 +1,6 @@
-use super::tree::{ExploreNode, ExploreTree};
+use dns_resolve::TraceNode;
+
+use super::tree::ExploreTree;
 
 pub fn render_tree_json(tree: &ExploreTree, session_id: &str) -> String {
     let payload = serde_json::json!({
@@ -6,35 +8,17 @@ pub fn render_tree_json(tree: &ExploreTree, session_id: &str) -> String {
         "session": session_id,
         "qname": tree.qname,
         "qtype": tree.qtype,
-        "tree": tree
-            .children
-            .iter()
-            .map(|node| json_value(tree, node))
-            .collect::<Vec<_>>(),
+        "tree": json_node(&tree.tree.root),
     });
     serde_json::to_string(&payload).expect("json")
 }
 
-fn json_value(tree: &ExploreTree, node: &ExploreNode) -> serde_json::Value {
-    match node {
-        ExploreNode::Delegation {
-            hop_index,
-            children,
-        } => serde_json::json!({
-            "kind": "delegation",
-            "hop": tree.hop(*hop_index),
-            "children": children.iter().map(|child| json_value(tree, child)).collect::<Vec<_>>(),
-        }),
-        ExploreNode::Resolve { target, children } => serde_json::json!({
-            "kind": "resolve",
-            "target": target,
-            "children": children.iter().map(|child| json_value(tree, child)).collect::<Vec<_>>(),
-        }),
-        ExploreNode::Hop { hop_index } => serde_json::json!({
-            "kind": "hop",
-            "hop": tree.hop(*hop_index),
-        }),
-    }
+fn json_node(node: &TraceNode) -> serde_json::Value {
+    serde_json::json!({
+        "hop": node.hop,
+        "origin": node.origin,
+        "children": node.children.iter().map(json_node).collect::<Vec<_>>(),
+    })
 }
 
 #[cfg(test)]
@@ -74,6 +58,7 @@ mod tests {
         let json = render_tree_json(&tree, "01JTEST");
         assert!(json.contains("\"event\":\"explore_tree\""));
         assert!(json.contains("\"session\":\"01JTEST\""));
-        assert!(json.contains("\"kind\":\"delegation\""));
+        assert!(json.contains("\"hop\""));
+        assert!(json.contains("\"children\""));
     }
 }

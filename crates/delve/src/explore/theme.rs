@@ -157,4 +157,12 @@ impl Theme {
     pub fn help_key(&self) -> Style {
         self.label().add_modifier(Modifier::BOLD)
     }
+
+    pub fn failure(&self) -> Style {
+        if self.color_enabled {
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().add_modifier(Modifier::BOLD)
+        }
+    }
 }

@@ -1,18 +1,30 @@
 use std::net::IpAddr;
 
-use dns_resolve::TraceHop;
+use dns_resolve::{HopOutcome, TraceHop};
 
 use super::terminal::{UiSymbols, cache_source_symbol};
 
 pub fn hop_summary_line(hop: &TraceHop, symbols: UiSymbols) -> String {
+    let marker = if matches!(hop.outcome, HopOutcome::Failed { .. }) {
+        "✗ "
+    } else {
+        ""
+    };
     format!(
-        "[{}] {} {}  {}  {}",
+        "{marker}[{}] {} {}  {}  {}",
         hop.zone,
         hop.qname,
         hop.qtype,
         hop.rcode,
         cache_source_symbol(hop.from_cache, symbols)
     )
+}
+
+pub fn hop_failure_line(hop: &TraceHop) -> Option<String> {
+    match &hop.outcome {
+        HopOutcome::Failed { kind, detail } => Some(format!("failure: {kind}: {detail}")),
+        _ => None,
+    }
 }
 
 pub fn format_server_endpoint(server: &str, server_name: Option<&str>) -> String {
@@ -53,13 +65,18 @@ pub fn render_indented_block(lines: &[String], indent: &str) -> String {
 }
 
 pub fn hop_detail_lines(hop: &TraceHop, symbols: UiSymbols) -> Vec<String> {
-    if hop.response.is_stored() {
-        return super::dig_view::hop_detail_plain(hop, symbols)
+    let mut lines = if hop.response.is_stored() {
+        super::dig_view::hop_detail_plain(hop, symbols)
             .lines()
             .map(str::to_owned)
-            .collect();
+            .collect()
+    } else {
+        legacy_hop_detail_lines(hop, symbols)
+    };
+    if let Some(failure) = hop_failure_line(hop) {
+        lines.push(failure);
     }
-    legacy_hop_detail_lines(hop, symbols)
+    lines
 }
 
 pub(crate) fn legacy_hop_detail_lines(hop: &TraceHop, symbols: UiSymbols) -> Vec<String> {
@@ -97,6 +114,7 @@ fn append_yaml_list_lines(lines: &mut Vec<String>, key: &str, values: &[String])
 mod tests {
     use super::*;
     use crate::explore::terminal::UNICODE;
+    use dns_resolve::HopOutcome;
 
     #[test]
     fn formats_multi_value_fields_as_yaml_lists() {
@@ -135,5 +153,34 @@ mod tests {
             format_query_response_time_line(11),
             "query response time: 11ms"
         );
+    }
+
+    #[test]
+    fn failed_hop_summary_and_detail_include_failure_reason() {
+        let hop = TraceHop {
+            zone: "com.".into(),
+            server: "192.0.2.1".into(),
+            server_name: None,
+            qname: "example.com.".into(),
+            qtype: "A".into(),
+            transport: "udp".into(),
+            rtt_ms: 0,
+            rcode: "SERVFAIL".into(),
+            nsid: None,
+            ede_code: None,
+            ede_text: None,
+            referral_ns: vec![],
+            glue: vec![],
+            response: Default::default(),
+            from_cache: false,
+            outcome: HopOutcome::Failed {
+                kind: "timeout".into(),
+                detail: "no response".into(),
+            },
+        };
+        let summary = hop_summary_line(&hop, UNICODE);
+        assert!(summary.starts_with("✗ "));
+        let detail = hop_detail_lines(&hop, UNICODE).join("\n");
+        assert!(detail.contains("failure: timeout: no response"));
     }
 }
