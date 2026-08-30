@@ -135,7 +135,7 @@ pub struct SessionIdArgs {
 
 #[derive(Debug, Parser)]
 pub struct SessionPurgeArgs {
-    /// Session id or prefix. Applies retention to that session only.
+    /// Session id or prefix. Removes that unpinned session regardless of retention age.
     pub id: Option<String>,
     /// Remove all unpinned sessions regardless of retention age.
     #[arg(long, conflicts_with = "id")]

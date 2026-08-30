@@ -229,20 +229,9 @@ impl SessionStore for NdjsonSessionStore {
         })
     }
 
-    fn purge_session(
-        &mut self,
-        id: &str,
-        retention: SessionRetention,
-        dry_run: bool,
-    ) -> Result<PurgeReport> {
+    fn purge_session(&mut self, id: &str, dry_run: bool) -> Result<PurgeReport> {
         if let Some(reason) = &self.disabled_reason {
             return Err(SessionError::Store(reason.clone()));
-        }
-        if retention == SessionRetention::Never {
-            return Ok(PurgeReport {
-                removed: 0,
-                skipped_unparseable: 0,
-            });
         }
 
         let document = self.get(id)?;
@@ -253,26 +242,13 @@ impl SessionStore for NdjsonSessionStore {
             });
         }
 
-        let now = OffsetDateTime::now_utc();
-        match is_expired(&document.updated_at, retention, now) {
-            Some(true) => {
-                if !dry_run {
-                    self.remove(id)?;
-                }
-                Ok(PurgeReport {
-                    removed: 1,
-                    skipped_unparseable: 0,
-                })
-            }
-            Some(false) => Ok(PurgeReport {
-                removed: 0,
-                skipped_unparseable: 0,
-            }),
-            None => Ok(PurgeReport {
-                removed: 0,
-                skipped_unparseable: 1,
-            }),
+        if !dry_run {
+            self.remove(id)?;
         }
+        Ok(PurgeReport {
+            removed: 1,
+            skipped_unparseable: 0,
+        })
     }
 
     fn purge_all(&mut self, dry_run: bool) -> Result<PurgeReport> {

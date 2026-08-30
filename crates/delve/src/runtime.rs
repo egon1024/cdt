@@ -185,7 +185,7 @@ impl Runtime {
     ) -> Result<crate::retention::PurgeReport, SessionError> {
         let mut store = self.sessions.lock().expect("session lock");
         if let Some(id) = id {
-            store.purge_session(id, self.config.session_retention, dry_run)
+            store.purge_session(id, dry_run)
         } else if all {
             store.purge_all(dry_run)
         } else {
