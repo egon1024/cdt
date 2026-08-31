@@ -5,7 +5,7 @@ use dns_core::name::DomainName;
 use dns_core::parse_record_type;
 use dns_resolve::trace::{
     dns_response_from_stored, expansion_targets_for_cut, resolve_nameserver_target_for_referral,
-    server_matches_primary, server_target_from_hop,
+    seed_ns_targets_from_tree, server_matches_primary, server_target_from_hop,
 };
 use dns_resolve::{
     BranchIntent, BranchJobRequest, NodePath, QueryBudget, ResolveError, ServerTarget, TraceConfig,
@@ -209,6 +209,7 @@ pub fn execute_branch(
     if let Some(exchange) = exchange_override {
         config.exchange = exchange;
     }
+    seed_ns_targets_from_tree(&config, &session_tree.tree.root);
 
     let queried_children: Vec<_> = cut_node.children.iter().collect();
     let targets = match &intent {
@@ -1050,21 +1051,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn expand_cut_reuses_queried_nameserver_without_dns() {
-        struct PanicExchange;
-
-        impl dns_resolve::DnsExchange for PanicExchange {
-            fn exchange(
-                &self,
-                _server: IpAddr,
-                _port: u16,
-                _options: &dns_core::query::QueryOptions,
-            ) -> dns_core::Result<dns_core::response::QueryResult> {
-                panic!("expand cut should not query when child hops already cover referral NS");
-            }
-        }
-
+    fn tuininga_tree() -> TraceTree {
         let root = TraceNode {
             hop: TraceHop {
                 zone: ".".into(),
@@ -1078,8 +1065,16 @@ mod tests {
                 nsid: None,
                 ede_code: None,
                 ede_text: None,
-                referral_ns: vec!["a0.org.afilias-nst.info.".into()],
-                glue: vec![],
+                referral_ns: vec![
+                    "a0.org.afilias-nst.info.".into(),
+                    "b0.org.afilias-nst.org.".into(),
+                    "c0.org.afilias-nst.info.".into(),
+                ],
+                glue: vec![
+                    "199.249.112.1".into(),
+                    "199.249.120.1".into(),
+                    "199.249.125.1".into(),
+                ],
                 response: Default::default(),
                 from_cache: false,
                 outcome: HopOutcome::Referral,
@@ -1089,7 +1084,7 @@ mod tests {
                 hop: TraceHop {
                     zone: "org.".into(),
                     server: "199.249.112.1".into(),
-                    server_name: Some("a2.org.afilias-nst.info.".into()),
+                    server_name: Some("a0.org.afilias-nst.info.".into()),
                     qname: "tuininga.org.".into(),
                     qtype: "A".into(),
                     transport: "udp".into(),
@@ -1179,7 +1174,7 @@ mod tests {
                 ],
             }],
         };
-        let tree = TraceTree {
+        TraceTree {
             request: TraceTreeRequest {
                 qname: "tuininga.org.".into(),
                 qtype: "A".into(),
@@ -1187,9 +1182,239 @@ mod tests {
             },
             root,
             budget_truncated: false,
-        };
+        }
+    }
+
+    #[test]
+    fn expand_cut_from_root_dry_run_lists_unqueried_org_servers() {
         let mut document = sample_document(
-            tree,
+            tuininga_tree(),
+            TraceRequest::from_options(&TraceOptions {
+                qname: "tuininga.org.".into(),
+                ..Default::default()
+            }),
+        );
+        let runtime = runtime();
+        let report = execute_branch(
+            &mut document,
+            NodePath::root(0),
+            BranchIntentArg::ExpandCut,
+            true,
+            &runtime,
+            &mut SilentProgress,
+            None,
+        )
+        .expect("branch");
+        let plan = report.plan.expect("plan");
+        assert_eq!(plan.zone, ".");
+        assert_eq!(plan.targets.len(), 2);
+        assert!(
+            plan.targets
+                .iter()
+                .any(|target| target.contains("b0.org.afilias-nst.org"))
+        );
+        assert!(
+            plan.targets
+                .iter()
+                .any(|target| target.contains("c0.org.afilias-nst.info"))
+        );
+    }
+
+    #[test]
+    fn expand_cut_from_root_reuses_session_nameserver_targets() {
+        struct TuiningaBranchExchange;
+
+        impl TuiningaBranchExchange {
+            fn is_org_server(server: IpAddr) -> bool {
+                matches!(
+                    server,
+                    IpAddr::V4(v4) if matches!(
+                        v4.octets(),
+                        [199, 249, 112, 1] | [199, 249, 120, 1] | [199, 249, 125, 1]
+                    )
+                )
+            }
+
+            fn is_hetzner_server(server: IpAddr) -> bool {
+                matches!(
+                    server,
+                    IpAddr::V4(v4) if matches!(
+                        v4.octets(),
+                        [193, 47, 99, 5] | [213, 133, 100, 98] | [88, 198, 229, 192]
+                    )
+                )
+            }
+        }
+
+        impl dns_resolve::DnsExchange for TuiningaBranchExchange {
+            fn exchange(
+                &self,
+                server: IpAddr,
+                _port: u16,
+                options: &dns_core::query::QueryOptions,
+            ) -> dns_core::Result<dns_core::response::QueryResult> {
+                let qname = options.qname.as_str();
+                if qname.contains("hetzner") {
+                    panic!(
+                        "branch should reuse session nameserver targets instead of sub-tracing {qname}"
+                    );
+                }
+                if !qname.trim_end_matches('.').eq_ignore_ascii_case("tuininga.org") {
+                    return Err(dns_core::DnsCoreError::Parse(format!(
+                        "unexpected query {qname} to {server}"
+                    )));
+                }
+                if Self::is_hetzner_server(server) {
+                    return Ok(dns_core::response::QueryResult {
+                        server,
+                        transport: options.transport,
+                        qname: options.qname.clone(),
+                        qtype: options.qtype.to_string(),
+                        rtt: std::time::Duration::from_millis(1),
+                        response: DnsResponse {
+                            id: 1,
+                            rcode: 0,
+                            rcode_text: "NOERROR".into(),
+                            authoritative: true,
+                            truncated: false,
+                            recursion_desired: false,
+                            recursion_available: false,
+                            authentic_data: false,
+                            checking_disabled: false,
+                            answers: vec![DnsRecord {
+                                name: options.qname.clone(),
+                                rtype: "A".into(),
+                                rclass: "IN".into(),
+                                ttl: 300,
+                                rdata: "93.184.216.34".into(),
+                            }],
+                            authorities: vec![],
+                            additionals: vec![],
+                            edns: EdnsMeta::default(),
+                        },
+                        from_cache: false,
+                    });
+                }
+                if Self::is_org_server(server) {
+                    return Ok(dns_core::response::QueryResult {
+                        server,
+                        transport: options.transport,
+                        qname: options.qname.clone(),
+                        qtype: options.qtype.to_string(),
+                        rtt: std::time::Duration::from_millis(1),
+                        response: DnsResponse {
+                            id: 1,
+                            rcode: 0,
+                            rcode_text: "NOERROR".into(),
+                            authoritative: false,
+                            truncated: false,
+                            recursion_desired: false,
+                            recursion_available: false,
+                            authentic_data: false,
+                            checking_disabled: false,
+                            answers: vec![],
+                            authorities: vec![DnsRecord {
+                                name: DomainName::parse("tuininga.org.").expect("zone"),
+                                rtype: "NS".into(),
+                                rclass: "IN".into(),
+                                ttl: 3600,
+                                rdata: "helium.ns.hetzner.de.".into(),
+                            }],
+                            additionals: vec![],
+                            edns: EdnsMeta::default(),
+                        },
+                        from_cache: false,
+                    });
+                }
+                Ok(dns_core::response::QueryResult {
+                    server,
+                    transport: options.transport,
+                    qname: options.qname.clone(),
+                    qtype: options.qtype.to_string(),
+                    rtt: std::time::Duration::from_millis(1),
+                    response: DnsResponse {
+                        id: 1,
+                        rcode: 0,
+                        rcode_text: "NOERROR".into(),
+                        authoritative: false,
+                        truncated: false,
+                        recursion_desired: false,
+                        recursion_available: false,
+                        authentic_data: false,
+                        checking_disabled: false,
+                        answers: vec![],
+                        authorities: vec![DnsRecord {
+                            name: DomainName::parse("org.").expect("zone"),
+                            rtype: "NS".into(),
+                            rclass: "IN".into(),
+                            ttl: 3600,
+                            rdata: "a0.org.afilias-nst.info.".into(),
+                        }],
+                        additionals: vec![],
+                        edns: EdnsMeta::default(),
+                    },
+                    from_cache: false,
+                })
+            }
+        }
+
+        let mut document = sample_document(
+            {
+                let mut tree = tuininga_tree();
+                tree.root.hop.referral_ns = vec![
+                    "a0.org.afilias-nst.info.".into(),
+                    "b0.org.afilias-nst.org.".into(),
+                ];
+                tree.root.hop.glue = vec!["199.249.112.1".into(), "199.249.120.1".into()];
+                tree
+            },
+            TraceRequest::from_options(&TraceOptions {
+                qname: "tuininga.org.".into(),
+                ..Default::default()
+            }),
+        );
+        let runtime = runtime();
+        let report = execute_branch(
+            &mut document,
+            NodePath::root(0),
+            BranchIntentArg::ExpandCut,
+            false,
+            &runtime,
+            &mut SilentProgress,
+            Some(Arc::new(TuiningaBranchExchange)),
+        )
+        .expect("branch");
+        assert_eq!(report.nodes_added, 1);
+        let root = document
+            .primary_tree()
+            .expect("tree")
+            .resolve(&NodePath::root(0))
+            .expect("root");
+        assert_eq!(root.children.len(), 2);
+        assert!(
+            root.children
+                .iter()
+                .any(|child| child.hop.server == "199.249.120.1")
+        );
+    }
+
+    #[test]
+    fn expand_cut_reuses_queried_nameserver_without_dns() {
+        struct PanicExchange;
+
+        impl dns_resolve::DnsExchange for PanicExchange {
+            fn exchange(
+                &self,
+                _server: IpAddr,
+                _port: u16,
+                _options: &dns_core::query::QueryOptions,
+            ) -> dns_core::Result<dns_core::response::QueryResult> {
+                panic!("expand cut should not query when child hops already cover referral NS");
+            }
+        }
+
+        let mut document = sample_document(
+            tuininga_tree(),
             TraceRequest::from_options(&TraceOptions {
                 qname: "tuininga.org.".into(),
                 ..Default::default()

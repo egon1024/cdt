@@ -18,6 +18,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::branch::{
     BranchError, BranchIntentArg, BranchReport, ServerTargetInput, branch_session,
+    format_branch_report,
 };
 use crate::config::RttBarConfig;
 use crate::paths::DelvePaths;
@@ -842,16 +843,6 @@ impl TraceProgress for ChannelProgress {
             "budget truncated at {cap}"
         )));
     }
-}
-
-fn format_branch_report(report: &BranchReport) -> String {
-    if report.dry_run {
-        return "dry run complete".into();
-    }
-    if report.nodes_added == 0 {
-        return "nothing to branch".into();
-    }
-    format!("added {} node(s)", report.nodes_added)
 }
 
 fn screen_indicator(view: &ViewStateController, theme: &Theme) -> Line<'static> {

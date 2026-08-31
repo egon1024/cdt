@@ -771,6 +771,28 @@ fn remember_ns_targets(config: &TraceConfig, ns_name: &DomainName, targets: &[Se
     }
 }
 
+/// Seed the per-trace nameserver target cache from hops already present in a session tree.
+///
+/// Branch continuation reuses these addresses when a delegation has no glue, avoiding
+/// redundant (and sometimes failing) in-bailiwick nameserver sub-traces.
+pub fn seed_ns_targets_from_tree(config: &TraceConfig, root: &TraceNode) {
+    seed_ns_targets_from_node(config, root);
+}
+
+fn seed_ns_targets_from_node(config: &TraceConfig, node: &TraceNode) {
+    if let Some(name) = node.hop.server_name.as_deref().filter(|name| !name.is_empty()) {
+        if let (Ok(ns_name), Ok(target)) = (
+            DomainName::parse(name),
+            server_target_from_hop(&node.hop),
+        ) {
+            remember_ns_targets(config, &ns_name, std::slice::from_ref(&target));
+        }
+    }
+    for child in &node.children {
+        seed_ns_targets_from_node(config, child);
+    }
+}
+
 pub(crate) fn collect_glue(response: &DnsResponse, ns_names: &[DomainName]) -> Vec<IpAddr> {
     ns_names
         .iter()
