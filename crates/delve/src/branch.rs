@@ -314,11 +314,8 @@ pub fn execute_branch(
     };
 
     if is_expand_cut {
-        new_nodes = normalize_expand_cut_attachments(
-            &delegation_hop,
-            cut_path.path.is_empty(),
-            new_nodes,
-        );
+        new_nodes =
+            normalize_expand_cut_attachments(&delegation_hop, cut_path.path.is_empty(), new_nodes);
     }
 
     let nodes_added = new_nodes.len();
@@ -423,7 +420,8 @@ fn normalize_expand_cut_attachment(
     cut_hop: &dns_resolve::TraceHop,
     mut node: TraceNode,
 ) -> Vec<TraceNode> {
-    let branch_origin = matches!(&node.origin, NodeOrigin::Branch { .. }).then(|| node.origin.clone());
+    let branch_origin =
+        matches!(&node.origin, NodeOrigin::Branch { .. }).then(|| node.origin.clone());
 
     while node.hop.zone == cut_hop.zone {
         match node.children.len() {
@@ -1335,7 +1333,10 @@ mod tests {
                         "branch should reuse session nameserver targets instead of sub-tracing {qname}"
                     );
                 }
-                if !qname.trim_end_matches('.').eq_ignore_ascii_case("tuininga.org") {
+                if !qname
+                    .trim_end_matches('.')
+                    .eq_ignore_ascii_case("tuininga.org")
+                {
                     return Err(dns_core::DnsCoreError::Parse(format!(
                         "unexpected query {qname} to {server}"
                     )));
@@ -1491,9 +1492,7 @@ mod tests {
             .expect("root");
         assert_eq!(root.children.len(), 3);
         assert!(
-            root.children
-                .iter()
-                .all(|child| child.hop.zone == "org."),
+            root.children.iter().all(|child| child.hop.zone == "org."),
             "root expand should attach org-level siblings, not redundant root-zone hops"
         );
         assert_eq!(

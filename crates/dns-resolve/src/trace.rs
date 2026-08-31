@@ -780,11 +780,15 @@ pub fn seed_ns_targets_from_tree(config: &TraceConfig, root: &TraceNode) {
 }
 
 fn seed_ns_targets_from_node(config: &TraceConfig, node: &TraceNode) {
-    if let Some(name) = node.hop.server_name.as_deref().filter(|name| !name.is_empty()) {
-        if let (Ok(ns_name), Ok(target)) = (
-            DomainName::parse(name),
-            server_target_from_hop(&node.hop),
-        ) {
+    if let Some(name) = node
+        .hop
+        .server_name
+        .as_deref()
+        .filter(|name| !name.is_empty())
+    {
+        if let (Ok(ns_name), Ok(target)) =
+            (DomainName::parse(name), server_target_from_hop(&node.hop))
+        {
             remember_ns_targets(config, &ns_name, std::slice::from_ref(&target));
         }
     }
