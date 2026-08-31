@@ -43,7 +43,7 @@ With `+events`, reuse replays stored hop events and emits a final `complete` eve
 
 ### Retention and pinning
 
-Unpinned sessions are subject to **retention** (`session.retention` in config; default **180d**). Purge runs when the session store is opened (any command that touches sessions). **Pinned** sessions are skipped by automatic retention and by `delve session purge` (but not by explicit `delve session rm <id>`).
+Unpinned sessions are subject to **retention** only when you set `session.retention` in config (default **unlimited** — sessions are kept until you remove them). Purge runs when the session store is opened (any command that touches sessions). **Pinned** sessions are skipped by automatic retention and by `delve session purge` (but not by explicit `delve session rm <id>`).
 
 Use `delve session pin <id>` to keep a session across retention. Use `delve session purge --all` to remove every unpinned session regardless of age. Use `delve session purge <id>` to remove one unpinned session regardless of age (pinned sessions are skipped).
 
@@ -145,7 +145,7 @@ If the file is missing, defaults apply. If the file exists but is invalid, delve
 
 ```yaml
 session:
-  retention: 180d
+  retention: 180d   # optional; default unlimited (omit or use never / unlimited / 0)
 trace:
   max_parallel_queries: 8
 explore:
@@ -217,12 +217,13 @@ Maximum number of DNS queries that `delve trace` may run concurrently when expan
 ### `session.retention`
 
 Controls how long **unpinned** stored sessions are kept before automatic purge.
+Default when unset: **unlimited** (no automatic purge by age).
 
 | Value | Meaning |
 |-------|---------|
-| `180d` | Calendar days (default when unset: **180d**) |
+| `180d` | Calendar days |
 | `6mo` | Calendar months (same day-of-month, N months earlier; end-of-month clamped) |
-| `0` or `never` | Sessions are never removed by retention |
+| `0`, `never`, or `unlimited` | Sessions are never removed by retention |
 
 When sessions are removed, stderr shows a notice only if the count is greater than zero, for example:
 

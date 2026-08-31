@@ -37,7 +37,7 @@ pub fn is_expired(
 
 pub fn retention_label(retention: SessionRetention) -> String {
     match retention {
-        SessionRetention::Never => "never".into(),
+        SessionRetention::Never => "unlimited".into(),
         SessionRetention::Days(days) => format!("{days}d"),
         SessionRetention::Months(months) => format!("{months}mo"),
     }

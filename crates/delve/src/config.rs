@@ -2,7 +2,7 @@ use serde::Deserialize;
 
 use crate::paths::DelvePaths;
 
-const DEFAULT_RETENTION: &str = "180d";
+const DEFAULT_RETENTION: &str = "never";
 const DEFAULT_MAX_QUERIES: usize = 64;
 const DEFAULT_MAX_PARALLEL_QUERIES: usize = 8;
 const DEFAULT_RTT_GREEN_MS: u32 = 50;
@@ -70,7 +70,7 @@ pub struct DelveConfig {
 impl Default for DelveConfig {
     fn default() -> Self {
         Self {
-            session_retention: parse_retention(DEFAULT_RETENTION).expect("default retention"),
+            session_retention: SessionRetention::Never,
             trace_max_queries_per_action: DEFAULT_MAX_QUERIES,
             trace_max_parallel_queries: DEFAULT_MAX_PARALLEL_QUERIES,
             explore_persist_view_state: true,
@@ -235,7 +235,7 @@ pub fn parse_retention(raw: &str) -> Result<SessionRetention, String> {
     if value.is_empty() {
         return Err("empty retention value".into());
     }
-    if value == "0" || value == "never" {
+    if value == "0" || value == "never" || value == "unlimited" {
         return Ok(SessionRetention::Never);
     }
     if let Some(days) = value.strip_suffix('d') {
@@ -251,7 +251,7 @@ pub fn parse_retention(raw: &str) -> Result<SessionRetention, String> {
         return Ok(SessionRetention::Months(months));
     }
     Err(format!(
-        "expected duration like 180d, 6mo, 0, or never; got \"{raw}\""
+        "expected duration like 180d, 6mo, unlimited, 0, or never; got \"{raw}\""
     ))
 }
 
@@ -274,6 +274,18 @@ mod tests {
             SessionRetention::Never
         );
         assert_eq!(parse_retention("0").expect("zero"), SessionRetention::Never);
+        assert_eq!(
+            parse_retention("unlimited").expect("unlimited"),
+            SessionRetention::Never
+        );
+    }
+
+    #[test]
+    fn default_session_retention_is_unlimited() {
+        assert_eq!(
+            DelveConfig::default().session_retention,
+            SessionRetention::Never
+        );
     }
 
     #[test]
