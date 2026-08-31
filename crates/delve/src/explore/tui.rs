@@ -419,15 +419,16 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                 if show_help {
                     match key.code {
                         KeyCode::Char('?') | KeyCode::Esc => show_help = false,
-                        KeyCode::Char('q') => {
-                            if request_quit(unsaved_rtt_refresh, &mut refresh_overlay) {
-                                break;
-                            }
+                        KeyCode::Char('q')
+                            if request_quit(unsaved_rtt_refresh, &mut refresh_overlay) =>
+                        {
+                            break;
                         }
-                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            if request_quit(unsaved_rtt_refresh, &mut refresh_overlay) {
-                                break;
-                            }
+                        KeyCode::Char('c')
+                            if key.modifiers.contains(KeyModifiers::CONTROL)
+                                && request_quit(unsaved_rtt_refresh, &mut refresh_overlay) =>
+                        {
+                            break;
                         }
                         KeyCode::Char('c') => theme.toggle_color(),
                         _ => {}
@@ -519,10 +520,10 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                         KeyCode::Enter | KeyCode::Char(' ') => {
                             screen_notice = None;
                         }
-                        KeyCode::Char('q') => {
-                            if request_quit(unsaved_rtt_refresh, &mut refresh_overlay) {
-                                break;
-                            }
+                        KeyCode::Char('q')
+                            if request_quit(unsaved_rtt_refresh, &mut refresh_overlay) =>
+                        {
+                            break;
                         }
                         KeyCode::Esc => screen_notice = None,
                         _ => {}
@@ -533,16 +534,17 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                 }
 
                 match key.code {
-                    KeyCode::Char('q') => {
-                        if request_quit(unsaved_rtt_refresh, &mut refresh_overlay) {
-                            break;
-                        }
+                    KeyCode::Char('q')
+                        if request_quit(unsaved_rtt_refresh, &mut refresh_overlay) =>
+                    {
+                        break;
                     }
                     KeyCode::Char('?') => show_help = true,
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        if request_quit(unsaved_rtt_refresh, &mut refresh_overlay) {
-                            break;
-                        }
+                    KeyCode::Char('c')
+                        if key.modifiers.contains(KeyModifiers::CONTROL)
+                            && request_quit(unsaved_rtt_refresh, &mut refresh_overlay) =>
+                    {
+                        break;
                     }
                     KeyCode::Char('c') => {
                         theme.toggle_color();
