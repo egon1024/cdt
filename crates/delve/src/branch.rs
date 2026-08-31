@@ -8,8 +8,8 @@ use dns_resolve::trace::{
     seed_ns_targets_from_tree, server_matches_primary, server_target_from_hop,
 };
 use dns_resolve::{
-    BranchIntent, BranchJobRequest, NodePath, QueryBudget, ResolveError, ServerTarget, TraceConfig,
-    TraceNode, TraceProgress, run_branch_job, run_expand_cut_branch,
+    BranchIntent, BranchJobRequest, NodeOrigin, NodePath, QueryBudget, ResolveError, ServerTarget,
+    TraceConfig, TraceNode, TraceProgress, run_branch_job, run_expand_cut_branch,
 };
 use thiserror::Error;
 
@@ -198,7 +198,7 @@ pub fn execute_branch(
     let delegation_hop = cut_node.hop.clone();
 
     let mut warnings = Vec::new();
-    let mut budget = QueryBudget::new(runtime.config.trace_max_queries_per_action);
+    let mut planning_budget = QueryBudget::new(runtime.config.trace_max_queries_per_action);
     let request = session_tree.request.clone();
     let mut config = trace_config_from_request(
         &request,
@@ -217,7 +217,7 @@ pub fn execute_branch(
             &delegation_hop,
             &queried_children,
             &mut config,
-            &mut budget,
+            &mut planning_budget,
             progress,
             &mut warnings,
         )?,
@@ -227,7 +227,7 @@ pub fn execute_branch(
                 &delegation_hop,
                 &queried_children,
                 &mut config,
-                &mut budget,
+                &mut planning_budget,
                 progress,
                 &mut warnings,
             )?;
@@ -266,11 +266,12 @@ pub fn execute_branch(
 
     let is_expand_cut = matches!(intent, BranchIntentArg::ExpandCut);
 
-    let new_nodes = if is_expand_cut {
+    let mut branch_budget = QueryBudget::new(runtime.config.trace_max_queries_per_action);
+    let mut new_nodes = if is_expand_cut {
         let attach_prefix = cut_path.path.clone();
         run_expand_cut_branch(
             &config,
-            &mut budget,
+            &mut branch_budget,
             progress,
             at.clone(),
             targets,
@@ -297,7 +298,7 @@ pub fn execute_branch(
         attach_path.push(attach_index);
         let node = run_branch_job(
             &config,
-            &mut budget,
+            &mut branch_budget,
             progress,
             BranchJobRequest {
                 at: at.clone(),
@@ -311,6 +312,14 @@ pub fn execute_branch(
         )?;
         vec![node]
     };
+
+    if is_expand_cut {
+        new_nodes = normalize_expand_cut_attachments(
+            &delegation_hop,
+            cut_path.path.is_empty(),
+            new_nodes,
+        );
+    }
 
     let nodes_added = new_nodes.len();
     if nodes_added == 0 {
@@ -340,7 +349,7 @@ pub fn execute_branch(
         nodes_added,
         updated_at: Some(document.updated_at.clone()),
         warnings,
-        budget_truncated: budget.truncated,
+        budget_truncated: planning_budget.truncated || branch_budget.truncated,
         dry_run: false,
         plan: Some(plan),
     })
@@ -391,6 +400,66 @@ fn cut_context(
         });
     }
     Ok((cut_path, at.clone()))
+}
+
+/// When expanding at the session root, branch subtrees include a redundant hop at the
+/// cut zone because the session root already represents that query. Hoist to the
+/// next delegation level so siblings match the primary trace shape (`[org.]` not `[.]`).
+fn normalize_expand_cut_attachments(
+    cut_hop: &dns_resolve::TraceHop,
+    cut_is_session_root: bool,
+    nodes: Vec<TraceNode>,
+) -> Vec<TraceNode> {
+    if !cut_is_session_root {
+        return nodes;
+    }
+    nodes
+        .into_iter()
+        .flat_map(|node| normalize_expand_cut_attachment(cut_hop, node))
+        .collect()
+}
+
+fn normalize_expand_cut_attachment(
+    cut_hop: &dns_resolve::TraceHop,
+    mut node: TraceNode,
+) -> Vec<TraceNode> {
+    let branch_origin = matches!(&node.origin, NodeOrigin::Branch { .. }).then(|| node.origin.clone());
+
+    while node.hop.zone == cut_hop.zone {
+        match node.children.len() {
+            0 => break,
+            1 => node = node.children.remove(0),
+            _ => return promote_branch_origin(branch_origin, node.children),
+        }
+    }
+    if node.hop.zone == cut_hop.zone {
+        if node.children.is_empty() {
+            return Vec::new();
+        }
+        return promote_branch_origin(branch_origin, node.children);
+    }
+    if let Some(origin) = branch_origin {
+        apply_branch_origin(&mut node, origin);
+    }
+    vec![node]
+}
+
+fn promote_branch_origin(
+    origin: Option<NodeOrigin>,
+    mut children: Vec<TraceNode>,
+) -> Vec<TraceNode> {
+    if let Some(origin) = origin {
+        for child in &mut children {
+            apply_branch_origin(child, origin.clone());
+        }
+    }
+    children
+}
+
+fn apply_branch_origin(node: &mut TraceNode, origin: NodeOrigin) {
+    if !matches!(node.origin, NodeOrigin::Branch { .. }) {
+        node.origin = origin;
+    }
 }
 
 fn expand_cut_targets(
@@ -1235,6 +1304,13 @@ mod tests {
                 )
             }
 
+            fn is_root_expand_target(server: IpAddr) -> bool {
+                matches!(
+                    server,
+                    IpAddr::V4(v4) if matches!(v4.octets(), [199, 249, 120, 1] | [199, 249, 125, 1])
+                )
+            }
+
             fn is_hetzner_server(server: IpAddr) -> bool {
                 matches!(
                     server,
@@ -1289,6 +1365,37 @@ mod tests {
                                 rdata: "93.184.216.34".into(),
                             }],
                             authorities: vec![],
+                            additionals: vec![],
+                            edns: EdnsMeta::default(),
+                        },
+                        from_cache: false,
+                    });
+                }
+                if Self::is_root_expand_target(server) {
+                    return Ok(dns_core::response::QueryResult {
+                        server,
+                        transport: options.transport,
+                        qname: options.qname.clone(),
+                        qtype: options.qtype.to_string(),
+                        rtt: std::time::Duration::from_millis(1),
+                        response: DnsResponse {
+                            id: 1,
+                            rcode: 0,
+                            rcode_text: "NOERROR".into(),
+                            authoritative: false,
+                            truncated: false,
+                            recursion_desired: false,
+                            recursion_available: false,
+                            authentic_data: false,
+                            checking_disabled: false,
+                            answers: vec![],
+                            authorities: vec![DnsRecord {
+                                name: DomainName::parse("org.").expect("zone"),
+                                rtype: "NS".into(),
+                                rclass: "IN".into(),
+                                ttl: 3600,
+                                rdata: "a0.org.afilias-nst.info.".into(),
+                            }],
                             additionals: vec![],
                             edns: EdnsMeta::default(),
                         },
@@ -1386,13 +1493,111 @@ mod tests {
         assert!(
             root.children
                 .iter()
-                .any(|child| child.hop.server == "199.249.120.1")
+                .all(|child| child.hop.zone == "org."),
+            "root expand should attach org-level siblings, not redundant root-zone hops"
         );
-        assert!(
+        assert_eq!(
             root.children
                 .iter()
-                .any(|child| child.hop.server == "199.249.125.1")
+                .filter(|child| matches!(
+                    child.origin,
+                    NodeOrigin::Branch {
+                        intent: BranchIntent::ExpandCut,
+                        ..
+                    }
+                ))
+                .count(),
+            2
         );
+    }
+
+    #[test]
+    fn normalize_expand_cut_attachment_peels_redundant_root_hop() {
+        let cut = dns_resolve::TraceHop {
+            zone: ".".into(),
+            server: "198.41.0.4".into(),
+            server_name: None,
+            qname: "tuininga.org.".into(),
+            qtype: "A".into(),
+            transport: "udp".into(),
+            rtt_ms: 1,
+            rcode: "NOERROR".into(),
+            nsid: None,
+            ede_code: None,
+            ede_text: None,
+            referral_ns: vec![],
+            glue: vec![],
+            response: Default::default(),
+            from_cache: false,
+            outcome: HopOutcome::Referral,
+        };
+        let org = TraceNode {
+            hop: TraceHop {
+                zone: "org.".into(),
+                server: "199.249.120.1".into(),
+                server_name: Some("b2.org.afilias-nst.org.".into()),
+                qname: "tuininga.org.".into(),
+                qtype: "A".into(),
+                transport: "udp".into(),
+                rtt_ms: 2,
+                rcode: "NOERROR".into(),
+                nsid: None,
+                ede_code: None,
+                ede_text: None,
+                referral_ns: vec![],
+                glue: vec![],
+                response: Default::default(),
+                from_cache: false,
+                outcome: HopOutcome::Referral,
+            },
+            origin: NodeOrigin::Branch {
+                at: NodePath::root(0),
+                intent: BranchIntent::ExpandCut,
+                at_time: "now".into(),
+            },
+            children: vec![],
+        };
+        let branch = TraceNode {
+            hop: TraceHop {
+                zone: ".".into(),
+                server: "199.249.120.1".into(),
+                server_name: Some("b2.org.afilias-nst.org.".into()),
+                qname: "tuininga.org.".into(),
+                qtype: "A".into(),
+                transport: "udp".into(),
+                rtt_ms: 2,
+                rcode: "NOERROR".into(),
+                nsid: None,
+                ede_code: None,
+                ede_text: None,
+                referral_ns: vec![],
+                glue: vec![],
+                response: Default::default(),
+                from_cache: false,
+                outcome: HopOutcome::Referral,
+            },
+            origin: NodeOrigin::Branch {
+                at: NodePath::root(0),
+                intent: BranchIntent::ExpandCut,
+                at_time: "now".into(),
+            },
+            children: vec![org.clone()],
+        };
+        let normalized = normalize_expand_cut_attachments(&cut, true, vec![branch]);
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(normalized[0].hop.zone, "org.");
+        assert_eq!(normalized[0].hop.server, "199.249.120.1");
+        assert!(matches!(
+            normalized[0].origin,
+            NodeOrigin::Branch {
+                intent: BranchIntent::ExpandCut,
+                ..
+            }
+        ));
+
+        let unchanged = normalize_expand_cut_attachments(&cut, false, vec![org]);
+        assert_eq!(unchanged.len(), 1);
+        assert_eq!(unchanged[0].hop.zone, "org.");
     }
 
     #[test]

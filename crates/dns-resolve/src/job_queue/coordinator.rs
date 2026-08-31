@@ -589,13 +589,16 @@ impl<'a> Coordinator<'a> {
 
         // Deduplicate identical referrals from siblings at the same cut (applies to
         // `+expand=all` at every cut and to terminal sibling expansion under `+expand=last`).
-        let cut_parent = parent_path(&job.path);
-        let ref_key = referral_key(&query_result.response, &job.qname, &next_zone);
-        let seen = self.seen_referrals.entry(cut_parent).or_default();
-        if !seen.insert(ref_key) {
-            hop.outcome = HopOutcome::Referral;
-            self.store_completed_node(&job.path, hop, node_origin_for_job(&job));
-            return Ok(());
+        // Branch jobs intentionally re-query the same cut via alternate servers, so skip.
+        if !matches!(job.kind, JobKind::Branch { .. }) {
+            let cut_parent = parent_path(&job.path);
+            let ref_key = referral_key(&query_result.response, &job.qname, &next_zone);
+            let seen = self.seen_referrals.entry(cut_parent).or_default();
+            if !seen.insert(ref_key) {
+                hop.outcome = HopOutcome::Referral;
+                self.store_completed_node(&job.path, hop, node_origin_for_job(&job));
+                return Ok(());
+            }
         }
 
         self.progress.message(&format!(
