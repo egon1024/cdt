@@ -4,8 +4,8 @@ use std::str::FromStr;
 use dns_core::name::DomainName;
 use dns_core::parse_record_type;
 use dns_resolve::trace::{
-    dns_response_from_stored, expansion_targets_for_cut, server_matches_primary,
-    server_target_from_hop,
+    dns_response_from_stored, expansion_targets_for_cut, resolve_nameserver_target_for_referral,
+    server_matches_primary, server_target_from_hop,
 };
 use dns_resolve::{
     BranchIntent, BranchJobRequest, NodePath, QueryBudget, ResolveError, ServerTarget, TraceConfig,
@@ -218,6 +218,7 @@ pub fn execute_branch(
             &mut config,
             &mut budget,
             progress,
+            &mut warnings,
         )?,
         BranchIntentArg::AlternateServer { target } => {
             let target = resolve_alternate_target(
@@ -397,6 +398,7 @@ fn expand_cut_targets(
     config: &mut TraceConfig,
     budget: &mut QueryBudget,
     progress: &mut dyn TraceProgress,
+    warnings: &mut Vec<String>,
 ) -> Result<Vec<ServerTarget>, BranchError> {
     let zone = DomainName::parse(&delegation_hop.zone)?;
     let referral = referral_for_hop(delegation_hop);
@@ -404,15 +406,73 @@ fn expand_cut_targets(
         .iter()
         .filter_map(|child| server_target_from_hop(&child.hop).ok())
         .collect::<Vec<_>>();
-    let all_targets = expansion_targets_for_cut(
-        referral.as_ref(),
-        &zone,
-        &fallback,
-        config,
-        budget,
-        progress,
-    )?;
-    Ok(filter_unqueried_targets(&all_targets, queried_children))
+
+    let ns_names = referral_ns_names(delegation_hop, referral.as_ref());
+    if ns_names.is_empty() {
+        return Ok(filter_unqueried_targets(&fallback, queried_children));
+    }
+
+    let mut targets = Vec::new();
+    let mut unresolved_ns = Vec::new();
+    let mut last_error = None;
+
+    for ns_name in ns_names {
+        if let Some(target) = child_target_for_ns(&ns_name, queried_children) {
+            targets.push(target);
+            continue;
+        }
+        unresolved_ns.push(ns_name.clone());
+        let Some(referral) = referral.as_ref() else {
+            continue;
+        };
+        match resolve_nameserver_target_for_referral(
+            &ns_name, referral, &fallback, config, budget, &zone, progress,
+        ) {
+            Ok(Some(target)) => targets.push(target),
+            Ok(None) => {}
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    let targets = filter_unqueried_targets(&targets, queried_children);
+    if targets.is_empty() {
+        if unresolved_ns.is_empty() || last_error.is_none() {
+            warnings.push("all nameservers at this zone cut already queried".into());
+            return Ok(Vec::new());
+        }
+        if let Some(error) = last_error {
+            return Err(error.into());
+        }
+    }
+    Ok(targets)
+}
+
+fn referral_ns_names(
+    delegation_hop: &dns_resolve::TraceHop,
+    referral: Option<&dns_core::response::DnsResponse>,
+) -> Vec<DomainName> {
+    if let Some(referral) = referral {
+        return referral.ns_names();
+    }
+    delegation_hop
+        .referral_ns
+        .iter()
+        .filter_map(|ns| DomainName::parse(ns).ok())
+        .collect()
+}
+
+fn child_target_for_ns(
+    ns_name: &DomainName,
+    queried_children: &[&TraceNode],
+) -> Option<ServerTarget> {
+    let normalized = normalize_ns_name(ns_name.as_str());
+    queried_children.iter().find_map(|child| {
+        let server_name = child.hop.server_name.as_deref()?;
+        if normalize_ns_name(server_name) != normalized {
+            return None;
+        }
+        server_target_from_hop(&child.hop).ok()
+    })
 }
 
 fn resolve_alternate_target(
@@ -982,6 +1042,180 @@ mod tests {
         .expect("branch");
         assert_eq!(report.nodes_added, 0);
         assert_eq!(document.updated_at, updated_before);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("all nameservers at this zone cut already queried"))
+        );
+    }
+
+    #[test]
+    fn expand_cut_reuses_queried_nameserver_without_dns() {
+        struct PanicExchange;
+
+        impl dns_resolve::DnsExchange for PanicExchange {
+            fn exchange(
+                &self,
+                _server: IpAddr,
+                _port: u16,
+                _options: &dns_core::query::QueryOptions,
+            ) -> dns_core::Result<dns_core::response::QueryResult> {
+                panic!("expand cut should not query when child hops already cover referral NS");
+            }
+        }
+
+        let root = TraceNode {
+            hop: TraceHop {
+                zone: ".".into(),
+                server: "198.41.0.4".into(),
+                server_name: None,
+                qname: "tuininga.org.".into(),
+                qtype: "A".into(),
+                transport: "udp".into(),
+                rtt_ms: 1,
+                rcode: "NOERROR".into(),
+                nsid: None,
+                ede_code: None,
+                ede_text: None,
+                referral_ns: vec!["a0.org.afilias-nst.info.".into()],
+                glue: vec![],
+                response: Default::default(),
+                from_cache: false,
+                outcome: HopOutcome::Referral,
+            },
+            origin: NodeOrigin::Trace,
+            children: vec![TraceNode {
+                hop: TraceHop {
+                    zone: "org.".into(),
+                    server: "199.249.112.1".into(),
+                    server_name: Some("a2.org.afilias-nst.info.".into()),
+                    qname: "tuininga.org.".into(),
+                    qtype: "A".into(),
+                    transport: "udp".into(),
+                    rtt_ms: 2,
+                    rcode: "NOERROR".into(),
+                    nsid: None,
+                    ede_code: None,
+                    ede_text: None,
+                    referral_ns: vec![
+                        "helium.ns.hetzner.de.".into(),
+                        "hydrogen.ns.hetzner.com.".into(),
+                        "oxygen.ns.hetzner.com.".into(),
+                    ],
+                    glue: vec![],
+                    response: Default::default(),
+                    from_cache: false,
+                    outcome: HopOutcome::Referral,
+                },
+                origin: NodeOrigin::Trace,
+                children: vec![
+                    TraceNode {
+                        hop: TraceHop {
+                            zone: "tuininga.org.".into(),
+                            server: "193.47.99.5".into(),
+                            server_name: Some("helium.ns.hetzner.de.".into()),
+                            qname: "tuininga.org.".into(),
+                            qtype: "A".into(),
+                            transport: "udp".into(),
+                            rtt_ms: 3,
+                            rcode: "NOERROR".into(),
+                            nsid: None,
+                            ede_code: None,
+                            ede_text: None,
+                            referral_ns: vec![],
+                            glue: vec![],
+                            response: Default::default(),
+                            from_cache: false,
+                            outcome: HopOutcome::Answered,
+                        },
+                        origin: NodeOrigin::Trace,
+                        children: vec![],
+                    },
+                    TraceNode {
+                        hop: TraceHop {
+                            zone: "tuininga.org.".into(),
+                            server: "213.133.100.98".into(),
+                            server_name: Some("hydrogen.ns.hetzner.com.".into()),
+                            qname: "tuininga.org.".into(),
+                            qtype: "A".into(),
+                            transport: "udp".into(),
+                            rtt_ms: 4,
+                            rcode: "NOERROR".into(),
+                            nsid: None,
+                            ede_code: None,
+                            ede_text: None,
+                            referral_ns: vec![],
+                            glue: vec![],
+                            response: Default::default(),
+                            from_cache: false,
+                            outcome: HopOutcome::Answered,
+                        },
+                        origin: NodeOrigin::Trace,
+                        children: vec![],
+                    },
+                    TraceNode {
+                        hop: TraceHop {
+                            zone: "tuininga.org.".into(),
+                            server: "88.198.229.192".into(),
+                            server_name: Some("oxygen.ns.hetzner.com.".into()),
+                            qname: "tuininga.org.".into(),
+                            qtype: "A".into(),
+                            transport: "udp".into(),
+                            rtt_ms: 5,
+                            rcode: "NOERROR".into(),
+                            nsid: None,
+                            ede_code: None,
+                            ede_text: None,
+                            referral_ns: vec![],
+                            glue: vec![],
+                            response: Default::default(),
+                            from_cache: false,
+                            outcome: HopOutcome::Answered,
+                        },
+                        origin: NodeOrigin::Trace,
+                        children: vec![],
+                    },
+                ],
+            }],
+        };
+        let tree = TraceTree {
+            request: TraceTreeRequest {
+                qname: "tuininga.org.".into(),
+                qtype: "A".into(),
+                started_at: "2026-08-25T00:00:00Z".into(),
+            },
+            root,
+            budget_truncated: false,
+        };
+        let mut document = sample_document(
+            tree,
+            TraceRequest::from_options(&TraceOptions {
+                qname: "tuininga.org.".into(),
+                ..Default::default()
+            }),
+        );
+        let runtime = runtime();
+        let report = execute_branch(
+            &mut document,
+            NodePath {
+                tree: 0,
+                path: vec![0],
+            },
+            BranchIntentArg::ExpandCut,
+            false,
+            &runtime,
+            &mut SilentProgress,
+            Some(std::sync::Arc::new(PanicExchange)),
+        )
+        .expect("branch");
+        assert_eq!(report.nodes_added, 0);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("all nameservers at this zone cut already queried"))
+        );
     }
 
     #[test]

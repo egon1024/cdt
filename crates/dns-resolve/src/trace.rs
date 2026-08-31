@@ -561,6 +561,31 @@ fn resolve_all_nameserver_targets_from_referral(
     })
 }
 
+/// Resolve a single referral nameserver to a query target.
+pub fn resolve_nameserver_target_for_referral(
+    ns_name: &DomainName,
+    referral: &DnsResponse,
+    current_servers: &[ServerTarget],
+    config: &TraceConfig,
+    budget: &mut QueryBudget,
+    parent_zone: &DomainName,
+    progress: &mut dyn TraceProgress,
+) -> Result<Option<ServerTarget>> {
+    match resolve_nameserver(
+        ns_name,
+        referral,
+        current_servers,
+        config,
+        budget,
+        parent_zone,
+        progress,
+    ) {
+        Ok(addresses) if !addresses.is_empty() => Ok(Some(addresses[0].clone())),
+        Ok(_) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 pub(crate) fn announce_multi_server_query(
     progress: &mut dyn TraceProgress,
     zone: &DomainName,
