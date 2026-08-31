@@ -338,6 +338,54 @@ pub(crate) mod path_timing_tests {
     }
 
     #[test]
+    fn expanded_terminal_cut_aggregates_every_answered_sibling() {
+        let leaf = |rtt| TraceNode {
+            hop: answered_hop("tuininga.org.", rtt),
+            origin: crate::NodeOrigin::Trace,
+            children: vec![],
+        };
+        let tree = TraceTree {
+            request: TraceTreeRequest {
+                qname: "tuininga.org.".into(),
+                qtype: "A".into(),
+                started_at: "2026-01-01T00:00:00Z".into(),
+            },
+            root: TraceNode {
+                hop: referral_hop(".", 96),
+                origin: crate::NodeOrigin::Trace,
+                children: vec![TraceNode {
+                    hop: referral_hop("org.", 101),
+                    origin: crate::NodeOrigin::Trace,
+                    children: vec![leaf(107), leaf(109), leaf(106)],
+                }],
+            },
+            budget_truncated: false,
+        };
+
+        let summary = path_timing_summary(&tree).expect("summary");
+        assert_eq!(summary.count, 3);
+        assert_eq!(summary.fastest.total_rtt_ms, 303);
+        assert_eq!(summary.fastest.path, vec![0, 2]);
+        assert_eq!(summary.slowest.total_rtt_ms, 306);
+        assert_eq!(summary.slowest.path, vec![0, 1]);
+
+        let fork = NodePath {
+            tree: 0,
+            path: vec![0],
+        };
+        let siblings = fork_sibling_hop_rtts(&tree, &fork).expect("siblings");
+        assert_eq!(
+            siblings.iter().map(|s| s.rtt_ms).collect::<Vec<_>>(),
+            vec![107, 109, 106]
+        );
+
+        let fork_summary = fork_path_timing_summary(&tree, &fork).expect("fork summary");
+        assert_eq!(fork_summary.count, summary.count);
+        assert_eq!(fork_summary.fastest, summary.fastest);
+        assert_eq!(fork_summary.slowest, summary.slowest);
+    }
+
+    #[test]
     fn fork_sibling_hop_rtts_lists_each_child_at_cut() {
         let tree = branching_fixture_tree();
         let siblings = fork_sibling_hop_rtts(&tree, &NodePath::root(0)).expect("siblings");

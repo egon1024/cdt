@@ -220,6 +220,7 @@ impl<'a> Coordinator<'a> {
         id
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn try_enqueue_job(
         &mut self,
         server: ServerTarget,
