@@ -1359,15 +1359,7 @@ mod tests {
         }
 
         let mut document = sample_document(
-            {
-                let mut tree = tuininga_tree();
-                tree.root.hop.referral_ns = vec![
-                    "a0.org.afilias-nst.info.".into(),
-                    "b0.org.afilias-nst.org.".into(),
-                ];
-                tree.root.hop.glue = vec!["199.249.112.1".into(), "199.249.120.1".into()];
-                tree
-            },
+            tuininga_tree(),
             TraceRequest::from_options(&TraceOptions {
                 qname: "tuininga.org.".into(),
                 ..Default::default()
@@ -1384,17 +1376,22 @@ mod tests {
             Some(Arc::new(TuiningaBranchExchange)),
         )
         .expect("branch");
-        assert_eq!(report.nodes_added, 1);
+        assert_eq!(report.nodes_added, 2);
         let root = document
             .primary_tree()
             .expect("tree")
             .resolve(&NodePath::root(0))
             .expect("root");
-        assert_eq!(root.children.len(), 2);
+        assert_eq!(root.children.len(), 3);
         assert!(
             root.children
                 .iter()
                 .any(|child| child.hop.server == "199.249.120.1")
+        );
+        assert!(
+            root.children
+                .iter()
+                .any(|child| child.hop.server == "199.249.125.1")
         );
     }
 

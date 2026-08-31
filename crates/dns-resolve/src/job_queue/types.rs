@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fmt;
 
 use dns_core::name::DomainName;
@@ -37,6 +38,8 @@ pub(crate) struct TraceJob {
     pub path: Vec<usize>,
     /// Remaining server candidates for this cut when the current server fails.
     pub fallback_servers: Vec<ServerTarget>,
+    /// Zones already visited along this job's delegation path (loop detection).
+    pub visited_zones: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +67,7 @@ mod tests {
             zone: DomainName::parse("com.").expect("zone"),
             path: vec![0, 1],
             fallback_servers: vec![],
+            visited_zones: HashSet::new(),
         };
 
         let key = format!("{}|{}|{:?}", job.server.address, job.qname, job.path);

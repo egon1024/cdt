@@ -129,6 +129,7 @@ pub(crate) fn run_terminal_sibling_expansion(
         zone: expansion.zone,
         path: primary_path,
         fallback_servers: Vec::new(),
+        visited_zones: HashSet::new(),
     };
     coordinator.expand_terminal_last(job, expansion.primary_hop, expansion.primary_query_result)?;
     coordinator.run_pending()?;
@@ -180,7 +181,6 @@ pub struct Coordinator<'a> {
     queue: WorkQueue,
     results: ResultStore,
     emitter: EmitScheduler,
-    visited_zones: HashSet<String>,
     referral_by_path: HashMap<Vec<usize>, DelegationInfo>,
     seen_referrals: HashMap<Vec<usize>, HashSet<String>>,
     single_path_subtrees: HashSet<Vec<usize>>,
@@ -205,7 +205,6 @@ impl<'a> Coordinator<'a> {
             queue: WorkQueue::new(),
             results: ResultStore::new(),
             emitter: EmitScheduler::new(),
-            visited_zones: HashSet::new(),
             referral_by_path: HashMap::new(),
             seen_referrals: HashMap::new(),
             single_path_subtrees: HashSet::new(),
@@ -229,6 +228,7 @@ impl<'a> Coordinator<'a> {
         qtype: RecordType,
         zone: DomainName,
         path: Vec<usize>,
+        visited_zones: HashSet<String>,
     ) -> bool {
         self.try_enqueue_job_with_kind(
             server,
@@ -237,6 +237,7 @@ impl<'a> Coordinator<'a> {
             qtype,
             zone,
             path,
+            visited_zones,
             JobKind::Trace,
         )
     }
@@ -250,6 +251,7 @@ impl<'a> Coordinator<'a> {
         qtype: RecordType,
         zone: DomainName,
         path: Vec<usize>,
+        visited_zones: HashSet<String>,
         kind: JobKind,
     ) -> bool {
         if !self.config.budget_exempt && !self.budget.try_consume() {
@@ -266,6 +268,7 @@ impl<'a> Coordinator<'a> {
             zone,
             path,
             fallback_servers,
+            visited_zones,
         });
         true
     }
@@ -276,6 +279,7 @@ impl<'a> Coordinator<'a> {
         qname: DomainName,
         zone: DomainName,
         path: Vec<usize>,
+        visited_zones: HashSet<String>,
     ) -> Result<()> {
         let mut servers = servers;
         if servers.is_empty() {
@@ -284,7 +288,15 @@ impl<'a> Coordinator<'a> {
             });
         }
         let primary = servers.remove(0);
-        if !self.try_enqueue_job(primary, servers, qname, self.config.qtype, zone, path) {
+        if !self.try_enqueue_job(
+            primary,
+            servers,
+            qname,
+            self.config.qtype,
+            zone,
+            path,
+            visited_zones,
+        ) {
             self.progress.budget_truncated(self.budget.cap());
         }
         Ok(())
@@ -296,6 +308,7 @@ impl<'a> Coordinator<'a> {
         qname: DomainName,
         zone: DomainName,
         path: Vec<usize>,
+        visited_zones: HashSet<String>,
     ) -> Result<()> {
         if servers.is_empty() {
             return Err(ResolveError::NoReachableNameserver {
@@ -305,7 +318,7 @@ impl<'a> Coordinator<'a> {
 
         match self.config.expansion_policy {
             ExpansionPolicy::None | ExpansionPolicy::Last => {
-                self.enqueue_single_server(servers, qname, zone, path)
+                self.enqueue_single_server(servers, qname, zone, path, visited_zones)
             }
             ExpansionPolicy::All => {
                 if servers.len() > 1 {
@@ -321,6 +334,7 @@ impl<'a> Coordinator<'a> {
                         self.config.qtype,
                         zone.clone(),
                         job_path,
+                        visited_zones.clone(),
                     ) {
                         self.progress.budget_truncated(self.budget.cap());
                         break;
@@ -337,7 +351,13 @@ impl<'a> Coordinator<'a> {
             ExpansionPolicy::All => vec![],
             _ => vec![],
         };
-        self.enqueue_cut(start_servers(self.config), qname, root_zone, initial_path)?;
+        self.enqueue_cut(
+            start_servers(self.config),
+            qname,
+            root_zone,
+            initial_path,
+            HashSet::new(),
+        )?;
 
         self.run_pending()?;
 
@@ -376,6 +396,7 @@ impl<'a> Coordinator<'a> {
             request.qtype,
             request.zone,
             request.attach_path,
+            HashSet::new(),
             kind,
         ) {
             self.progress.budget_truncated(self.budget.cap());
@@ -504,6 +525,7 @@ impl<'a> Coordinator<'a> {
                 job.qtype,
                 job.zone,
                 job.path,
+                job.visited_zones,
             ) {
                 return Ok(());
             }
@@ -539,20 +561,24 @@ impl<'a> Coordinator<'a> {
             return self.handle_terminal_answer(job, hop, query_result);
         };
 
+        let next_zone_name = next_zone.to_string();
         if self.config.expansion_policy == ExpansionPolicy::All {
-            if !self.visited_zones.insert(next_zone.to_string()) {
+            if job.visited_zones.contains(&next_zone_name) {
                 hop.outcome = HopOutcome::Failed {
                     kind: "delegation_loop".into(),
-                    detail: next_zone.to_string(),
+                    detail: next_zone_name,
                 };
                 self.store_completed_node(&job.path, hop, node_origin_for_job(&job));
                 return Ok(());
             }
-        } else if !self.visited_zones.insert(next_zone.to_string()) {
+        } else if job.visited_zones.contains(&next_zone_name) {
             return Err(ResolveError::DelegationLoop {
-                zone: next_zone.to_string(),
+                zone: next_zone_name,
             });
         }
+
+        let mut child_visited = job.visited_zones.clone();
+        child_visited.insert(next_zone_name);
 
         let ns_names = query_result.response.ns_names();
         if ns_names.is_empty() {
@@ -630,9 +656,21 @@ impl<'a> Coordinator<'a> {
 
         let child_path = child_path_for_policy(self.config.expansion_policy, &job.path);
         if self.requires_single_path_subtree(&job.path) {
-            self.enqueue_single_server(next_servers, job.qname, next_zone, child_path)?;
+            self.enqueue_single_server(
+                next_servers,
+                job.qname,
+                next_zone,
+                child_path,
+                child_visited,
+            )?;
         } else {
-            self.enqueue_cut(next_servers, job.qname, next_zone, child_path)?;
+            self.enqueue_cut(
+                next_servers,
+                job.qname,
+                next_zone,
+                child_path,
+                child_visited,
+            )?;
         }
         Ok(())
     }
@@ -710,6 +748,7 @@ impl<'a> Coordinator<'a> {
                 job.qtype,
                 job.zone.clone(),
                 sibling_path,
+                job.visited_zones.clone(),
             ) {
                 self.progress.budget_truncated(self.budget.cap());
                 break;
@@ -1340,7 +1379,7 @@ mod tests {
                         referral_response(&options.qname, "org.", "ns.org.", "3.0.0.3")
                     }
                     IpAddr::V4(v4) if v4 == Ipv4Addr::new(1, 0, 0, 3) => {
-                        referral_response(&options.qname, "com.", "ns2.com.", "2.0.0.2")
+                        referral_response(&options.qname, "com.", "ns.com.", "2.0.0.2")
                     }
                     _ => authoritative_a(&options.qname, "93.184.216.34"),
                 }

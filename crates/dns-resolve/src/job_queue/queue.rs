@@ -40,6 +40,7 @@ mod tests {
             zone: DomainName::parse(".").expect("zone"),
             path: vec![],
             fallback_servers: vec![],
+            visited_zones: std::collections::HashSet::new(),
         }
     }
 
