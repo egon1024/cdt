@@ -6,9 +6,10 @@ use dns_resolve::{ExpansionPolicy, TraceConfig, run_trace};
 use thiserror::Error;
 
 use crate::args::{
-    CacheCommand, CacheSubcommand, Cli, Command, SessionBranchArgs, SessionCommand,
-    SessionSubcommand, TraceArgs,
+    CacheCommand, CacheSubcommand, Cli, Command, ConfigCommand, ConfigSubcommand,
+    SessionBranchArgs, SessionCommand, SessionSubcommand, TraceArgs,
 };
+use crate::config::DelveConfig;
 use crate::branch::{
     BranchError, BranchIntentArg, format_branch_report, parse_server_target, resolve_branch_target,
 };
@@ -65,6 +66,7 @@ impl Cli {
             Command::Trace(args) => run_trace_command(args),
             Command::Session(command) => run_session_command(command),
             Command::Cache(command) => run_cache_command(command),
+            Command::Config(command) => run_config_command(command),
         }
     }
 }
@@ -335,6 +337,20 @@ fn run_cache_command(command: CacheCommand) -> Result<(), CliError> {
                 cache.purge_expired()?
             };
             println!("removed {removed} entries");
+            Ok(())
+        }
+    }
+}
+
+fn run_config_command(command: ConfigCommand) -> Result<(), CliError> {
+    let paths = crate::paths::DelvePaths::platform();
+    match command.command {
+        ConfigSubcommand::Dump => {
+            let (yaml, warnings) = DelveConfig::dump_yaml(&paths);
+            for warning in warnings {
+                eprintln!("{warning}");
+            }
+            print!("{yaml}");
             Ok(())
         }
     }

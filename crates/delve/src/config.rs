@@ -118,34 +118,7 @@ struct RttBarSection {
 impl DelveConfig {
     pub fn load(paths: &DelvePaths) -> (Self, Vec<String>) {
         let mut warnings = Vec::new();
-        let path = paths.config_file();
-        if !path.exists() {
-            return (Self::default(), warnings);
-        }
-
-        let contents = match std::fs::read_to_string(path) {
-            Ok(contents) => contents,
-            Err(error) => {
-                warnings.push(format!(
-                    "warning: could not read config {}: {}",
-                    path.display(),
-                    error
-                ));
-                return (Self::default(), warnings);
-            }
-        };
-
-        let parsed: DelveConfigFile = match serde_yaml::from_str(&contents) {
-            Ok(parsed) => parsed,
-            Err(error) => {
-                warnings.push(format!(
-                    "warning: invalid config {}: {}; using defaults",
-                    path.display(),
-                    error
-                ));
-                return (Self::default(), warnings);
-            }
-        };
+        let parsed = read_delve_config_file(paths, &mut warnings);
 
         let retention_raw = parsed
             .session
@@ -196,6 +169,141 @@ impl DelveConfig {
             },
             warnings,
         )
+    }
+
+    /// Emit all configurable keys in YAML form. Keys present in the config file are
+    /// uncommented; unset keys are commented with their default values.
+    pub fn dump_yaml(paths: &DelvePaths) -> (String, Vec<String>) {
+        let mut warnings = Vec::new();
+        let parsed = read_delve_config_file(paths, &mut warnings);
+        let defaults = Self::default();
+        let default_rtt = defaults.explore_rtt_bar;
+
+        let mut out = String::new();
+        out.push_str(
+            "# Commented lines show default values (not set in your config file).\n\
+             # Remove the leading # to override a default.\n\n",
+        );
+
+        out.push_str("session:\n");
+        write_yaml_key(
+            &mut out,
+            1,
+            "retention",
+            parsed.session.retention,
+            DEFAULT_RETENTION.to_string(),
+        );
+
+        out.push_str("trace:\n");
+        write_yaml_key(
+            &mut out,
+            1,
+            "max_queries_per_action",
+            parsed.trace.max_queries_per_action,
+            defaults.trace_max_queries_per_action,
+        );
+        write_yaml_key(
+            &mut out,
+            1,
+            "max_parallel_queries",
+            parsed.trace.max_parallel_queries,
+            defaults.trace_max_parallel_queries,
+        );
+
+        out.push_str("explore:\n");
+        write_yaml_key(
+            &mut out,
+            1,
+            "persist_view_state",
+            parsed.explore.persist_view_state,
+            defaults.explore_persist_view_state,
+        );
+
+        out.push_str("  rtt_bar:\n");
+        let rtt = parsed.explore.rtt_bar.as_ref();
+        write_yaml_key(
+            &mut out,
+            2,
+            "green_ms",
+            rtt.and_then(|section| section.green_ms),
+            default_rtt.green_ms,
+        );
+        write_yaml_key(
+            &mut out,
+            2,
+            "yellow_ms",
+            rtt.and_then(|section| section.yellow_ms),
+            default_rtt.yellow_ms,
+        );
+        write_yaml_key(
+            &mut out,
+            2,
+            "orange_ms",
+            rtt.and_then(|section| section.orange_ms),
+            default_rtt.orange_ms,
+        );
+        write_yaml_key(
+            &mut out,
+            2,
+            "insane_ms",
+            rtt.and_then(|section| section.insane_ms),
+            default_rtt.insane_ms,
+        );
+        write_yaml_key(
+            &mut out,
+            2,
+            "max_width",
+            rtt.and_then(|section| section.max_width),
+            default_rtt.max_width,
+        );
+
+        (out, warnings)
+    }
+}
+
+fn read_delve_config_file(paths: &DelvePaths, warnings: &mut Vec<String>) -> DelveConfigFile {
+    let path = paths.config_file();
+    if !path.exists() {
+        return DelveConfigFile::default();
+    }
+
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) => {
+            warnings.push(format!(
+                "warning: could not read config {}: {}",
+                path.display(),
+                error
+            ));
+            return DelveConfigFile::default();
+        }
+    };
+
+    match serde_yaml::from_str(&contents) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            warnings.push(format!(
+                "warning: invalid config {}: {}; using defaults",
+                path.display(),
+                error
+            ));
+            DelveConfigFile::default()
+        }
+    }
+}
+
+fn write_yaml_key<T: std::fmt::Display>(
+    out: &mut String,
+    depth: usize,
+    key: &str,
+    value: Option<T>,
+    default: T,
+) {
+    let indent = "  ".repeat(depth);
+    if let Some(value) = value {
+        out.push_str(&format!("{indent}{key}: {value}\n"));
+    } else {
+        out.push_str(&format!("#{indent}{key}: {default}\n"));
     }
 }
 
@@ -311,5 +419,41 @@ mod tests {
         assert_eq!(config.orange_ms, 500);
         assert_eq!(config.insane_ms, 2000);
         assert_eq!(config.max_width, 20);
+    }
+
+    #[test]
+    fn dump_yaml_without_config_comments_all_defaults() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = DelvePaths::from_root(dir.path());
+        let (yaml, warnings) = DelveConfig::dump_yaml(&paths);
+        assert!(warnings.is_empty());
+        assert!(yaml.contains("# Commented lines show default values"));
+        assert!(yaml.contains("#  retention: never"));
+        assert!(yaml.contains("#  max_queries_per_action: 64"));
+        assert!(yaml.contains("#  max_parallel_queries: 8"));
+        assert!(yaml.contains("#  persist_view_state: true"));
+        assert!(yaml.contains("#    green_ms: 50"));
+        assert!(!yaml.contains("\n  retention: "));
+    }
+
+    #[test]
+    fn dump_yaml_reflects_set_values() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = DelvePaths::from_root(dir.path());
+        std::fs::create_dir_all(paths.config_file().parent().expect("parent")).expect("mkdir");
+        std::fs::write(
+            paths.config_file(),
+            "session:\n  retention: 180d\ntrace:\n  max_parallel_queries: 4\nexplore:\n  rtt_bar:\n    green_ms: 75\n",
+        )
+        .expect("write config");
+
+        let (yaml, warnings) = DelveConfig::dump_yaml(&paths);
+        assert!(warnings.is_empty());
+        assert!(yaml.contains("  retention: 180d"));
+        assert!(yaml.contains("#  max_queries_per_action: 64"));
+        assert!(yaml.contains("  max_parallel_queries: 4"));
+        assert!(yaml.contains("#  persist_view_state: true"));
+        assert!(yaml.contains("    green_ms: 75"));
+        assert!(yaml.contains("#    yellow_ms: 150"));
     }
 }

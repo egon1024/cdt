@@ -23,6 +23,8 @@ pub enum Command {
     Session(SessionCommand),
     /// Inspect or manage the response cache.
     Cache(CacheCommand),
+    /// Inspect or dump delve configuration.
+    Config(ConfigCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -167,4 +169,16 @@ pub struct CachePurgeArgs {
     /// Remove all entries.
     #[arg(long)]
     pub all: bool,
+}
+
+#[derive(Debug, Parser)]
+pub struct ConfigCommand {
+    #[command(subcommand)]
+    pub command: ConfigSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigSubcommand {
+    /// Print all configurable keys in YAML (set values uncommented, defaults commented).
+    Dump,
 }

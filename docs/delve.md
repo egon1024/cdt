@@ -141,6 +141,14 @@ Typical path: `~/.config/cdt/delve.yaml`
 
 If the file is missing, defaults apply. If the file exists but is invalid, delve prints a warning and falls back to defaults.
 
+To see every configurable key with defaults and your active overrides:
+
+```bash
+delve config dump
+```
+
+Commented lines show default values (not set in your config). Uncomment a line to override that default.
+
 ### Example
 
 ```yaml
