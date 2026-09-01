@@ -1,14 +1,18 @@
 mod card;
+mod layout_icicle;
 mod layout_tree;
 mod svg;
+mod svg_icicle;
 
 use dns_resolve::TraceTree;
 
 use crate::config::RttBarConfig;
 
 pub use card::{HopCard, build_cards, path_attribute};
+pub use layout_icicle::{IcicleLayout, layout_icicle};
 pub use layout_tree::{TreeEdge, TreeLayout, layout_tree};
 pub use svg::{SvgTitle, render_tree_svg};
+pub use svg_icicle::render_icicle_svg;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExportLayout {
@@ -48,7 +52,16 @@ pub fn render_trace_tree(
                     options.rtt_config,
                 ))
             }
-            ExportLayout::Icicle => Err(ExportError::UnsupportedLayout("icicle")),
+            ExportLayout::Icicle => {
+                let cards = build_cards(tree, tree_index);
+                let layout = layout_icicle(&cards, tree);
+                Ok(render_icicle_svg(
+                    &cards,
+                    &layout,
+                    &options.title,
+                    options.rtt_config,
+                ))
+            }
         },
         ExportFormat::Png => Err(ExportError::UnsupportedFormat("png")),
     }
@@ -185,6 +198,32 @@ mod integration_tests {
         assert!(written.starts_with("<svg"));
         assert!(written.contains("a.root-servers.net"));
         assert!(written.contains(r#"data-path="0""#));
+    }
+
+    #[test]
+    fn session_export_writes_icicle_svg_from_fixture() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = Runtime::open(DelvePaths::from_root(dir.path()));
+        let id = save_sample_session(&runtime);
+        let document = runtime.get_session(&id).expect("session");
+        let tree = document.primary_tree().expect("tree");
+        let svg = render_trace_tree(
+            tree,
+            0,
+            &ExportOptions {
+                layout: ExportLayout::Icicle,
+                format: ExportFormat::Svg,
+                title: SvgTitle {
+                    primary: format!("session {}", document.id),
+                    secondary: None,
+                },
+                rtt_config: RttBarConfig::default(),
+            },
+        )
+        .expect("svg");
+        assert!(svg.starts_with("<svg"));
+        assert!(svg.contains("hop"));
+        assert!(svg.contains("a.root-servers.net"));
     }
 
     #[test]

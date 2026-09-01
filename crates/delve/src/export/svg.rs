@@ -17,7 +17,7 @@ const COL_GAP: f64 = 64.0;
 const LABEL_W: usize = 9;
 const TITLE_FS: f64 = 15.0;
 const SUBTITLE_FS: f64 = 12.0;
-const TOP_PAD: f64 = 52.0;
+pub(crate) const TOP_PAD: f64 = 52.0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SvgTitle {
@@ -89,7 +89,7 @@ fn truncate_to_width(value: &str, max_width: f64, font_size: f64) -> String {
     out
 }
 
-fn render_header(width: f64, title: &SvgTitle) -> String {
+pub(crate) fn render_header(width: f64, title: &SvgTitle) -> String {
     let text_w = (width - 2.0 * PAD).max(0.0);
     let primary = truncate_to_width(&title.primary, text_w, TITLE_FS);
     let mut parts = vec![
