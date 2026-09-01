@@ -1,6 +1,8 @@
 mod card;
 mod layout_icicle;
 mod layout_tree;
+#[cfg(feature = "export-png")]
+mod png;
 mod svg;
 mod svg_icicle;
 
@@ -35,35 +37,71 @@ pub struct ExportOptions {
     pub rtt_config: RttBarConfig,
 }
 
+#[derive(Debug)]
+pub enum ExportOutput {
+    Svg(String),
+    Png(Vec<u8>),
+}
+
+fn render_svg(
+    tree: &TraceTree,
+    tree_index: usize,
+    options: &ExportOptions,
+) -> Result<String, ExportError> {
+    match options.layout {
+        ExportLayout::Tree => {
+            let cards = build_cards(tree, tree_index);
+            let layout = layout_tree(&cards, tree);
+            Ok(render_tree_svg(
+                &cards,
+                &layout,
+                &options.title,
+                options.rtt_config,
+            ))
+        }
+        ExportLayout::Icicle => {
+            let cards = build_cards(tree, tree_index);
+            let layout = layout_icicle(&cards, tree);
+            Ok(render_icicle_svg(
+                &cards,
+                &layout,
+                &options.title,
+                options.rtt_config,
+            ))
+        }
+    }
+}
+
+pub fn export_trace_tree(
+    tree: &TraceTree,
+    tree_index: usize,
+    options: &ExportOptions,
+) -> Result<ExportOutput, ExportError> {
+    let svg = render_svg(tree, tree_index, options)?;
+    match options.format {
+        ExportFormat::Svg => Ok(ExportOutput::Svg(svg)),
+        ExportFormat::Png => {
+            #[cfg(feature = "export-png")]
+            {
+                Ok(ExportOutput::Png(png::rasterize_svg(&svg)?))
+            }
+            #[cfg(not(feature = "export-png"))]
+            {
+                let _ = svg;
+                Err(ExportError::UnsupportedFormat("png"))
+            }
+        }
+    }
+}
+
 pub fn render_trace_tree(
     tree: &TraceTree,
     tree_index: usize,
     options: &ExportOptions,
 ) -> Result<String, ExportError> {
-    match options.format {
-        ExportFormat::Svg => match options.layout {
-            ExportLayout::Tree => {
-                let cards = build_cards(tree, tree_index);
-                let layout = layout_tree(&cards, tree);
-                Ok(render_tree_svg(
-                    &cards,
-                    &layout,
-                    &options.title,
-                    options.rtt_config,
-                ))
-            }
-            ExportLayout::Icicle => {
-                let cards = build_cards(tree, tree_index);
-                let layout = layout_icicle(&cards, tree);
-                Ok(render_icicle_svg(
-                    &cards,
-                    &layout,
-                    &options.title,
-                    options.rtt_config,
-                ))
-            }
-        },
-        ExportFormat::Png => Err(ExportError::UnsupportedFormat("png")),
+    match export_trace_tree(tree, tree_index, options)? {
+        ExportOutput::Svg(svg) => Ok(svg),
+        ExportOutput::Png(_) => Err(ExportError::UnsupportedFormat("png")),
     }
 }
 
@@ -77,6 +115,9 @@ pub enum ExportError {
 
     #[error("tree index {0} is out of range")]
     TreeIndexOutOfRange(usize),
+
+    #[error("failed to rasterize SVG: {0}")]
+    Rasterize(String),
 }
 
 #[cfg(test)]
@@ -259,5 +300,95 @@ mod integration_tests {
         unsafe {
             std::env::remove_var(DELVE_SESSION_ENV);
         }
+    }
+
+    #[cfg(not(feature = "export-png"))]
+    #[test]
+    fn png_format_unavailable_without_feature() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = Runtime::open(DelvePaths::from_root(dir.path()));
+        let id = save_sample_session(&runtime);
+        let document = runtime.get_session(&id).expect("session");
+        let tree = document.primary_tree().expect("tree");
+        let err = export_trace_tree(
+            tree,
+            0,
+            &ExportOptions {
+                layout: ExportLayout::Tree,
+                format: ExportFormat::Png,
+                title: SvgTitle {
+                    primary: document.id.clone(),
+                    secondary: None,
+                },
+                rtt_config: RttBarConfig::default(),
+            },
+        )
+        .expect_err("png should be unavailable");
+        assert_eq!(err, ExportError::UnsupportedFormat("png"));
+        assert!(err.to_string().contains("not available in this build"));
+    }
+
+    #[cfg(feature = "export-png")]
+    #[test]
+    fn session_export_writes_png_file_from_fixture() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = Runtime::open(DelvePaths::from_root(dir.path()));
+        let id = save_sample_session(&runtime);
+        let document = runtime.get_session(&id).expect("session");
+        let tree = document.primary_tree().expect("tree");
+        let output = export_trace_tree(
+            tree,
+            0,
+            &ExportOptions {
+                layout: ExportLayout::Tree,
+                format: ExportFormat::Png,
+                title: SvgTitle {
+                    primary: format!("session {}", document.id),
+                    secondary: None,
+                },
+                rtt_config: RttBarConfig::default(),
+            },
+        )
+        .expect("png");
+        let png = match output {
+            ExportOutput::Png(bytes) => bytes,
+            ExportOutput::Svg(_) => panic!("expected png output"),
+        };
+        assert!(png.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]));
+        assert!(png.len() > 100);
+        let output_path = dir.path().join("trace.png");
+        std::fs::write(&output_path, &png).expect("write");
+        let written = std::fs::read(&output_path).expect("read");
+        assert_eq!(written, png);
+    }
+
+    #[cfg(feature = "export-png")]
+    #[test]
+    fn session_export_writes_icicle_png_from_fixture() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = Runtime::open(DelvePaths::from_root(dir.path()));
+        let id = save_sample_session(&runtime);
+        let document = runtime.get_session(&id).expect("session");
+        let tree = document.primary_tree().expect("tree");
+        let output = export_trace_tree(
+            tree,
+            0,
+            &ExportOptions {
+                layout: ExportLayout::Icicle,
+                format: ExportFormat::Png,
+                title: SvgTitle {
+                    primary: format!("session {}", document.id),
+                    secondary: None,
+                },
+                rtt_config: RttBarConfig::default(),
+            },
+        )
+        .expect("png");
+        let png = match output {
+            ExportOutput::Png(bytes) => bytes,
+            ExportOutput::Svg(_) => panic!("expected png output"),
+        };
+        assert!(png.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]));
+        assert!(png.len() > 100);
     }
 }

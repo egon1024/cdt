@@ -29,6 +29,7 @@ Installed packages also ship `man delve` (CLI synopsis) and this guide at `/usr/
 | [Command reference](delve/reference.md) | Commands, trace options, query types |
 | [Configuration](delve/configuration.md) | `delve.yaml`, retention, parallelism, RTT bars |
 | [Session explore](delve/explore.md) | TUI, outline, JSON exports, Compare analytics |
+| [Session export](delve/export.md) | SVG/PNG trace diagrams (`session export`) |
 | [Storage and output](delve/storage.md) | File paths, session document shapes, NDJSON |
 
 ## At a glance

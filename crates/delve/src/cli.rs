@@ -295,7 +295,7 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
 fn run_session_export(args: SessionExportArgs, runtime: &Runtime) -> Result<(), CliError> {
     use std::io::Write;
 
-    use crate::export::{ExportFormat, ExportLayout, ExportOptions, SvgTitle, render_trace_tree};
+    use crate::export::{ExportFormat, ExportLayout, ExportOptions, SvgTitle, export_trace_tree};
 
     let (session_id, _) = resolve_session_target(args.id, Vec::new(), runtime)?;
     let document = runtime.get_session(&session_id)?;
@@ -323,16 +323,20 @@ fn run_session_export(args: SessionExportArgs, runtime: &Runtime) -> Result<(), 
         title,
         rtt_config: runtime.config.explore_rtt_bar,
     };
-    let output = render_trace_tree(&entry.tree, args.tree_index, &options)?;
+    let output = export_trace_tree(&entry.tree, args.tree_index, &options)?;
     match args.output.as_deref() {
         Some("-") | None => {
             let mut stdout = io::stdout().lock();
-            stdout.write_all(output.as_bytes())?;
+            match output {
+                crate::export::ExportOutput::Svg(svg) => stdout.write_all(svg.as_bytes())?,
+                crate::export::ExportOutput::Png(png) => stdout.write_all(&png)?,
+            }
             stdout.flush()?;
         }
-        Some(path) => {
-            std::fs::write(path, output.as_bytes())?;
-        }
+        Some(path) => match output {
+            crate::export::ExportOutput::Svg(svg) => std::fs::write(path, svg.as_bytes())?,
+            crate::export::ExportOutput::Png(png) => std::fs::write(path, png)?,
+        },
     }
     Ok(())
 }
