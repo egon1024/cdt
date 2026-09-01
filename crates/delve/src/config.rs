@@ -281,7 +281,8 @@ fn write_explore_dump_section(
         parsed.explore.persist_view_state,
         defaults.explore_persist_view_state,
     );
-    let rtt_bar_active = write_rtt_bar_dump_section(&mut body, parsed.explore.rtt_bar.as_ref(), default_rtt);
+    let rtt_bar_active =
+        write_rtt_bar_dump_section(&mut body, parsed.explore.rtt_bar.as_ref(), default_rtt);
     let active = parsed.explore.persist_view_state.is_some() || rtt_bar_active;
     write_dump_section(out, "explore", active, &body);
 }
@@ -327,7 +328,8 @@ fn write_rtt_bar_dump_section(
         section.and_then(|section| section.max_width),
         default_rtt.max_width,
     );
-    let active = green_active || yellow_active || orange_active || insane_active || max_width_active;
+    let active =
+        green_active || yellow_active || orange_active || insane_active || max_width_active;
     write_dump_section(out, "  rtt_bar", active, &body);
     active
 }

@@ -9,10 +9,10 @@ use crate::args::{
     CacheCommand, CacheSubcommand, Cli, Command, ConfigCommand, ConfigSubcommand,
     SessionBranchArgs, SessionCommand, SessionSubcommand, TraceArgs,
 };
-use crate::config::DelveConfig;
 use crate::branch::{
     BranchError, BranchIntentArg, format_branch_report, parse_server_target, resolve_branch_target,
 };
+use crate::config::DelveConfig;
 use crate::dig_options::{ParseError, TraceOptions, parse_trace_args};
 use crate::expand_confirm::{ExpandConfirmOutcome, confirm_expand_all, expand_all_is_tty};
 use crate::explore::{ExploreError, run_events, run_explore, run_outline};
