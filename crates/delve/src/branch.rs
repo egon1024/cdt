@@ -215,6 +215,7 @@ pub fn execute_branch(
     let targets = match &intent {
         BranchIntentArg::ExpandCut => expand_cut_targets(
             &delegation_hop,
+            cut_path.path.is_empty(),
             &queried_children,
             &mut config,
             &mut planning_budget,
@@ -244,6 +245,7 @@ pub fn execute_branch(
         qname: delegation_hop.qname.clone(),
         targets: targets.iter().map(server_label).collect(),
     };
+    let targets_for_report = targets.clone();
 
     if dry_run {
         return Ok(BranchReport {
@@ -267,6 +269,7 @@ pub fn execute_branch(
     let is_expand_cut = matches!(intent, BranchIntentArg::ExpandCut);
 
     let mut branch_budget = QueryBudget::new(runtime.config.trace_max_queries_per_action);
+    let branch_targets = targets.clone();
     let mut new_nodes = if is_expand_cut {
         let attach_prefix = cut_path.path.clone();
         run_expand_cut_branch(
@@ -274,7 +277,7 @@ pub fn execute_branch(
             &mut branch_budget,
             progress,
             at.clone(),
-            targets,
+            branch_targets,
             qname,
             qtype,
             zone,
@@ -325,7 +328,16 @@ pub fn execute_branch(
 
     let nodes_added = new_nodes.len();
     if nodes_added == 0 {
-        return Ok(empty_report(dry_run, &delegation_hop, Vec::new(), warnings));
+        if !targets_for_report.is_empty() {
+            warnings
+                .push("branch queries completed but no nodes could be attached at this cut".into());
+        }
+        return Ok(empty_report(
+            dry_run,
+            &delegation_hop,
+            targets_for_report,
+            warnings,
+        ));
     }
 
     if is_expand_cut {
@@ -504,32 +516,57 @@ fn hop_matches_ns_at_cut(
 }
 
 fn glue_ip_for_ns(cut_hop: &dns_resolve::TraceHop, ns_name: &DomainName) -> Option<IpAddr> {
+    let normalized = normalize_ns_name(ns_name.as_str());
+    if !cut_hop.referral_ns.is_empty() {
+        if let Some(index) = cut_hop
+            .referral_ns
+            .iter()
+            .position(|ns| normalize_ns_name(ns) == normalized)
+        {
+            if let Some(glue) = cut_hop.glue.get(index) {
+                return glue.parse().ok();
+            }
+        }
+    }
     let referral = referral_for_hop(cut_hop)?;
     let ns_names = referral_ns_names(cut_hop, Some(&referral));
-    let normalized = normalize_ns_name(ns_name.as_str());
     let index = ns_names
         .iter()
         .position(|name| normalize_ns_name(name.as_str()) == normalized)?;
     cut_hop.glue.get(index)?.parse().ok()
 }
 
-/// True when the session root already has one delegation path per nameserver listed at the cut.
-fn root_referral_satisfied(
+fn nameserver_satisfied_at_cut(
     cut_hop: &dns_resolve::TraceHop,
+    cut_is_session_root: bool,
+    ns_name: &DomainName,
     queried_children: &[&TraceNode],
 ) -> bool {
-    if cut_hop.zone != "." {
-        return false;
+    if cut_is_session_root && cut_hop.zone == "." {
+        queried_children.iter().any(|child| {
+            delegation_hop_for_cut_child(cut_hop, child)
+                .is_some_and(|hop| hop_matches_ns_at_cut(cut_hop, ns_name, &hop))
+        })
+    } else {
+        subtree_covers_ns_name(cut_hop, ns_name, queried_children)
     }
-    let ns_count = referral_ns_names(cut_hop, referral_for_hop(cut_hop).as_ref()).len();
-    if ns_count == 0 {
-        return false;
+}
+
+fn delegation_hop_for_cut_child(
+    cut_hop: &dns_resolve::TraceHop,
+    child: &TraceNode,
+) -> Option<dns_resolve::TraceHop> {
+    let mut node = child;
+    loop {
+        if node.hop.zone != cut_hop.zone {
+            return Some(node.hop.clone());
+        }
+        match node.children.as_slice() {
+            [] => return None,
+            [only] => node = only,
+            _ => return None,
+        }
     }
-    let delegation_paths = queried_children
-        .iter()
-        .filter(|child| child.hop.zone != cut_hop.zone)
-        .count();
-    delegation_paths >= ns_count
 }
 
 fn promote_branch_origin(
@@ -552,6 +589,7 @@ fn apply_branch_origin(node: &mut TraceNode, origin: NodeOrigin) {
 
 fn expand_cut_targets(
     delegation_hop: &dns_resolve::TraceHop,
+    cut_is_session_root: bool,
     queried_children: &[&TraceNode],
     config: &mut TraceConfig,
     budget: &mut QueryBudget,
@@ -559,10 +597,6 @@ fn expand_cut_targets(
     warnings: &mut Vec<String>,
 ) -> Result<Vec<ServerTarget>, BranchError> {
     let zone = DomainName::parse(&delegation_hop.zone)?;
-    if root_referral_satisfied(delegation_hop, queried_children) {
-        warnings.push("all nameservers at this zone cut already queried".into());
-        return Ok(Vec::new());
-    }
     let referral = referral_for_hop(delegation_hop);
     let fallback = queried_children
         .iter()
@@ -571,7 +605,19 @@ fn expand_cut_targets(
 
     let ns_names = referral_ns_names(delegation_hop, referral.as_ref());
     if ns_names.is_empty() {
-        return Ok(filter_unqueried_targets(&fallback, queried_children));
+        if fallback.is_empty() {
+            warnings.push("no nameservers listed at this zone cut".into());
+            return Ok(Vec::new());
+        }
+        warnings.push(
+            "referral nameservers unavailable; reusing servers from existing paths only".into(),
+        );
+        return Ok(filter_unqueried_targets(
+            cut_is_session_root,
+            delegation_hop,
+            &fallback,
+            queried_children,
+        ));
     }
 
     let mut targets = Vec::new();
@@ -579,7 +625,12 @@ fn expand_cut_targets(
     let mut last_error = None;
 
     for ns_name in ns_names {
-        if subtree_covers_ns_name(delegation_hop, &ns_name, queried_children) {
+        if nameserver_satisfied_at_cut(
+            delegation_hop,
+            cut_is_session_root,
+            &ns_name,
+            queried_children,
+        ) {
             continue;
         }
         if let Some(target) = child_target_for_ns(&ns_name, queried_children) {
@@ -599,7 +650,12 @@ fn expand_cut_targets(
         }
     }
 
-    let targets = dedupe_server_targets(filter_unqueried_targets(&targets, queried_children));
+    let targets = dedupe_server_targets(filter_unqueried_targets(
+        cut_is_session_root,
+        delegation_hop,
+        &targets,
+        queried_children,
+    ));
     if targets.is_empty() {
         if unresolved_ns.is_empty() || last_error.is_none() {
             warnings.push("all nameservers at this zone cut already queried".into());
@@ -699,15 +755,27 @@ fn resolve_alternate_target(
 }
 
 fn filter_unqueried_targets(
+    cut_is_session_root: bool,
+    cut_hop: &dns_resolve::TraceHop,
     targets: &[ServerTarget],
     queried_children: &[&TraceNode],
 ) -> Vec<ServerTarget> {
     targets
         .iter()
         .filter(|target| {
-            !queried_children
-                .iter()
-                .any(|child| subtree_queried_primary(target, child))
+            if cut_is_session_root && cut_hop.zone == "." {
+                !queried_children.iter().any(|child| {
+                    delegation_hop_for_cut_child(cut_hop, child).is_some_and(|hop| {
+                        server_target_from_hop(&hop).ok().is_some_and(|existing| {
+                            server_matches_primary(target, &existing, existing.address)
+                        })
+                    })
+                })
+            } else {
+                !queried_children
+                    .iter()
+                    .any(|child| subtree_queried_primary(target, child))
+            }
         })
         .cloned()
         .collect()
@@ -838,8 +906,13 @@ pub fn format_branch_report(report: &BranchReport) -> String {
         ));
         if plan.targets.is_empty() {
             lines.push("nothing to query at this cut".into());
-        } else {
+        } else if report.dry_run {
             lines.push("would query:".into());
+            for target in &plan.targets {
+                lines.push(format!("  - {target}"));
+            }
+        } else {
+            lines.push("queried:".into());
             for target in &plan.targets {
                 lines.push(format!("  - {target}"));
             }
@@ -869,8 +942,9 @@ pub fn format_branch_report(report: &BranchReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
     use std::net::{IpAddr, Ipv4Addr};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use dns_core::EdnsMeta;
     use dns_core::response::{DnsRecord, DnsResponse};
@@ -1380,7 +1454,31 @@ mod tests {
     }
 
     #[test]
-    fn expand_cut_from_root_dry_run_lists_unqueried_org_servers() {
+    fn format_branch_report_lists_targets_when_attach_fails() {
+        let report = BranchReport {
+            nodes_added: 0,
+            updated_at: None,
+            warnings: vec![
+                "branch queries completed but no nodes could be attached at this cut".into(),
+            ],
+            budget_truncated: false,
+            dry_run: false,
+            plan: Some(BranchPlan {
+                zone: ".".into(),
+                server: "198.41.0.4".into(),
+                qname: "tuininga.org.".into(),
+                targets: vec!["b0.org.afilias-nst.org. (199.249.120.1)".into()],
+            }),
+        };
+        let text = format_branch_report(&report);
+        assert!(!text.contains("nothing to query"));
+        assert!(text.contains("queried:"));
+        assert!(text.contains("b0.org.afilias-nst.org"));
+        assert!(text.contains("no nodes added"));
+    }
+
+    #[test]
+    fn expand_cut_from_fresh_tuininga_trace_dry_run_lists_remaining_root_ns() {
         let mut document = sample_document(
             tuininga_tree(),
             TraceRequest::from_options(&TraceOptions {
@@ -1414,9 +1512,85 @@ mod tests {
         );
     }
 
+    fn tuininga_root_cut_queried(seen: &Mutex<HashSet<IpAddr>>, server: IpAddr) -> bool {
+        seen.lock().expect("root cut mutex").insert(server)
+    }
+
+    fn tuininga_org_referral(
+        server: IpAddr,
+        options: &dns_core::query::QueryOptions,
+    ) -> dns_core::response::QueryResult {
+        dns_core::response::QueryResult {
+            server,
+            transport: options.transport,
+            qname: options.qname.clone(),
+            qtype: options.qtype.to_string(),
+            rtt: std::time::Duration::from_millis(1),
+            response: DnsResponse {
+                id: 1,
+                rcode: 0,
+                rcode_text: "NOERROR".into(),
+                authoritative: false,
+                truncated: false,
+                recursion_desired: false,
+                recursion_available: false,
+                authentic_data: false,
+                checking_disabled: false,
+                answers: vec![],
+                authorities: vec![DnsRecord {
+                    name: DomainName::parse("org.").expect("zone"),
+                    rtype: "NS".into(),
+                    rclass: "IN".into(),
+                    ttl: 3600,
+                    rdata: "a0.org.afilias-nst.info.".into(),
+                }],
+                additionals: vec![],
+                edns: EdnsMeta::default(),
+            },
+            from_cache: false,
+        }
+    }
+
+    fn tuininga_org_delegation(
+        server: IpAddr,
+        options: &dns_core::query::QueryOptions,
+    ) -> dns_core::response::QueryResult {
+        dns_core::response::QueryResult {
+            server,
+            transport: options.transport,
+            qname: options.qname.clone(),
+            qtype: options.qtype.to_string(),
+            rtt: std::time::Duration::from_millis(1),
+            response: DnsResponse {
+                id: 1,
+                rcode: 0,
+                rcode_text: "NOERROR".into(),
+                authoritative: false,
+                truncated: false,
+                recursion_desired: false,
+                recursion_available: false,
+                authentic_data: false,
+                checking_disabled: false,
+                answers: vec![],
+                authorities: vec![DnsRecord {
+                    name: DomainName::parse("tuininga.org.").expect("zone"),
+                    rtype: "NS".into(),
+                    rclass: "IN".into(),
+                    ttl: 3600,
+                    rdata: "helium.ns.hetzner.de.".into(),
+                }],
+                additionals: vec![],
+                edns: EdnsMeta::default(),
+            },
+            from_cache: false,
+        }
+    }
+
     #[test]
     fn expand_cut_from_root_reuses_session_nameserver_targets() {
-        struct TuiningaBranchExchange;
+        struct TuiningaBranchExchange {
+            root_cut_queried: Mutex<HashSet<IpAddr>>,
+        }
 
         impl TuiningaBranchExchange {
             fn is_org_server(server: IpAddr) -> bool {
@@ -1499,97 +1673,15 @@ mod tests {
                         from_cache: false,
                     });
                 }
-                if Self::is_root_expand_target(server) {
-                    return Ok(dns_core::response::QueryResult {
-                        server,
-                        transport: options.transport,
-                        qname: options.qname.clone(),
-                        qtype: options.qtype.to_string(),
-                        rtt: std::time::Duration::from_millis(1),
-                        response: DnsResponse {
-                            id: 1,
-                            rcode: 0,
-                            rcode_text: "NOERROR".into(),
-                            authoritative: false,
-                            truncated: false,
-                            recursion_desired: false,
-                            recursion_available: false,
-                            authentic_data: false,
-                            checking_disabled: false,
-                            answers: vec![],
-                            authorities: vec![DnsRecord {
-                                name: DomainName::parse("org.").expect("zone"),
-                                rtype: "NS".into(),
-                                rclass: "IN".into(),
-                                ttl: 3600,
-                                rdata: "a0.org.afilias-nst.info.".into(),
-                            }],
-                            additionals: vec![],
-                            edns: EdnsMeta::default(),
-                        },
-                        from_cache: false,
-                    });
+                if Self::is_root_expand_target(server)
+                    && tuininga_root_cut_queried(&self.root_cut_queried, server)
+                {
+                    return Ok(tuininga_org_referral(server, options));
                 }
                 if Self::is_org_server(server) {
-                    return Ok(dns_core::response::QueryResult {
-                        server,
-                        transport: options.transport,
-                        qname: options.qname.clone(),
-                        qtype: options.qtype.to_string(),
-                        rtt: std::time::Duration::from_millis(1),
-                        response: DnsResponse {
-                            id: 1,
-                            rcode: 0,
-                            rcode_text: "NOERROR".into(),
-                            authoritative: false,
-                            truncated: false,
-                            recursion_desired: false,
-                            recursion_available: false,
-                            authentic_data: false,
-                            checking_disabled: false,
-                            answers: vec![],
-                            authorities: vec![DnsRecord {
-                                name: DomainName::parse("tuininga.org.").expect("zone"),
-                                rtype: "NS".into(),
-                                rclass: "IN".into(),
-                                ttl: 3600,
-                                rdata: "helium.ns.hetzner.de.".into(),
-                            }],
-                            additionals: vec![],
-                            edns: EdnsMeta::default(),
-                        },
-                        from_cache: false,
-                    });
+                    return Ok(tuininga_org_delegation(server, options));
                 }
-                Ok(dns_core::response::QueryResult {
-                    server,
-                    transport: options.transport,
-                    qname: options.qname.clone(),
-                    qtype: options.qtype.to_string(),
-                    rtt: std::time::Duration::from_millis(1),
-                    response: DnsResponse {
-                        id: 1,
-                        rcode: 0,
-                        rcode_text: "NOERROR".into(),
-                        authoritative: false,
-                        truncated: false,
-                        recursion_desired: false,
-                        recursion_available: false,
-                        authentic_data: false,
-                        checking_disabled: false,
-                        answers: vec![],
-                        authorities: vec![DnsRecord {
-                            name: DomainName::parse("org.").expect("zone"),
-                            rtype: "NS".into(),
-                            rclass: "IN".into(),
-                            ttl: 3600,
-                            rdata: "a0.org.afilias-nst.info.".into(),
-                        }],
-                        additionals: vec![],
-                        edns: EdnsMeta::default(),
-                    },
-                    from_cache: false,
-                })
+                Ok(tuininga_org_referral(server, options))
             }
         }
 
@@ -1608,7 +1700,9 @@ mod tests {
             false,
             &runtime,
             &mut SilentProgress,
-            Some(Arc::new(TuiningaBranchExchange)),
+            Some(Arc::new(TuiningaBranchExchange {
+                root_cut_queried: Mutex::new(HashSet::new()),
+            })),
         )
         .expect("branch");
         assert_eq!(report.nodes_added, 2);
@@ -2077,7 +2171,9 @@ mod tests {
             false,
             &runtime,
             &mut SilentProgress,
-            Some(Arc::new(TuiningaBranchExchangeImpl)),
+            Some(Arc::new(TuiningaBranchExchangeImpl {
+                root_cut_queried: Mutex::new(HashSet::new()),
+            })),
         )
         .expect("first branch");
         assert_eq!(first.nodes_added, 2);
@@ -2106,18 +2202,24 @@ mod tests {
             .expect("root");
         let cut_hop = root.hop.clone();
         let queried: Vec<&TraceNode> = root.children.iter().collect();
-        for ns in [
-            "a0.org.afilias-nst.info.",
-            "b0.org.afilias-nst.org.",
-            "c0.org.afilias-nst.info.",
-        ] {
-            assert!(
-                subtree_covers_ns_name(&cut_hop, &DomainName::parse(ns).expect("ns"), &queried,)
-                    || root_referral_satisfied(&cut_hop, &queried),
-                "expected {ns} to be covered after first root expand",
-            );
-        }
-        assert!(root_referral_satisfied(&cut_hop, &queried));
+        assert!(nameserver_satisfied_at_cut(
+            &cut_hop,
+            true,
+            &DomainName::parse("a0.org.afilias-nst.info.").expect("ns"),
+            &queried,
+        ));
+        assert!(nameserver_satisfied_at_cut(
+            &cut_hop,
+            true,
+            &DomainName::parse("b0.org.afilias-nst.org.").expect("ns"),
+            &queried,
+        ));
+        assert!(nameserver_satisfied_at_cut(
+            &cut_hop,
+            true,
+            &DomainName::parse("c0.org.afilias-nst.info.").expect("ns"),
+            &queried,
+        ));
 
         let second = execute_branch(
             &mut document,
@@ -2126,7 +2228,9 @@ mod tests {
             false,
             &runtime,
             &mut SilentProgress,
-            Some(Arc::new(TuiningaBranchExchangeImpl)),
+            Some(Arc::new(TuiningaBranchExchangeImpl {
+                root_cut_queried: Mutex::new(HashSet::new()),
+            })),
         )
         .expect("second branch");
         assert_eq!(second.nodes_added, 0);
@@ -2191,7 +2295,9 @@ mod tests {
         );
     }
 
-    struct TuiningaBranchExchangeImpl;
+    struct TuiningaBranchExchangeImpl {
+        root_cut_queried: Mutex<HashSet<IpAddr>>,
+    }
 
     impl TuiningaBranchExchangeImpl {
         fn is_org_server(server: IpAddr) -> bool {
@@ -2274,97 +2380,15 @@ mod tests {
                     from_cache: false,
                 });
             }
-            if Self::is_root_expand_target(server) {
-                return Ok(dns_core::response::QueryResult {
-                    server,
-                    transport: options.transport,
-                    qname: options.qname.clone(),
-                    qtype: options.qtype.to_string(),
-                    rtt: std::time::Duration::from_millis(1),
-                    response: DnsResponse {
-                        id: 1,
-                        rcode: 0,
-                        rcode_text: "NOERROR".into(),
-                        authoritative: false,
-                        truncated: false,
-                        recursion_desired: false,
-                        recursion_available: false,
-                        authentic_data: false,
-                        checking_disabled: false,
-                        answers: vec![],
-                        authorities: vec![DnsRecord {
-                            name: DomainName::parse("org.").expect("zone"),
-                            rtype: "NS".into(),
-                            rclass: "IN".into(),
-                            ttl: 3600,
-                            rdata: "a0.org.afilias-nst.info.".into(),
-                        }],
-                        additionals: vec![],
-                        edns: EdnsMeta::default(),
-                    },
-                    from_cache: false,
-                });
+            if Self::is_root_expand_target(server)
+                && tuininga_root_cut_queried(&self.root_cut_queried, server)
+            {
+                return Ok(tuininga_org_referral(server, options));
             }
             if Self::is_org_server(server) {
-                return Ok(dns_core::response::QueryResult {
-                    server,
-                    transport: options.transport,
-                    qname: options.qname.clone(),
-                    qtype: options.qtype.to_string(),
-                    rtt: std::time::Duration::from_millis(1),
-                    response: DnsResponse {
-                        id: 1,
-                        rcode: 0,
-                        rcode_text: "NOERROR".into(),
-                        authoritative: false,
-                        truncated: false,
-                        recursion_desired: false,
-                        recursion_available: false,
-                        authentic_data: false,
-                        checking_disabled: false,
-                        answers: vec![],
-                        authorities: vec![DnsRecord {
-                            name: DomainName::parse("tuininga.org.").expect("zone"),
-                            rtype: "NS".into(),
-                            rclass: "IN".into(),
-                            ttl: 3600,
-                            rdata: "helium.ns.hetzner.de.".into(),
-                        }],
-                        additionals: vec![],
-                        edns: EdnsMeta::default(),
-                    },
-                    from_cache: false,
-                });
+                return Ok(tuininga_org_delegation(server, options));
             }
-            Ok(dns_core::response::QueryResult {
-                server,
-                transport: options.transport,
-                qname: options.qname.clone(),
-                qtype: options.qtype.to_string(),
-                rtt: std::time::Duration::from_millis(1),
-                response: DnsResponse {
-                    id: 1,
-                    rcode: 0,
-                    rcode_text: "NOERROR".into(),
-                    authoritative: false,
-                    truncated: false,
-                    recursion_desired: false,
-                    recursion_available: false,
-                    authentic_data: false,
-                    checking_disabled: false,
-                    answers: vec![],
-                    authorities: vec![DnsRecord {
-                        name: DomainName::parse("org.").expect("zone"),
-                        rtype: "NS".into(),
-                        rclass: "IN".into(),
-                        ttl: 3600,
-                        rdata: "a0.org.afilias-nst.info.".into(),
-                    }],
-                    additionals: vec![],
-                    edns: EdnsMeta::default(),
-                },
-                from_cache: false,
-            })
+            Ok(tuininga_org_referral(server, options))
         }
     }
 }

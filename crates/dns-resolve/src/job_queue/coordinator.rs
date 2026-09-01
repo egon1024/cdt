@@ -10,9 +10,9 @@ use crate::trace::{
     server_matches_primary, start_servers,
 };
 use crate::{
-    ExpansionPolicy, HopOutcome, NodeOrigin, QueryBudget, ResolveError, Result, ServerTarget,
-    TraceConfig, TraceHop, TraceNode, TraceProgress, drain_query_debug, hop_from_query,
-    now_rfc3339,
+    BranchIntent, ExpansionPolicy, HopOutcome, NodeOrigin, QueryBudget, ResolveError, Result,
+    ServerTarget, TraceConfig, TraceHop, TraceNode, TraceProgress, drain_query_debug,
+    hop_from_query, now_rfc3339,
 };
 
 use super::branch::BranchJobRequest;
@@ -620,38 +620,50 @@ impl<'a> Coordinator<'a> {
             },
         );
 
-        let next_servers = match resolve_nameservers_from_referral(
-            &query_result.response,
-            std::slice::from_ref(&job.server),
-            self.config,
-            self.budget,
-            &job.zone,
-            self.progress,
-        ) {
-            Ok(servers) if !servers.is_empty() => servers,
-            Ok(_) => {
-                if self.config.expansion_policy == ExpansionPolicy::All {
-                    hop.outcome = HopOutcome::Failed {
-                        kind: "no_reachable_nameserver".into(),
-                        detail: next_zone.to_string(),
-                    };
-                    self.store_completed_node(&job.path, hop, node_origin_for_job(&job));
-                    return Ok(());
-                }
-                return Err(ResolveError::NoReachableNameserver {
-                    zone: next_zone.to_string(),
-                });
+        let next_servers = if matches!(
+            &job.kind,
+            JobKind::Branch {
+                intent: BranchIntent::ExpandCut,
+                ..
             }
-            Err(error) => {
-                if self.config.expansion_policy == ExpansionPolicy::All {
-                    hop.outcome = HopOutcome::Failed {
-                        kind: "nameserver_resolution".into(),
-                        detail: error.to_string(),
-                    };
-                    self.store_completed_node(&job.path, hop, node_origin_for_job(&job));
-                    return Ok(());
+        ) {
+            // Expand-cut branch jobs intentionally queried this server at the cut;
+            // continue delegation through it instead of re-resolving referral NS.
+            vec![job.server.clone()]
+        } else {
+            match resolve_nameservers_from_referral(
+                &query_result.response,
+                std::slice::from_ref(&job.server),
+                self.config,
+                self.budget,
+                &job.zone,
+                self.progress,
+            ) {
+                Ok(servers) if !servers.is_empty() => servers,
+                Ok(_) => {
+                    if self.config.expansion_policy == ExpansionPolicy::All {
+                        hop.outcome = HopOutcome::Failed {
+                            kind: "no_reachable_nameserver".into(),
+                            detail: next_zone.to_string(),
+                        };
+                        self.store_completed_node(&job.path, hop, node_origin_for_job(&job));
+                        return Ok(());
+                    }
+                    return Err(ResolveError::NoReachableNameserver {
+                        zone: next_zone.to_string(),
+                    });
                 }
-                return Err(error);
+                Err(error) => {
+                    if self.config.expansion_policy == ExpansionPolicy::All {
+                        hop.outcome = HopOutcome::Failed {
+                            kind: "nameserver_resolution".into(),
+                            detail: error.to_string(),
+                        };
+                        self.store_completed_node(&job.path, hop, node_origin_for_job(&job));
+                        return Ok(());
+                    }
+                    return Err(error);
+                }
             }
         };
 
