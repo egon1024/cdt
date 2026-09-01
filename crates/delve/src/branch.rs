@@ -432,44 +432,70 @@ fn normalize_expand_cut_attachments(
     nodes
         .into_iter()
         .flat_map(|node| {
-            normalize_expand_cut_attachment(cut_hop, attachment_zone, primary_delegation, node)
+            normalize_expand_cut_attachment(
+                cut_hop,
+                cut_is_session_root,
+                attachment_zone,
+                primary_delegation,
+                node,
+            )
         })
         .collect()
 }
 
 fn normalize_expand_cut_attachment(
     cut_hop: &dns_resolve::TraceHop,
+    cut_is_session_root: bool,
     attachment_zone: Option<&str>,
     _primary_delegation: Option<&TraceNode>,
-    mut node: TraceNode,
+    node: TraceNode,
 ) -> Vec<TraceNode> {
     let branch_origin =
         matches!(&node.origin, NodeOrigin::Branch { .. }).then(|| node.origin.clone());
 
-    while node.hop.zone == cut_hop.zone {
-        match node.children.len() {
-            0 => break,
-            1 => node = node.children.remove(0),
-            _ => return promote_branch_origin(branch_origin, node.children),
+    let Some(expected_zone) = attachment_zone else {
+        if let Some(origin) = branch_origin {
+            let mut node = node;
+            apply_branch_origin(&mut node, origin);
+            return vec![node];
         }
-    }
-    if node.hop.zone == cut_hop.zone {
-        if node.children.is_empty() {
-            return Vec::new();
-        }
-        return promote_branch_origin(branch_origin, node.children);
-    }
+        return vec![node];
+    };
 
-    if let Some(expected_zone) = attachment_zone {
-        if node.hop.zone != expected_zone {
-            return Vec::new();
-        }
+    let Some(mut node) = extract_delegation_hop(&node, &cut_hop.zone, expected_zone) else {
+        return Vec::new();
+    };
+
+    if cut_is_session_root {
+        node.children.clear();
     }
 
     if let Some(origin) = branch_origin {
         apply_branch_origin(&mut node, origin);
     }
     vec![node]
+}
+
+/// Walk a single-path branch subtree to the delegation hop at `attachment_zone`.
+fn extract_delegation_hop(
+    node: &TraceNode,
+    cut_zone: &str,
+    attachment_zone: &str,
+) -> Option<TraceNode> {
+    let mut node = node.clone();
+    loop {
+        if node.hop.zone == attachment_zone {
+            return Some(node);
+        }
+        match node.children.as_slice() {
+            [only] => node = only.clone(),
+            _ => return None,
+        }
+        if node.hop.zone != cut_zone && node.hop.zone != attachment_zone && node.children.is_empty()
+        {
+            return None;
+        }
+    }
 }
 
 fn subtree_covers_ns_name(
@@ -567,18 +593,6 @@ fn delegation_hop_for_cut_child(
             _ => return None,
         }
     }
-}
-
-fn promote_branch_origin(
-    origin: Option<NodeOrigin>,
-    mut children: Vec<TraceNode>,
-) -> Vec<TraceNode> {
-    if let Some(origin) = origin {
-        for child in &mut children {
-            apply_branch_origin(child, origin.clone());
-        }
-    }
-    children
 }
 
 fn apply_branch_origin(node: &mut TraceNode, origin: NodeOrigin) {
@@ -1399,13 +1413,13 @@ mod tests {
             })),
         )
         .expect("branch should not hit delegation loop at tuininga.org");
-        assert!(report.nodes_added >= 2);
+        assert_eq!(report.nodes_added, 5);
         let root = document
             .primary_tree()
             .expect("tree")
             .resolve(&NodePath::root(0))
             .expect("root");
-        assert!(root.children.len() >= 3);
+        assert_eq!(root.children.len(), 6);
         assert!(root.children.iter().all(|child| child.hop.zone == "org."));
     }
 
@@ -2242,6 +2256,113 @@ mod tests {
             normalize_expand_cut_attachments(&cut, true, Some(&org_template), vec![tuininga_leaf]);
 
         assert!(normalized.is_empty());
+    }
+
+    #[test]
+    fn normalize_extracts_org_from_deep_branch_subtree() {
+        let cut = dns_resolve::TraceHop {
+            zone: ".".into(),
+            server: "198.41.0.4".into(),
+            server_name: None,
+            qname: "tuininga.org.".into(),
+            qtype: "A".into(),
+            transport: "udp".into(),
+            rtt_ms: 1,
+            rcode: "NOERROR".into(),
+            nsid: None,
+            ede_code: None,
+            ede_text: None,
+            referral_ns: vec![],
+            glue: vec![],
+            response: Default::default(),
+            from_cache: false,
+            outcome: HopOutcome::Referral,
+        };
+        let org_template = tuininga_tree().root.children[0].clone();
+        let branch = TraceNode {
+            hop: TraceHop {
+                zone: ".".into(),
+                server: "199.19.54.1".into(),
+                server_name: Some("b0.org.afilias-nst.org.".into()),
+                qname: "tuininga.org.".into(),
+                qtype: "A".into(),
+                transport: "udp".into(),
+                rtt_ms: 2,
+                rcode: "NOERROR".into(),
+                nsid: None,
+                ede_code: None,
+                ede_text: None,
+                referral_ns: vec![],
+                glue: vec![],
+                response: Default::default(),
+                from_cache: false,
+                outcome: HopOutcome::Referral,
+            },
+            origin: NodeOrigin::Branch {
+                at: NodePath::root(0),
+                intent: BranchIntent::ExpandCut,
+                at_time: "now".into(),
+            },
+            children: vec![TraceNode {
+                hop: TraceHop {
+                    zone: "org.".into(),
+                    server: "199.19.54.1".into(),
+                    server_name: Some("b0.org.afilias-nst.org.".into()),
+                    qname: "tuininga.org.".into(),
+                    qtype: "A".into(),
+                    transport: "udp".into(),
+                    rtt_ms: 3,
+                    rcode: "NOERROR".into(),
+                    nsid: None,
+                    ede_code: None,
+                    ede_text: None,
+                    referral_ns: vec!["helium.ns.hetzner.de.".into()],
+                    glue: vec![],
+                    response: Default::default(),
+                    from_cache: false,
+                    outcome: HopOutcome::Referral,
+                },
+                origin: NodeOrigin::Branch {
+                    at: NodePath::root(0),
+                    intent: BranchIntent::ExpandCut,
+                    at_time: "now".into(),
+                },
+                children: vec![TraceNode {
+                    hop: TraceHop {
+                        zone: "tuininga.org.".into(),
+                        server: "193.47.99.5".into(),
+                        server_name: Some("helium.ns.hetzner.de.".into()),
+                        qname: "tuininga.org.".into(),
+                        qtype: "A".into(),
+                        transport: "udp".into(),
+                        rtt_ms: 4,
+                        rcode: "NOERROR".into(),
+                        nsid: None,
+                        ede_code: None,
+                        ede_text: None,
+                        referral_ns: vec![],
+                        glue: vec![],
+                        response: Default::default(),
+                        from_cache: false,
+                        outcome: HopOutcome::Answered,
+                    },
+                    origin: NodeOrigin::Branch {
+                        at: NodePath::root(0),
+                        intent: BranchIntent::ExpandCut,
+                        at_time: "now".into(),
+                    },
+                    children: vec![],
+                }],
+            }],
+        };
+
+        let normalized =
+            normalize_expand_cut_attachments(&cut, true, Some(&org_template), vec![branch]);
+
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(normalized[0].hop.zone, "org.");
+        assert_eq!(normalized[0].hop.server, "199.19.54.1");
+        assert!(normalized[0].children.is_empty());
     }
 
     #[test]
