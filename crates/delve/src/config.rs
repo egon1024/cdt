@@ -172,7 +172,8 @@ impl DelveConfig {
     }
 
     /// Emit all configurable keys in YAML form. Keys present in the config file are
-    /// uncommented; unset keys are commented with their default values.
+    /// uncommented; unset keys are commented with their default values. Sections with
+    /// no active keys are commented out entirely.
     pub fn dump_yaml(paths: &DelvePaths) -> (String, Vec<String>) {
         let mut warnings = Vec::new();
         let parsed = read_delve_config_file(paths, &mut warnings);
@@ -185,77 +186,9 @@ impl DelveConfig {
              # Remove the leading # to override a default.\n\n",
         );
 
-        out.push_str("session:\n");
-        write_yaml_key(
-            &mut out,
-            1,
-            "retention",
-            parsed.session.retention,
-            DEFAULT_RETENTION.to_string(),
-        );
-
-        out.push_str("trace:\n");
-        write_yaml_key(
-            &mut out,
-            1,
-            "max_queries_per_action",
-            parsed.trace.max_queries_per_action,
-            defaults.trace_max_queries_per_action,
-        );
-        write_yaml_key(
-            &mut out,
-            1,
-            "max_parallel_queries",
-            parsed.trace.max_parallel_queries,
-            defaults.trace_max_parallel_queries,
-        );
-
-        out.push_str("explore:\n");
-        write_yaml_key(
-            &mut out,
-            1,
-            "persist_view_state",
-            parsed.explore.persist_view_state,
-            defaults.explore_persist_view_state,
-        );
-
-        out.push_str("  rtt_bar:\n");
-        let rtt = parsed.explore.rtt_bar.as_ref();
-        write_yaml_key(
-            &mut out,
-            2,
-            "green_ms",
-            rtt.and_then(|section| section.green_ms),
-            default_rtt.green_ms,
-        );
-        write_yaml_key(
-            &mut out,
-            2,
-            "yellow_ms",
-            rtt.and_then(|section| section.yellow_ms),
-            default_rtt.yellow_ms,
-        );
-        write_yaml_key(
-            &mut out,
-            2,
-            "orange_ms",
-            rtt.and_then(|section| section.orange_ms),
-            default_rtt.orange_ms,
-        );
-        write_yaml_key(
-            &mut out,
-            2,
-            "insane_ms",
-            rtt.and_then(|section| section.insane_ms),
-            default_rtt.insane_ms,
-        );
-        write_yaml_key(
-            &mut out,
-            2,
-            "max_width",
-            rtt.and_then(|section| section.max_width),
-            default_rtt.max_width,
-        );
+        write_session_dump_section(&mut out, &parsed);
+        write_trace_dump_section(&mut out, &parsed, &defaults);
+        write_explore_dump_section(&mut out, &parsed, &defaults, default_rtt);
 
         (out, warnings)
     }
@@ -292,18 +225,149 @@ fn read_delve_config_file(paths: &DelvePaths, warnings: &mut Vec<String>) -> Del
     }
 }
 
+fn write_session_dump_section(out: &mut String, parsed: &DelveConfigFile) {
+    let mut body = String::new();
+    write_yaml_key(
+        &mut body,
+        1,
+        "retention",
+        parsed.session.retention.clone(),
+        DEFAULT_RETENTION.to_string(),
+    );
+    write_dump_section(out, "session", parsed.session.retention.is_some(), &body);
+}
+
+fn write_trace_dump_section(out: &mut String, parsed: &DelveConfigFile, defaults: &DelveConfig) {
+    let mut body = String::new();
+    write_yaml_key(
+        &mut body,
+        1,
+        "max_queries_per_action",
+        parsed.trace.max_queries_per_action,
+        defaults.trace_max_queries_per_action,
+    );
+    write_yaml_key(
+        &mut body,
+        1,
+        "max_parallel_queries",
+        parsed.trace.max_parallel_queries,
+        defaults.trace_max_parallel_queries,
+    );
+    let active = parsed.trace.max_queries_per_action.is_some()
+        || parsed.trace.max_parallel_queries.is_some();
+    write_dump_section(out, "trace", active, &body);
+}
+
+fn write_explore_dump_section(
+    out: &mut String,
+    parsed: &DelveConfigFile,
+    defaults: &DelveConfig,
+    default_rtt: RttBarConfig,
+) {
+    let mut body = String::new();
+    write_yaml_key(
+        &mut body,
+        1,
+        "persist_view_state",
+        parsed.explore.persist_view_state,
+        defaults.explore_persist_view_state,
+    );
+    let rtt_bar_active = write_rtt_bar_dump_section(&mut body, parsed.explore.rtt_bar.as_ref(), default_rtt);
+    let active = parsed.explore.persist_view_state.is_some() || rtt_bar_active;
+    write_dump_section(out, "explore", active, &body);
+}
+
+fn write_rtt_bar_dump_section(
+    out: &mut String,
+    section: Option<&RttBarSection>,
+    default_rtt: RttBarConfig,
+) -> bool {
+    let mut body = String::new();
+    let green_active = write_yaml_key(
+        &mut body,
+        2,
+        "green_ms",
+        section.and_then(|section| section.green_ms),
+        default_rtt.green_ms,
+    );
+    let yellow_active = write_yaml_key(
+        &mut body,
+        2,
+        "yellow_ms",
+        section.and_then(|section| section.yellow_ms),
+        default_rtt.yellow_ms,
+    );
+    let orange_active = write_yaml_key(
+        &mut body,
+        2,
+        "orange_ms",
+        section.and_then(|section| section.orange_ms),
+        default_rtt.orange_ms,
+    );
+    let insane_active = write_yaml_key(
+        &mut body,
+        2,
+        "insane_ms",
+        section.and_then(|section| section.insane_ms),
+        default_rtt.insane_ms,
+    );
+    let max_width_active = write_yaml_key(
+        &mut body,
+        2,
+        "max_width",
+        section.and_then(|section| section.max_width),
+        default_rtt.max_width,
+    );
+    let active = green_active || yellow_active || orange_active || insane_active || max_width_active;
+    write_dump_section(out, "  rtt_bar", active, &body);
+    active
+}
+
+fn write_dump_section(out: &mut String, name: &str, active: bool, body: &str) {
+    if active {
+        out.push_str(name);
+        out.push_str(":\n");
+        out.push_str(body);
+    } else {
+        out.push('#');
+        out.push_str(name);
+        out.push_str(":\n");
+        out.push_str(&comment_block(body));
+    }
+}
+
+fn comment_block(lines: &str) -> String {
+    let mut out = String::new();
+    for line in lines.lines() {
+        if line.is_empty() {
+            out.push('\n');
+            continue;
+        }
+        if line.starts_with('#') {
+            out.push_str(line);
+        } else {
+            out.push('#');
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    out
+}
+
 fn write_yaml_key<T: std::fmt::Display>(
     out: &mut String,
     depth: usize,
     key: &str,
     value: Option<T>,
     default: T,
-) {
+) -> bool {
     let indent = "  ".repeat(depth);
     if let Some(value) = value {
         out.push_str(&format!("{indent}{key}: {value}\n"));
+        true
     } else {
         out.push_str(&format!("#{indent}{key}: {default}\n"));
+        false
     }
 }
 
@@ -428,12 +492,17 @@ mod tests {
         let (yaml, warnings) = DelveConfig::dump_yaml(&paths);
         assert!(warnings.is_empty());
         assert!(yaml.contains("# Commented lines show default values"));
+        assert!(yaml.contains("#session:"));
         assert!(yaml.contains("#  retention: never"));
+        assert!(yaml.contains("#trace:"));
         assert!(yaml.contains("#  max_queries_per_action: 64"));
         assert!(yaml.contains("#  max_parallel_queries: 8"));
+        assert!(yaml.contains("#explore:"));
         assert!(yaml.contains("#  persist_view_state: true"));
+        assert!(yaml.contains("#  rtt_bar:"));
         assert!(yaml.contains("#    green_ms: 50"));
         assert!(!yaml.contains("\n  retention: "));
+        assert!(!yaml.contains("\n  rtt_bar:\n"));
     }
 
     #[test]
@@ -449,11 +518,11 @@ mod tests {
 
         let (yaml, warnings) = DelveConfig::dump_yaml(&paths);
         assert!(warnings.is_empty());
-        assert!(yaml.contains("  retention: 180d"));
+        assert!(yaml.contains("session:\n  retention: 180d"));
         assert!(yaml.contains("#  max_queries_per_action: 64"));
         assert!(yaml.contains("  max_parallel_queries: 4"));
         assert!(yaml.contains("#  persist_view_state: true"));
-        assert!(yaml.contains("    green_ms: 75"));
+        assert!(yaml.contains("  rtt_bar:\n    green_ms: 75"));
         assert!(yaml.contains("#    yellow_ms: 150"));
     }
 }
