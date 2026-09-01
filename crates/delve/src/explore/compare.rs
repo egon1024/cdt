@@ -38,7 +38,9 @@ impl CompareColumns {
         let mut rcode_width = Self::MIN_RCODE_WIDTH;
 
         for node in visible {
-            let hop = tree.hop_at(&node.path).expect("visible hop");
+            let Some(hop) = tree.hop_at(&node.path) else {
+                continue;
+            };
             zone_width = zone_width.max(display_width(hop.zone.as_str()));
             server_width = server_width.max(display_width(hop.server.as_str()));
             server_name_width = server_name_width.max(display_width(hop_server_name(hop).as_str()));
@@ -90,8 +92,8 @@ pub fn compare_row(
     rtt_config: RttBarConfig,
     scale_max_rtt_ms: u32,
     theme: &Theme,
-) -> Line<'static> {
-    let hop = tree.hop_at(&node.path).expect("visible hop");
+) -> Option<Line<'static>> {
+    let hop = tree.hop_at(&node.path)?;
     let marker = if selected {
         ">"
     } else if node.expandable && children_count(node, tree) >= 2 {
@@ -160,7 +162,7 @@ pub fn compare_row(
         theme,
     ));
 
-    Line::from(spans)
+    Some(Line::from(spans))
 }
 
 fn hop_server_name(hop: &dns_resolve::TraceHop) -> String {
@@ -280,7 +282,8 @@ mod tests {
             RttBarConfig::default(),
             scale_max_rtt_ms,
             &theme,
-        );
+        )
+        .expect("row");
         let text = row
             .spans
             .iter()
@@ -321,7 +324,8 @@ mod tests {
             RttBarConfig::default(),
             scale_max_rtt_ms,
             &theme,
-        );
+        )
+        .expect("row");
         let deep = compare_row(
             &visible[visible.len() - 1],
             &tree,
@@ -331,7 +335,8 @@ mod tests {
             RttBarConfig::default(),
             scale_max_rtt_ms,
             &theme,
-        );
+        )
+        .expect("row");
 
         let header_starts = column_starts(&header);
         let shallow_starts = column_starts(&shallow);
@@ -372,7 +377,8 @@ mod tests {
             RttBarConfig::default(),
             scale_max_rtt_ms,
             &Theme::from_env(),
-        );
+        )
+        .expect("row");
         let text = row
             .spans
             .iter()

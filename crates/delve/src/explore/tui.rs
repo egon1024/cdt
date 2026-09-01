@@ -1,4 +1,5 @@
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -121,14 +122,12 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
     let runtime = ctx.runtime;
     let document = ctx.document;
     let persist_view_state = ctx.persist_view_state;
-    let mut tree = explore_tree_from_document(document);
+    let mut tree = explore_tree_from_document(document)?;
     let session_id = document.id.clone();
     let paths = runtime.paths.clone();
 
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
+    let terminal_guard = TerminalGuard::enter()?;
+    let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
     let mut view = ViewStateController::from_document(&tree, document);
@@ -149,7 +148,6 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
     let mut refresh_overlay = RefreshOverlay::None;
     let mut unsaved_rtt_refresh = false;
     let mut persist_warning_shown = false;
-    let mut result = Ok(());
 
     loop {
         let mut branch_finished = false;
@@ -166,7 +164,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                 if report.nodes_added > 0 {
                                     if let Ok(updated) = runtime.get_session(&session_id) {
                                         *document = updated;
-                                        tree = explore_tree_from_document(document);
+                                        tree = explore_tree_from_document(document)?;
                                         if !view
                                             .expanded_paths
                                             .iter()
@@ -222,7 +220,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                         match report {
                             Ok((updated, report)) => {
                                 *document = *updated;
-                                tree = explore_tree_from_document(document);
+                                tree = explore_tree_from_document(document)?;
                                 if report.hops_updated > 0 {
                                     unsaved_rtt_refresh = true;
                                 }
@@ -689,23 +687,51 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
         unsaved_rtt_refresh,
     );
 
-    disable_raw_mode()?;
-    if let Err(error) = execute!(terminal.backend_mut(), LeaveAlternateScreen) {
-        result = Err(error);
-    }
     terminal.show_cursor()?;
-    result
+    terminal_guard.leave();
+    Ok(())
 }
 
-fn explore_tree_from_document(document: &SessionDocument) -> ExploreTree {
+static TERMINAL_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+struct TerminalGuard;
+
+impl TerminalGuard {
+    fn enter() -> io::Result<Self> {
+        enable_raw_mode()?;
+        execute!(io::stdout(), EnterAlternateScreen)?;
+        TERMINAL_SESSION_ACTIVE.store(true, Ordering::SeqCst);
+        Ok(Self)
+    }
+
+    fn leave(self) {
+        restore_terminal_session();
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        restore_terminal_session();
+    }
+}
+
+fn restore_terminal_session() {
+    if !TERMINAL_SESSION_ACTIVE.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    let _ = disable_raw_mode();
+    let _ = execute!(io::stdout(), LeaveAlternateScreen);
+}
+
+fn explore_tree_from_document(document: &SessionDocument) -> io::Result<ExploreTree> {
     let trace = document
         .primary_tree()
-        .expect("v2 session must contain a trace tree");
-    if let Some(request) = document.primary_request() {
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "session has no trace tree"))?;
+    Ok(if let Some(request) = document.primary_request() {
         super::tree::build_explore_tree_with_qname(trace, 0, Some(&request.qname))
     } else {
         super::tree::build_explore_tree(trace)
-    }
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -957,7 +983,9 @@ fn browse_scroll_limits(
         } else {
             "  "
         };
-        let hop = tree.hop_at(&node.path).expect("visible node hop");
+        let Some(hop) = tree.hop_at(&node.path) else {
+            continue;
+        };
         let line = hop_tree_line(&indent, marker, hop, theme);
         max_line_width = max_line_width.max(line_display_width(&line));
     }
@@ -1274,7 +1302,7 @@ fn render_compare(
     for (index, node) in visible.iter().enumerate() {
         let path_highlighted =
             highlight.is_some_and(|path| path_on_highlight(&node.path.path, path));
-        lines.push(compare_row(
+        if let Some(row) = compare_row(
             node,
             tree,
             index == selected_index,
@@ -1283,7 +1311,9 @@ fn render_compare(
             rtt_config,
             scale_max_rtt_ms,
             theme,
-        ));
+        ) {
+            lines.push(row);
+        }
     }
     if view.show_fork_sibling_panel {
         lines.push(Line::from(""));
@@ -1348,7 +1378,9 @@ fn render_browse(
         } else {
             "  "
         };
-        let hop = tree.hop_at(&node.path).expect("visible node hop");
+        let Some(hop) = tree.hop_at(&node.path) else {
+            continue;
+        };
         let line = hop_tree_line(&indent, marker, hop, theme);
         max_line_width = max_line_width.max(line_display_width(&line));
         let selected = view.browse_pane == BrowsePane::Tree && index == selected_index;
@@ -1562,7 +1594,12 @@ fn detail_content(
             theme.meta(),
         ))];
     };
-    let hop = tree.hop_at(&selected.path).expect("hop");
+    let Some(hop) = tree.hop_at(&selected.path) else {
+        return vec![Line::from(Span::styled(
+            "Selected node is unavailable in this session.",
+            theme.meta(),
+        ))];
+    };
     let mut lines = hop_detail_styled(hop, theme);
     if let Some(failure) = hop_failure_line(hop) {
         lines.push(Line::from(Span::styled(failure, theme.failure())));
@@ -1805,7 +1842,7 @@ pub(crate) fn simulate_explore_first_frame(
         selected_index = visible.len().saturating_sub(1);
     }
 
-    let scroll_limits = browse_scroll_limits(
+    let _scroll_limits = browse_scroll_limits(
         terminal_area,
         view.browse_split,
         tree,
@@ -1813,8 +1850,8 @@ pub(crate) fn simulate_explore_first_frame(
         selected_index,
         &theme,
     );
-    let _detail_scroll = 0u16.min(scroll_limits.detail_max_scroll);
-    let _tree_scroll_x = 0u16.min(scroll_limits.tree_max_scroll_x);
+    let _detail_scroll = 0u16;
+    let _tree_scroll_x = 0u16;
 
     if view.active_screen == ActiveScreen::Compare {
         let compare_visible = tree.visible_nodes(&view.expanded_paths);
@@ -1822,8 +1859,9 @@ pub(crate) fn simulate_explore_first_frame(
         if compare_row_index >= compare_visible.len() {
             compare_row_index = compare_visible.len().saturating_sub(1);
         }
-        let compare_limits = compare_scroll_limits(terminal_area, view, tree, compare_visible.len());
-        let _compare_scroll = 0u16.min(compare_limits.max_scroll);
+        let _compare_limits =
+            compare_scroll_limits(terminal_area, view, tree, compare_visible.len());
+        let _compare_scroll = 0u16;
         let columns = CompareColumns::for_visible(tree, &compare_visible);
         let scale_max_rtt_ms = max_rtt_ms_for_visible(tree, &compare_visible);
         let timing = build_compare_timing(tree, view.compare_fork.as_ref());
@@ -1844,8 +1882,9 @@ pub(crate) fn simulate_explore_first_frame(
     }
 
     for node in &visible {
-        let hop = tree.hop_at(&node.path).expect("visible node hop");
-        let _ = hop_tree_line("", "  ", hop, &theme);
+        if let Some(hop) = tree.hop_at(&node.path) {
+            let _ = hop_tree_line("", "  ", hop, &theme);
+        }
         let _ = detail_content(tree, visible.get(selected_index), &theme);
     }
 }
@@ -1855,9 +1894,7 @@ mod tests {
     use super::*;
     use crate::session::{ExploreViewState, SessionDocument};
     use crate::trace_request::TraceRequest;
-    use dns_resolve::{
-        HopOutcome, NodeOrigin, TraceHop, TraceNode, TraceTree, TraceTreeRequest,
-    };
+    use dns_resolve::{HopOutcome, NodeOrigin, TraceHop, TraceNode, TraceTree, TraceTreeRequest};
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     #[test]
@@ -2200,7 +2237,9 @@ mod tests {
     #[test]
     fn corrupted_tuininga_root_has_extra_zone_siblings() {
         let trace = corrupted_tuininga_trace_tree();
-        let root = trace.resolve(&dns_resolve::NodePath::root(0)).expect("root");
+        let root = trace
+            .resolve(&dns_resolve::NodePath::root(0))
+            .expect("root");
         assert_eq!(root.children.len(), 3);
         assert_eq!(root.children[0].hop.zone, "org.");
         assert!(

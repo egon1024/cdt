@@ -24,19 +24,19 @@ use crate::runtime::Runtime;
 use crate::session::SessionDocument;
 use std::io::{self, IsTerminal, Write};
 
-fn explore_tree_for_document(document: &SessionDocument) -> tree::ExploreTree {
-    let trace = document
-        .primary_tree()
-        .expect("v2 session must contain a trace tree");
-    if let Some(request) = document.primary_request() {
+fn explore_tree_for_document(
+    document: &SessionDocument,
+) -> Result<tree::ExploreTree, ExploreError> {
+    let trace = document.primary_tree().ok_or(ExploreError::NoTraceTree)?;
+    Ok(if let Some(request) = document.primary_request() {
         build_explore_tree_with_qname(trace, 0, Some(&request.qname))
     } else {
         build_explore_tree(trace)
-    }
+    })
 }
 
 pub fn run_outline(document: &SessionDocument) -> Result<(), ExploreError> {
-    let tree = explore_tree_for_document(document);
+    let tree = explore_tree_for_document(document)?;
     let mut output = format!("session: {}\n", document.id);
     output.push_str(&render_outline(&tree, ui_symbols()));
     let mut stdout = io::stdout().lock();
@@ -48,15 +48,16 @@ pub fn run_outline(document: &SessionDocument) -> Result<(), ExploreError> {
 }
 
 pub fn run_events(document: &SessionDocument) -> Result<(), ExploreError> {
-    let tree = explore_tree_for_document(document);
+    let tree = explore_tree_for_document(document)?;
     println!("{}", render_tree_json(&tree, &document.id));
     Ok(())
 }
 
 pub fn run_explore(runtime: &Runtime, document: &mut SessionDocument) -> Result<(), ExploreError> {
-    if !io::stdout().is_terminal() {
+    if !io::stdout().is_terminal() || !io::stdin().is_terminal() {
         return Err(ExploreError::NotTerminal);
     }
+    explore_tree_for_document(document)?;
 
     run_tui(ExploreContext {
         runtime,
@@ -71,8 +72,13 @@ pub enum ExploreError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
-    #[error("stdout is not a terminal; use `delve session outline` for a printable tree")]
+    #[error(
+        "explore requires an interactive terminal (stdin and stdout); use `delve session outline` for a printable tree"
+    )]
     NotTerminal,
+
+    #[error("session has no trace tree")]
+    NoTraceTree,
 }
 
 #[cfg(test)]
@@ -137,7 +143,7 @@ mod tests {
             ),
         );
 
-        let tree = explore_tree_for_document(&document);
+        let tree = explore_tree_for_document(&document).expect("tree");
         let outline = render_outline(&tree, ui_symbols());
         assert!(outline.contains("example.com. A"));
         assert!(outline.contains("query response time: 11ms"));
@@ -186,8 +192,25 @@ mod tests {
                 },
             ),
         );
-        let tree = explore_tree_for_document(&document);
+        let tree = explore_tree_for_document(&document).expect("tree");
         let outline = render_outline(&tree, ui_symbols());
         assert!(outline.contains("failure: timeout: no response"));
+    }
+
+    #[test]
+    fn explore_tree_for_document_errors_without_tree() {
+        let document = SessionDocument {
+            version: 2,
+            id: "01EMPTY".into(),
+            created_at: "2026-08-25T12:00:00Z".into(),
+            updated_at: "2026-08-25T12:00:00Z".into(),
+            pinned: false,
+            trees: vec![],
+            view_state: None,
+        };
+        assert!(matches!(
+            explore_tree_for_document(&document),
+            Err(ExploreError::NoTraceTree)
+        ));
     }
 }
