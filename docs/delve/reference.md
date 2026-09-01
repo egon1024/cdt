@@ -1,7 +1,6 @@
 # delve — command reference
 
-Command synopsis and trace options. For concepts (sessions, branching, expansion),
-see [concepts](concepts.md).
+Command synopsis and trace options. For concepts (sessions, branching, expansion), see [concepts](concepts.md).
 
 ## Command overview
 
@@ -66,12 +65,9 @@ Supported query types:
 
 Any IANA type code also works via `TYPEnn` (for example `TYPE45` for IPSECKEY).
 
-Truncated UDP responses (`TC=1`) are recorded as-is. Delve does **not**
-automatically retry over TCP when `TC` is set; use `+tcp` up front if you need TCP
-for the whole trace.
+Truncated UDP responses (`TC=1`) are recorded as-is. Delve does **not** automatically retry over TCP when `TC` is set; use `+tcp` up front if you need TCP for the whole trace.
 
-Human progress is written to **stderr**; with `+events`, structured events go to
-**stdout** so you can redirect:
+Human progress is written to **stderr**; with `+events`, structured events go to **stdout** so you can redirect:
 
 ```bash
 delve trace example.com +events > trace.ndjson

@@ -1,7 +1,6 @@
 # delve — session explore
 
-Inspect stored traces without network I/O: interactive TUI, one-shot outline, and
-structured JSON.
+Inspect stored traces without network I/O: interactive TUI, one-shot outline, and structured JSON.
 
 ## Commands
 
@@ -22,18 +21,13 @@ delve session show --json          # flat JSON for the default session
 
 Omit `[id]` on any of these to use the [default session](concepts.md#default-session).
 
-New traces store full DNS response sections (header flags, question, answer,
-authority, additional) for each hop. The explore detail pane renders these in a
-**dig-style** layout. Older saved sessions without section data fall back to the
-compact YAML-style summary.
+New traces store full DNS response sections (header flags, question, answer, authority, additional) for each hop. The explore detail pane renders these in a **dig-style** layout. Older saved sessions without section data fall back to the compact YAML-style summary.
 
-Explore requires a **real terminal** (80×24 minimum). For headless environments,
-use `session outline` or `session events`.
+Explore requires a **real terminal** (80×24 minimum). For headless environments, use `session outline` or `session events`.
 
 ## Browse screen
 
-Two-pane layout: resolution tree on one side, dig-style detail for the selected
-hop on the other.
+Two-pane layout: resolution tree on one side, dig-style detail for the selected hop on the other.
 
 | Key | Action |
 |-----|--------|
@@ -49,20 +43,13 @@ hop on the other.
 | `?` | Screen-scoped help |
 | `q` | Quit |
 
-**View state** (expanded nodes, selection, active screen) persists in the session
-document. Reopening explore restores your place; view-state-only changes do not
-bump `updated_at`.
+**View state** (expanded nodes, selection, active screen) persists in the session document. Reopening explore restores your place; view-state-only changes do not bump `updated_at`.
 
 ## Compare screen
 
-Full-tree view with aligned columns and RTT bars. Switch with `Tab` from Browse or
-press `m` when siblings exist. Compare is skipped or shows an explanatory message
-when the selected node has no siblings to compare.
+Full-tree view with aligned columns and RTT bars. Switch with `Tab` from Browse or press `m` when siblings exist. Compare is skipped or shows an explanatory message when the selected node has no siblings to compare.
 
-Whole-tree fastest, slowest, and average RTTs appear in the summary strip at the
-top. Stats include **answered** leaf paths only (failed or referral-only terminals
-are excluded). When the trace was budget-truncated, the strip notes that path
-statistics may be incomplete.
+Whole-tree fastest, slowest, and average RTTs appear in the summary strip at the top. Stats include **answered** leaf paths only (failed or referral-only terminals are excluded). When the trace was budget-truncated, the strip notes that path statistics may be incomplete.
 
 ### Compare analytics keys
 
@@ -76,11 +63,9 @@ Timing is derived from stored hop data (no network I/O for stats):
 | `Esc` | Clear path highlight |
 | `?` | Screen-scoped help (footer shows `Press ? for help`) |
 
-Press **`r`** on Browse or Compare to re-query every hop with cache bypass. RTTs
-update **in memory** only; delve prompts to save on quit.
+Press **`r`** on Browse or Compare to re-query every hop with cache bypass. RTTs update **in memory** only; delve prompts to save on quit.
 
-RTT bar colors and width are configured under `explore.rtt_bar` — see
-[configuration](configuration.md#explorertt_bar).
+RTT bar colors and width are configured under `explore.rtt_bar` — see [configuration](configuration.md#explorertt_bar).
 
 ## `show --json` vs `events`
 
@@ -91,12 +76,9 @@ These are different JSON shapes for different jobs:
 | **`session show --json`** | Flat `TraceResult`: chronological `hops` array + `final_response` | Replaying trace data, diffing sessions, tools that expect the stored snapshot |
 | **`session events`** | Hierarchical explore `tree`: delegation / resolve / hop / final nodes | Tools that want the same structure as the TUI and outline views |
 
-Both include per-query **`rtt_ms`** and **`from_cache`** in hop JSON. The explore
-tree omits a separate final node when the last hop already records the authoritative
-answer (same exchange as `final_response`).
+Both include per-query **`rtt_ms`** and **`from_cache`** in hop JSON. The explore tree omits a separate final node when the last hop already records the authoritative answer (same exchange as `final_response`).
 
-Use **`--json`** for JSON output from `session show` (not `+events`; that flag is
-for `delve trace` only).
+Use **`--json`** for JSON output from `session show` (not `+events`; that flag is for `delve trace` only).
 
 ## See also
 
