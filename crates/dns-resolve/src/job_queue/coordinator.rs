@@ -626,9 +626,11 @@ impl<'a> Coordinator<'a> {
                 intent: BranchIntent::ExpandCut,
                 ..
             }
-        ) {
+        ) && job.visited_zones.is_empty()
+        {
             // Expand-cut branch jobs intentionally queried this server at the cut;
-            // continue delegation through it instead of re-resolving referral NS.
+            // continue the first delegation step through it instead of re-resolving
+            // referral NS (which would collapse every path onto the primary server).
             vec![job.server.clone()]
         } else {
             match resolve_nameservers_from_referral(
