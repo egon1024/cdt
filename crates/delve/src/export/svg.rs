@@ -94,10 +94,7 @@ fn render_header(width: f64, title: &SvgTitle) -> String {
     let primary = truncate_to_width(&title.primary, text_w, TITLE_FS);
     let mut parts = vec![
         format!(
-            r##"<g id="header"><rect x="0" y="0" width="{width:.1}" height="{TOP_PAD:.1}" fill="#ffffff"/>"##
-        ),
-        format!(
-            r##"<line x1="0" y1="{TOP_PAD:.1}" x2="{width:.1}" y2="{TOP_PAD:.1}" stroke="#e2e8f0" stroke-width="1"/>"##
+            r##"<g id="header"><line x1="0" y1="{TOP_PAD:.1}" x2="{width:.1}" y2="{TOP_PAD:.1}" stroke="#e2e8f0" stroke-width="1"/>"##
         ),
         text(PAD, 22.0, &primary, "#0f172a", TITLE_FS, "bold", "start"),
     ];
@@ -133,7 +130,6 @@ pub fn render_tree_svg(
         format!(
             r##"<defs><clipPath id="tree-content"><rect x="0" y="0" width="{width:.1}" height="{tree_height:.1}"/></clipPath></defs>"##
         ),
-        format!(r##"<rect x="0" y="0" width="{width:.1}" height="{height:.1}" fill="#ffffff"/>"##),
         render_header(width, title),
         format!(r#"<g transform="translate(0,{TOP_PAD:.0})" clip-path="url(#tree-content)">"#),
     ];
@@ -385,6 +381,7 @@ mod tests {
         assert!(svg.contains("<svg"));
         assert!(svg.contains(r#"clipPath id="tree-content""#));
         assert!(svg.contains(r#"clip-path="url(#tree-content)""#));
+        assert!(!svg.contains("fill=\"#ffffff\"/>"));
         assert!(svg.contains("a.root-servers.net"));
         assert!(svg.contains("REFERRAL"));
         assert!(svg.contains("11 ms"));
@@ -477,7 +474,8 @@ mod tests {
         let width = 900.0;
         let header = render_header(width, &title);
         assert!(header.contains(r#"id="header""#));
-        assert!(header.contains(&format!(r#"width="{width:.1}""#)));
+        assert!(header.contains(&format!(r#"x2="{width:.1}""#)));
+        assert!(!header.contains("fill=\"#ffffff\""));
         assert!(header.contains("tuininga.org."));
         assert!(header.contains(session));
 
