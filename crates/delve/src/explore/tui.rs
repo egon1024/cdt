@@ -1791,9 +1791,74 @@ fn help_symbol_legend(
     ])
 }
 
+/// Exercises the same tree/view/limit work `run_tui` performs before its first draw.
+#[cfg(test)]
+pub(crate) fn simulate_explore_first_frame(
+    tree: &ExploreTree,
+    view: &ViewStateController,
+    terminal_area: Rect,
+) {
+    let theme = Theme::from_env();
+    let visible = tree.visible_nodes(&view.expanded_paths);
+    let mut selected_index = view.selected_visible_index(tree);
+    if selected_index >= visible.len() {
+        selected_index = visible.len().saturating_sub(1);
+    }
+
+    let scroll_limits = browse_scroll_limits(
+        terminal_area,
+        view.browse_split,
+        tree,
+        &visible,
+        selected_index,
+        &theme,
+    );
+    let _detail_scroll = 0u16.min(scroll_limits.detail_max_scroll);
+    let _tree_scroll_x = 0u16.min(scroll_limits.tree_max_scroll_x);
+
+    if view.active_screen == ActiveScreen::Compare {
+        let compare_visible = tree.visible_nodes(&view.expanded_paths);
+        let mut compare_row_index = view.compare_row;
+        if compare_row_index >= compare_visible.len() {
+            compare_row_index = compare_visible.len().saturating_sub(1);
+        }
+        let compare_limits = compare_scroll_limits(terminal_area, view, tree, compare_visible.len());
+        let _compare_scroll = 0u16.min(compare_limits.max_scroll);
+        let columns = CompareColumns::for_visible(tree, &compare_visible);
+        let scale_max_rtt_ms = max_rtt_ms_for_visible(tree, &compare_visible);
+        let timing = build_compare_timing(tree, view.compare_fork.as_ref());
+        let _ = whole_tree_summary_lines(&timing, &theme);
+        let _ = columns.header(&theme);
+        for (index, node) in compare_visible.iter().enumerate() {
+            let _ = compare_row(
+                node,
+                tree,
+                index == compare_row_index,
+                false,
+                columns,
+                RttBarConfig::default(),
+                scale_max_rtt_ms,
+                &theme,
+            );
+        }
+    }
+
+    for node in &visible {
+        let hop = tree.hop_at(&node.path).expect("visible node hop");
+        let _ = hop_tree_line("", "  ", hop, &theme);
+        let _ = detail_content(tree, visible.get(selected_index), &theme);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::{ExploreViewState, SessionDocument};
+    use crate::trace_request::TraceRequest;
+    use dns_resolve::{
+        HopOutcome, NodeOrigin, TraceHop, TraceNode, TraceTree, TraceTreeRequest,
+    };
+    use std::panic::{AssertUnwindSafe, catch_unwind};
 
     #[test]
     fn browse_pane_cycles_with_w() {
@@ -1934,5 +1999,215 @@ mod tests {
             from_cache: false,
             outcome: dns_resolve::HopOutcome::Answered,
         }
+    }
+
+    fn tuininga_answered_leaf(server: &str, name: &str, rtt_ms: u64) -> TraceNode {
+        TraceNode {
+            hop: TraceHop {
+                zone: "tuininga.org.".into(),
+                server: server.into(),
+                server_name: Some(format!("{name}.")),
+                qname: "tuininga.org.".into(),
+                qtype: "A".into(),
+                transport: "udp".into(),
+                rtt_ms,
+                rcode: "NOERROR".into(),
+                nsid: None,
+                ede_code: None,
+                ede_text: None,
+                referral_ns: vec![],
+                glue: vec![],
+                response: Default::default(),
+                from_cache: false,
+                outcome: HopOutcome::Answered,
+            },
+            origin: NodeOrigin::Branch {
+                at: dns_resolve::NodePath::root(0),
+                intent: dns_resolve::BranchIntent::ExpandCut,
+                at_time: "2026-08-25T00:00:00Z".into(),
+            },
+            children: vec![],
+        }
+    }
+
+    /// Pre-fix root expand-cut bug: terminal `tuininga.org.` hops attached as root siblings.
+    fn corrupted_tuininga_trace_tree() -> TraceTree {
+        let org_path = TraceNode {
+            hop: TraceHop {
+                zone: "org.".into(),
+                server: "199.249.112.1".into(),
+                server_name: Some("a0.org.afilias-nst.info.".into()),
+                qname: "tuininga.org.".into(),
+                qtype: "A".into(),
+                transport: "udp".into(),
+                rtt_ms: 2,
+                rcode: "NOERROR".into(),
+                nsid: None,
+                ede_code: None,
+                ede_text: None,
+                referral_ns: vec![
+                    "helium.ns.hetzner.de.".into(),
+                    "hydrogen.ns.hetzner.com.".into(),
+                    "oxygen.ns.hetzner.com.".into(),
+                ],
+                glue: vec![],
+                response: Default::default(),
+                from_cache: false,
+                outcome: HopOutcome::Referral,
+            },
+            origin: NodeOrigin::Trace,
+            children: vec![
+                tuininga_answered_leaf("193.47.99.5", "helium.ns.hetzner.de", 107),
+                tuininga_answered_leaf("213.133.100.98", "hydrogen.ns.hetzner.com", 109),
+                tuininga_answered_leaf("88.198.229.192", "oxygen.ns.hetzner.com", 110),
+            ],
+        };
+        TraceTree {
+            request: TraceTreeRequest {
+                qname: "tuininga.org.".into(),
+                qtype: "A".into(),
+                started_at: "2026-08-25T00:00:00Z".into(),
+            },
+            root: TraceNode {
+                hop: TraceHop {
+                    zone: ".".into(),
+                    server: "198.41.0.4".into(),
+                    server_name: None,
+                    qname: "tuininga.org.".into(),
+                    qtype: "A".into(),
+                    transport: "udp".into(),
+                    rtt_ms: 1,
+                    rcode: "NOERROR".into(),
+                    nsid: None,
+                    ede_code: None,
+                    ede_text: None,
+                    referral_ns: vec![
+                        "a0.org.afilias-nst.info.".into(),
+                        "b0.org.afilias-nst.org.".into(),
+                        "c0.org.afilias-nst.info.".into(),
+                    ],
+                    glue: vec![
+                        "199.249.112.1".into(),
+                        "199.249.120.1".into(),
+                        "199.249.125.1".into(),
+                    ],
+                    response: Default::default(),
+                    from_cache: false,
+                    outcome: HopOutcome::Referral,
+                },
+                origin: NodeOrigin::Trace,
+                children: vec![
+                    org_path,
+                    tuininga_answered_leaf("193.47.99.5", "helium.ns.hetzner.de", 111),
+                    tuininga_answered_leaf("213.133.100.98", "hydrogen.ns.hetzner.com", 112),
+                ],
+            },
+            budget_truncated: false,
+        }
+    }
+
+    fn corrupted_tuininga_document(view_state: ExploreViewState) -> SessionDocument {
+        let trace = corrupted_tuininga_trace_tree();
+        SessionDocument {
+            version: 2,
+            id: "01CORRUPTTUININGA00000000".into(),
+            created_at: "2026-08-25T00:00:00Z".into(),
+            updated_at: "2026-08-25T00:00:00Z".into(),
+            pinned: false,
+            trees: vec![crate::session::SessionTree {
+                request: TraceRequest::from_options(&crate::dig_options::TraceOptions {
+                    qname: "tuininga.org".into(),
+                    ..Default::default()
+                }),
+                tree: trace,
+            }],
+            view_state: Some(view_state),
+        }
+    }
+
+    fn corrupted_view_state_fixtures() -> Vec<(&'static str, ExploreViewState)> {
+        vec![
+            (
+                "stale_deep_paths",
+                ExploreViewState {
+                    active_screen: "browse".into(),
+                    expanded_paths: vec![vec![], vec![0], vec![0, 0], vec![99], vec![0, 99]],
+                    selection: vec![0, 0, 2],
+                    pane: "tree".into(),
+                    compare_focus_row: 4,
+                    browse_split_percent: 65,
+                },
+            ),
+            (
+                "compare_with_stale_row",
+                ExploreViewState {
+                    active_screen: "compare".into(),
+                    expanded_paths: vec![vec![], vec![0], vec![1], vec![2]],
+                    selection: vec![2],
+                    pane: "tree".into(),
+                    compare_focus_row: 99,
+                    browse_split_percent: 55,
+                },
+            ),
+            (
+                "compare_root_fork",
+                ExploreViewState {
+                    active_screen: "compare".into(),
+                    expanded_paths: vec![vec![]],
+                    selection: vec![1],
+                    pane: "detail".into(),
+                    compare_focus_row: 1,
+                    browse_split_percent: 40,
+                },
+            ),
+        ]
+    }
+
+    #[test]
+    fn corrupted_tuininga_startup_does_not_panic_before_first_draw() {
+        let terminal_area = Rect::new(0, 0, 80, 24);
+        for (label, view_state) in corrupted_view_state_fixtures() {
+            let document = corrupted_tuininga_document(view_state);
+            let explore_tree = super::super::tree::build_explore_tree(
+                document.primary_tree().expect("trace tree"),
+            );
+            let view = ViewStateController::from_document(&explore_tree, &document);
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                simulate_explore_first_frame(&explore_tree, &view, terminal_area);
+            }));
+            assert!(
+                result.is_ok(),
+                "explore startup panicked for corrupted tuininga fixture {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn corrupted_tuininga_startup_survives_zero_terminal_area() {
+        let document = corrupted_tuininga_document(corrupted_view_state_fixtures()[0].1.clone());
+        let explore_tree =
+            super::super::tree::build_explore_tree(document.primary_tree().expect("trace tree"));
+        let view = ViewStateController::from_document(&explore_tree, &document);
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            simulate_explore_first_frame(&explore_tree, &view, Rect::new(0, 0, 0, 0));
+        }));
+        assert!(
+            result.is_ok(),
+            "zero-size terminal area must not panic during startup prep"
+        );
+    }
+
+    #[test]
+    fn corrupted_tuininga_root_has_extra_zone_siblings() {
+        let trace = corrupted_tuininga_trace_tree();
+        let root = trace.resolve(&dns_resolve::NodePath::root(0)).expect("root");
+        assert_eq!(root.children.len(), 3);
+        assert_eq!(root.children[0].hop.zone, "org.");
+        assert!(
+            root.children[1..]
+                .iter()
+                .all(|child| child.hop.zone == "tuininga.org."),
+            "buggy sessions attach terminal hops as root siblings"
+        );
     }
 }
