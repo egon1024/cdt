@@ -114,7 +114,7 @@ pub enum ExportError {
     UnsupportedFormat(&'static str),
 
     #[error(
-        "PNG export is not enabled in this build; rebuild delve with: cargo build -p delve --features export-png"
+        "PNG export is not enabled in this build; rebuild delve with default features (cargo build -p delve)"
     )]
     PngExportDisabled,
 
@@ -330,7 +330,7 @@ mod integration_tests {
         )
         .expect_err("png should be unavailable");
         assert_eq!(err, ExportError::PngExportDisabled);
-        assert!(err.to_string().contains("export-png"));
+        assert!(err.to_string().contains("default features"));
     }
 
     #[cfg(feature = "export-png")]

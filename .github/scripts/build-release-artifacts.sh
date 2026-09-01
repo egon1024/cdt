@@ -26,13 +26,11 @@ rm -rf packaging/staging packaging/staging-dbg
 mkdir -p packaging/staging/usr/bin packaging/staging-dbg/usr/bin packaging/staging/usr/share/man/man1
 
 echo "Building release binaries for ${VERSION}..."
+pkg_args=()
 for pkg in "${BUILD_PACKAGES[@]}"; do
-  if [[ "$pkg" == "delve" ]]; then
-    cargo build --release -p "$pkg" --features export-png
-  else
-    cargo build --release -p "$pkg"
-  fi
+  pkg_args+=(-p "$pkg")
 done
+cargo build --release "${pkg_args[@]}"
 
 for bin in "${BINARIES[@]}"; do
   cp "target/release/${bin}" "packaging/staging-dbg/usr/bin/${bin}"

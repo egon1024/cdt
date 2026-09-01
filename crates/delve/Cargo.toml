@@ -35,6 +35,7 @@ ulid.workspace = true
 tempfile = "3.14"
 
 [features]
+default = ["export-png"]
 export-png = ["dep:resvg"]
 
 [dependencies.resvg]
