@@ -383,6 +383,81 @@ mod tests {
         assert!(matches!(node.hop.outcome, HopOutcome::Referral));
     }
 
+    struct SkippedOrgReferralExchange;
+
+    impl crate::DnsExchange for SkippedOrgReferralExchange {
+        fn exchange(
+            &self,
+            server: IpAddr,
+            _port: u16,
+            options: &dns_core::query::QueryOptions,
+        ) -> dns_core::Result<dns_core::response::QueryResult> {
+            assert_eq!(options.qname.as_str(), "tuininga.org.");
+            Ok(dns_core::response::QueryResult {
+                server,
+                transport: options.transport,
+                qname: options.qname.clone(),
+                qtype: options.qtype.to_string(),
+                rtt: std::time::Duration::from_millis(1),
+                response: DnsResponse {
+                    id: 1,
+                    rcode: 0,
+                    rcode_text: "NOERROR".into(),
+                    authoritative: false,
+                    truncated: false,
+                    recursion_desired: false,
+                    recursion_available: false,
+                    authentic_data: false,
+                    checking_disabled: false,
+                    answers: vec![],
+                    authorities: vec![DnsRecord {
+                        name: DomainName::parse("tuininga.org.").expect("zone"),
+                        rtype: "NS".into(),
+                        rclass: "IN".into(),
+                        ttl: 3600,
+                        rdata: "helium.ns.hetzner.de.".into(),
+                    }],
+                    additionals: vec![],
+                    edns: EdnsMeta::default(),
+                },
+                from_cache: false,
+            })
+        }
+    }
+
+    #[test]
+    fn expand_cut_branch_clamps_skipped_org_referral_at_root() {
+        let qname = DomainName::parse("tuininga.org.").expect("qname");
+        let mut config = TraceConfig::new(qname.clone(), RecordType::A);
+        config.exchange = Arc::new(SkippedOrgReferralExchange);
+        let server = ServerTarget::with_name(
+            IpAddr::V4(Ipv4Addr::new(199, 249, 120, 1)),
+            "b2.org.afilias-nst.org.",
+        );
+        let mut budget = QueryBudget::new(64);
+        let nodes = run_expand_cut_branch(
+            &config,
+            &mut budget,
+            &mut SilentProgress,
+            NodePath {
+                tree: 0,
+                path: vec![],
+            },
+            vec![server],
+            qname,
+            RecordType::A,
+            DomainName::parse(".").expect("zone"),
+            vec![],
+        )
+        .expect("expand cut");
+
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].hop.zone, ".");
+        assert_eq!(nodes[0].children.len(), 1);
+        assert_eq!(nodes[0].children[0].hop.zone, "org.");
+        assert_eq!(nodes[0].children[0].hop.server, "199.249.120.1");
+    }
+
     #[test]
     fn expand_cut_branch_queries_each_server() {
         let qname = DomainName::parse("example.com.").expect("qname");

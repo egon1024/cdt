@@ -563,10 +563,12 @@ impl<'a> Coordinator<'a> {
             return self.handle_terminal_answer(job, hop, query_result);
         }
 
-        let Some(next_zone) = query_result.response.referral_zone(&job.qname) else {
+        let Some(mut next_zone) = query_result.response.referral_zone(&job.qname) else {
             hop.outcome = HopOutcome::Answered;
             return self.handle_terminal_answer(job, hop, query_result);
         };
+
+        next_zone = clamp_expand_cut_next_zone(&job, next_zone);
 
         // Expand-cut branch jobs query alternate nameservers at a zone cut and attach
         // the next delegation hop (e.g. root -> org). Do not trace to the answer zone.
@@ -844,6 +846,39 @@ fn parent_path(path: &[usize]) -> Vec<usize> {
     }
     parent.pop();
     parent
+}
+
+/// Expand-cut at the session root queries alternate root-referral NS targets. Those servers
+/// often answer as the delegated zone (e.g. org NS returns `tuininga.org` NS). Clamp the first
+/// branch hop to the TLD cut so attached siblings match the primary trace shape (`org.`).
+fn clamp_expand_cut_next_zone(job: &TraceJob, next_zone: DomainName) -> DomainName {
+    if !matches!(
+        job.kind,
+        JobKind::Branch {
+            intent: BranchIntent::ExpandCut,
+            ..
+        }
+    ) || !job.visited_zones.is_empty()
+        || job.zone.as_str() != "."
+    {
+        return next_zone;
+    }
+    let Some(expected) = job.qname.first_delegation_below_root() else {
+        return next_zone;
+    };
+    if delegation_zone_depth(&next_zone) > delegation_zone_depth(&expected) {
+        expected
+    } else {
+        next_zone
+    }
+}
+
+fn delegation_zone_depth(zone: &DomainName) -> usize {
+    let trimmed = zone.as_str().trim_end_matches('.');
+    if trimmed.is_empty() {
+        return 0;
+    }
+    trimmed.split('.').count()
 }
 
 fn child_path_for_policy(policy: ExpansionPolicy, parent_path: &[usize]) -> Vec<usize> {

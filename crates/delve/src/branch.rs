@@ -487,6 +487,19 @@ fn extract_delegation_hop(
         if node.hop.zone == attachment_zone {
             return Some(node);
         }
+        if node.hop.zone == cut_zone && node.children.len() == 1 {
+            let child = node.children[0].clone();
+            if child.hop.zone != cut_zone
+                && child.hop.zone != attachment_zone
+                && child.hop.zone.ends_with('.')
+            {
+                // Org NS queried at the root cut often delegates straight to the qname zone.
+                let mut synthetic = child;
+                synthetic.hop.zone = attachment_zone.to_string();
+                synthetic.children.clear();
+                return Some(synthetic);
+            }
+        }
         match node.children.as_slice() {
             [only] => node = only.clone(),
             _ => return None,
@@ -1423,6 +1436,183 @@ mod tests {
         assert!(root.children.iter().all(|child| child.hop.zone == "org."));
     }
 
+    #[test]
+    fn expand_cut_from_a2_primary_when_org_ns_skips_tld_hop() {
+        struct SkippedTldBranchExchange {
+            root_cut_queried: Mutex<HashSet<IpAddr>>,
+        }
+
+        impl dns_resolve::DnsExchange for SkippedTldBranchExchange {
+            fn exchange(
+                &self,
+                server: IpAddr,
+                _port: u16,
+                options: &dns_core::query::QueryOptions,
+            ) -> dns_core::Result<dns_core::response::QueryResult> {
+                assert_eq!(options.qname.as_str(), "tuininga.org.");
+                if tuininga_root_cut_queried(&self.root_cut_queried, server) {
+                    return Ok(tuininga_qname_delegation(server, options));
+                }
+                Ok(tuininga_org_delegation(server, options))
+            }
+        }
+
+        let mut document = sample_document(
+            tuininga_a2_session_tree(),
+            TraceRequest::from_options(&TraceOptions {
+                qname: "tuininga.org.".into(),
+                ..Default::default()
+            }),
+        );
+        let runtime = runtime();
+        let report = execute_branch(
+            &mut document,
+            NodePath::root(0),
+            BranchIntentArg::ExpandCut,
+            false,
+            &runtime,
+            &mut SilentProgress,
+            Some(Arc::new(SkippedTldBranchExchange {
+                root_cut_queried: Mutex::new(HashSet::new()),
+            })),
+        )
+        .expect("branch");
+        assert_eq!(report.nodes_added, 5, "{:?}", report.warnings);
+        let root = document
+            .primary_tree()
+            .expect("tree")
+            .resolve(&NodePath::root(0))
+            .expect("root");
+        assert_eq!(root.children.len(), 6);
+        assert!(root.children.iter().all(|child| child.hop.zone == "org."));
+    }
+
+    fn tuininga_qname_delegation(
+        server: IpAddr,
+        options: &dns_core::query::QueryOptions,
+    ) -> dns_core::response::QueryResult {
+        dns_core::response::QueryResult {
+            server,
+            transport: options.transport,
+            qname: options.qname.clone(),
+            qtype: options.qtype.to_string(),
+            rtt: std::time::Duration::from_millis(1),
+            response: DnsResponse {
+                id: 1,
+                rcode: 0,
+                rcode_text: "NOERROR".into(),
+                authoritative: false,
+                truncated: false,
+                recursion_desired: false,
+                recursion_available: false,
+                authentic_data: false,
+                checking_disabled: false,
+                answers: vec![],
+                authorities: vec![DnsRecord {
+                    name: DomainName::parse("tuininga.org.").expect("zone"),
+                    rtype: "NS".into(),
+                    rclass: "IN".into(),
+                    ttl: 3600,
+                    rdata: "helium.ns.hetzner.de.".into(),
+                }],
+                additionals: vec![],
+                edns: EdnsMeta::default(),
+            },
+            from_cache: false,
+        }
+    }
+
+    #[test]
+    #[ignore = "requires live DNS"]
+    fn live_root_expand_attaches_org_siblings() {
+        use dns_resolve::{QueryBudget, run_expand_cut_branch};
+
+        let tree = tuininga_a2_session_tree();
+        let request = TraceRequest::from_options(&TraceOptions {
+            qname: "tuininga.org.".into(),
+            ..Default::default()
+        });
+        let mut document = sample_document(tree, request.clone());
+        let runtime = runtime();
+        let session_tree = document.primary_tree().expect("tree");
+        let mut config = trace_config_from_request(
+            &request,
+            runtime.cache.clone(),
+            runtime.config.trace_max_queries_per_action,
+            runtime.config.trace_max_parallel_queries,
+        )
+        .expect("config");
+        dns_resolve::trace::seed_ns_targets_from_tree(&config, &session_tree.root);
+        let qname = dns_core::name::DomainName::parse("tuininga.org.").expect("qname");
+        let qtype = dns_core::parse_record_type("A").expect("qtype");
+        let zone = dns_core::name::DomainName::parse(".").expect("zone");
+        let cut_hop = session_tree.root.hop.clone();
+        let targets = expand_cut_targets(
+            &cut_hop,
+            true,
+            &session_tree.root.children.iter().collect::<Vec<_>>(),
+            &mut config,
+            &mut QueryBudget::new(64),
+            &mut SilentProgress,
+            &mut Vec::new(),
+        )
+        .expect("targets");
+        eprintln!("targets={}", targets.len());
+        let mut budget = QueryBudget::new(64);
+        let raw = run_expand_cut_branch(
+            &config,
+            &mut budget,
+            &mut SilentProgress,
+            NodePath::root(0),
+            targets,
+            qname,
+            qtype,
+            zone,
+            vec![],
+        )
+        .expect("branch jobs");
+        for (index, node) in raw.iter().enumerate() {
+            eprintln!(
+                "raw[{index}] zone={} server={} outcome={:?} children={}",
+                node.hop.zone, node.hop.server, node.hop.outcome, node.children.len()
+            );
+            for (cidx, child) in node.children.iter().enumerate() {
+                eprintln!(
+                    "  child[{cidx}] zone={} server={} children={}",
+                    child.hop.zone,
+                    child.hop.server,
+                    child.children.len()
+                );
+            }
+        }
+        let normalized = normalize_expand_cut_attachments(
+            &cut_hop,
+            true,
+            session_tree.root.children.first(),
+            raw,
+        );
+        eprintln!("normalized={}", normalized.len());
+
+        let report = execute_branch(
+            &mut document,
+            NodePath::root(0),
+            BranchIntentArg::ExpandCut,
+            false,
+            &runtime,
+            &mut SilentProgress,
+            None,
+        )
+        .expect("live branch");
+        eprintln!(
+            "nodes_added={} warnings={:?}",
+            report.nodes_added, report.warnings
+        );
+        assert!(
+            report.nodes_added >= 1,
+            "expected live root expand to attach org siblings"
+        );
+    }
+
     fn tuininga_tree() -> TraceTree {
         let root = TraceNode {
             hop: TraceHop {
@@ -2256,6 +2446,87 @@ mod tests {
             normalize_expand_cut_attachments(&cut, true, Some(&org_template), vec![tuininga_leaf]);
 
         assert!(normalized.is_empty());
+    }
+
+    #[test]
+    fn normalize_extracts_org_when_branch_skips_tld_hop() {
+        let cut = dns_resolve::TraceHop {
+            zone: ".".into(),
+            server: "198.41.0.4".into(),
+            server_name: None,
+            qname: "tuininga.org.".into(),
+            qtype: "A".into(),
+            transport: "udp".into(),
+            rtt_ms: 1,
+            rcode: "NOERROR".into(),
+            nsid: None,
+            ede_code: None,
+            ede_text: None,
+            referral_ns: vec![],
+            glue: vec![],
+            response: Default::default(),
+            from_cache: false,
+            outcome: HopOutcome::Referral,
+        };
+        let org_template = tuininga_tree().root.children[0].clone();
+        let branch = TraceNode {
+            hop: TraceHop {
+                zone: ".".into(),
+                server: "199.249.120.1".into(),
+                server_name: Some("b2.org.afilias-nst.org.".into()),
+                qname: "tuininga.org.".into(),
+                qtype: "A".into(),
+                transport: "udp".into(),
+                rtt_ms: 2,
+                rcode: "NOERROR".into(),
+                nsid: None,
+                ede_code: None,
+                ede_text: None,
+                referral_ns: vec![],
+                glue: vec![],
+                response: Default::default(),
+                from_cache: false,
+                outcome: HopOutcome::Referral,
+            },
+            origin: NodeOrigin::Branch {
+                at: NodePath::root(0),
+                intent: BranchIntent::ExpandCut,
+                at_time: "now".into(),
+            },
+            children: vec![TraceNode {
+                hop: TraceHop {
+                    zone: "tuininga.org.".into(),
+                    server: "199.249.120.1".into(),
+                    server_name: Some("b2.org.afilias-nst.org.".into()),
+                    qname: "tuininga.org.".into(),
+                    qtype: "A".into(),
+                    transport: "udp".into(),
+                    rtt_ms: 3,
+                    rcode: "NOERROR".into(),
+                    nsid: None,
+                    ede_code: None,
+                    ede_text: None,
+                    referral_ns: vec![],
+                    glue: vec![],
+                    response: Default::default(),
+                    from_cache: false,
+                    outcome: HopOutcome::Referral,
+                },
+                origin: NodeOrigin::Branch {
+                    at: NodePath::root(0),
+                    intent: BranchIntent::ExpandCut,
+                    at_time: "now".into(),
+                },
+                children: vec![],
+            }],
+        };
+
+        let normalized =
+            normalize_expand_cut_attachments(&cut, true, Some(&org_template), vec![branch]);
+
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(normalized[0].hop.zone, "org.");
+        assert_eq!(normalized[0].hop.server, "199.249.120.1");
     }
 
     #[test]
