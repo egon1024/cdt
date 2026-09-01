@@ -44,7 +44,7 @@ hop on the other.
 | `Tab` | Cycle screens (Browse ↔ Compare) |
 | `w` | Cycle pane focus within Browse |
 | `c` | Toggle color |
-| `b` | Branch from selection — see [concepts](concepts.md#branching-in-explore) |
+| `b` | Branch from selected node — see [concepts](concepts.md#branching-in-explore) |
 | `r` | Re-query every hop with cache bypass (RTTs update in memory only; save on quit) |
 | `?` | Screen-scoped help |
 | `q` | Quit |

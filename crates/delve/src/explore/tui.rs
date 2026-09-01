@@ -1707,7 +1707,7 @@ fn help_lines(view: &ViewStateController, theme: &Theme) -> Vec<Line<'static>> {
             help_binding("j/k, ↑/↓", "Move selection", theme),
             help_binding("Space, Enter", "Toggle expand", theme),
             help_binding("E / C", "Expand all / collapse all", theme),
-            help_binding("b", "Branch from selection", theme),
+            help_binding("b", "Branch from selected node", theme),
             help_binding("h/l, ←/→", "Scroll tree horizontally", theme),
             help_binding("+ / -", "Resize tree/detail split", theme),
             Line::from(""),
@@ -1901,7 +1901,7 @@ mod tests {
         assert!(text.contains("Cycle screens"));
         assert!(text.contains("Expand all / collapse all"));
         assert!(text.contains("Refresh hop RTTs"));
-        assert!(text.contains("Branch from selection"));
+        assert!(text.contains("Branch from selected node"));
     }
 
     #[test]
