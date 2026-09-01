@@ -139,12 +139,15 @@ mod tests {
     fn first_delegation_below_root() {
         let qname = DomainName::parse("tuininga.org.").expect("qname");
         assert_eq!(
-            qname.first_delegation_below_root().map(|zone| zone.to_string()),
+            qname
+                .first_delegation_below_root()
+                .map(|zone| zone.to_string()),
             Some("org.".into())
         );
         let deep = DomainName::parse("www.example.com.").expect("qname");
         assert_eq!(
-            deep.first_delegation_below_root().map(|zone| zone.to_string()),
+            deep.first_delegation_below_root()
+                .map(|zone| zone.to_string()),
             Some("com.".into())
         );
     }

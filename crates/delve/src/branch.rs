@@ -1574,7 +1574,10 @@ mod tests {
         for (index, node) in raw.iter().enumerate() {
             eprintln!(
                 "raw[{index}] zone={} server={} outcome={:?} children={}",
-                node.hop.zone, node.hop.server, node.hop.outcome, node.children.len()
+                node.hop.zone,
+                node.hop.server,
+                node.hop.outcome,
+                node.children.len()
             );
             for (cidx, child) in node.children.iter().enumerate() {
                 eprintln!(
