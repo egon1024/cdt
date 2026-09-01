@@ -281,6 +281,7 @@ impl<'a> Coordinator<'a> {
         zone: DomainName,
         path: Vec<usize>,
         visited_zones: HashSet<String>,
+        kind: JobKind,
     ) -> Result<()> {
         let mut servers = servers;
         if servers.is_empty() {
@@ -289,7 +290,7 @@ impl<'a> Coordinator<'a> {
             });
         }
         let primary = servers.remove(0);
-        if !self.try_enqueue_job(
+        if !self.try_enqueue_job_with_kind(
             primary,
             servers,
             qname,
@@ -297,6 +298,7 @@ impl<'a> Coordinator<'a> {
             zone,
             path,
             visited_zones,
+            kind,
         ) {
             self.progress.budget_truncated(self.budget.cap());
         }
@@ -310,6 +312,7 @@ impl<'a> Coordinator<'a> {
         zone: DomainName,
         path: Vec<usize>,
         visited_zones: HashSet<String>,
+        kind: JobKind,
     ) -> Result<()> {
         if servers.is_empty() {
             return Err(ResolveError::NoReachableNameserver {
@@ -319,7 +322,7 @@ impl<'a> Coordinator<'a> {
 
         match self.config.expansion_policy {
             ExpansionPolicy::None | ExpansionPolicy::Last => {
-                self.enqueue_single_server(servers, qname, zone, path, visited_zones)
+                self.enqueue_single_server(servers, qname, zone, path, visited_zones, kind)
             }
             ExpansionPolicy::All => {
                 if servers.len() > 1 {
@@ -328,7 +331,7 @@ impl<'a> Coordinator<'a> {
                 for (index, server) in servers.into_iter().enumerate() {
                     let mut job_path = path.clone();
                     job_path.push(index);
-                    if !self.try_enqueue_job(
+                    if !self.try_enqueue_job_with_kind(
                         server,
                         vec![],
                         qname.clone(),
@@ -336,6 +339,7 @@ impl<'a> Coordinator<'a> {
                         zone.clone(),
                         job_path,
                         visited_zones.clone(),
+                        kind.clone(),
                     ) {
                         self.progress.budget_truncated(self.budget.cap());
                         break;
@@ -358,6 +362,7 @@ impl<'a> Coordinator<'a> {
             root_zone,
             initial_path,
             HashSet::new(),
+            JobKind::Trace,
         )?;
 
         self.run_pending()?;
@@ -519,7 +524,7 @@ impl<'a> Coordinator<'a> {
         if let Some(next_server) = job.fallback_servers.first().cloned() {
             let mut fallback = job.fallback_servers;
             fallback.remove(0);
-            if self.try_enqueue_job(
+            if self.try_enqueue_job_with_kind(
                 next_server,
                 fallback,
                 job.qname,
@@ -527,6 +532,7 @@ impl<'a> Coordinator<'a> {
                 job.zone,
                 job.path,
                 job.visited_zones,
+                job.kind.clone(),
             ) {
                 return Ok(());
             }
@@ -561,6 +567,21 @@ impl<'a> Coordinator<'a> {
             hop.outcome = HopOutcome::Answered;
             return self.handle_terminal_answer(job, hop, query_result);
         };
+
+        // Expand-cut branch jobs query alternate nameservers at a zone cut and attach
+        // the next delegation hop (e.g. root -> org). Do not trace to the answer zone.
+        if matches!(
+            &job.kind,
+            JobKind::Branch {
+                intent: BranchIntent::ExpandCut,
+                ..
+            }
+        ) && !job.visited_zones.is_empty()
+        {
+            hop.outcome = HopOutcome::Referral;
+            self.store_completed_node(&job.path, hop, node_origin_for_job(&job));
+            return Ok(());
+        }
 
         let next_zone_name = next_zone.to_string();
         if self.config.expansion_policy == ExpansionPolicy::All {
@@ -673,6 +694,7 @@ impl<'a> Coordinator<'a> {
         self.store_completed_node(&job.path, hop, node_origin_for_job(&job));
 
         let child_path = child_path_for_policy(self.config.expansion_policy, &job.path);
+        let child_kind = job.kind.clone();
         if self.requires_single_path_subtree(&job.path) {
             self.enqueue_single_server(
                 next_servers,
@@ -680,6 +702,7 @@ impl<'a> Coordinator<'a> {
                 next_zone,
                 child_path,
                 child_visited,
+                child_kind,
             )?;
         } else {
             self.enqueue_cut(
@@ -688,6 +711,7 @@ impl<'a> Coordinator<'a> {
                 next_zone,
                 child_path,
                 child_visited,
+                child_kind,
             )?;
         }
         Ok(())

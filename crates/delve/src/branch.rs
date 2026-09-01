@@ -1319,6 +1319,96 @@ mod tests {
         );
     }
 
+    fn tuininga_a2_session_tree() -> TraceTree {
+        let mut tree = tuininga_tree();
+        tree.root.hop.referral_ns = vec![
+            "a2.org.afilias-nst.info.".into(),
+            "b2.org.afilias-nst.org.".into(),
+            "d0.org.afilias-nst.org.".into(),
+            "a0.org.afilias-nst.info.".into(),
+            "b0.org.afilias-nst.org.".into(),
+            "c0.org.afilias-nst.info.".into(),
+        ];
+        tree.root.hop.glue = vec![
+            "199.249.112.1".into(),
+            "199.249.120.1".into(),
+            "199.19.57.1".into(),
+            "199.19.56.1".into(),
+            "199.19.54.1".into(),
+            "199.19.53.1".into(),
+        ];
+        tree.root.children[0].hop.server_name = Some("a2.org.afilias-nst.info.".into());
+        tree
+    }
+
+    #[test]
+    fn expand_cut_from_a2_primary_session_dry_run_lists_remaining_root_ns() {
+        let mut document = sample_document(
+            tuininga_a2_session_tree(),
+            TraceRequest::from_options(&TraceOptions {
+                qname: "tuininga.org.".into(),
+                ..Default::default()
+            }),
+        );
+        let runtime = runtime();
+        let report = execute_branch(
+            &mut document,
+            NodePath::root(0),
+            BranchIntentArg::ExpandCut,
+            true,
+            &runtime,
+            &mut SilentProgress,
+            None,
+        )
+        .expect("branch");
+        let plan = report.plan.expect("plan");
+        assert_eq!(plan.zone, ".");
+        assert_eq!(plan.targets.len(), 5);
+        assert!(
+            !plan
+                .targets
+                .iter()
+                .any(|target| target.contains("a2.org.afilias-nst.info"))
+        );
+        assert!(
+            plan.targets
+                .iter()
+                .any(|target| target.contains("b0.org.afilias-nst.org"))
+        );
+    }
+
+    #[test]
+    fn expand_cut_from_a2_primary_session_adds_org_siblings_without_loop() {
+        let mut document = sample_document(
+            tuininga_a2_session_tree(),
+            TraceRequest::from_options(&TraceOptions {
+                qname: "tuininga.org.".into(),
+                ..Default::default()
+            }),
+        );
+        let runtime = runtime();
+        let report = execute_branch(
+            &mut document,
+            NodePath::root(0),
+            BranchIntentArg::ExpandCut,
+            false,
+            &runtime,
+            &mut SilentProgress,
+            Some(Arc::new(TuiningaBranchExchangeImpl {
+                root_cut_queried: Mutex::new(HashSet::new()),
+            })),
+        )
+        .expect("branch should not hit delegation loop at tuininga.org");
+        assert!(report.nodes_added >= 2);
+        let root = document
+            .primary_tree()
+            .expect("tree")
+            .resolve(&NodePath::root(0))
+            .expect("root");
+        assert!(root.children.len() >= 3);
+        assert!(root.children.iter().all(|child| child.hop.zone == "org."));
+    }
+
     fn tuininga_tree() -> TraceTree {
         let root = TraceNode {
             hop: TraceHop {

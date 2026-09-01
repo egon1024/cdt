@@ -280,10 +280,23 @@ mod tests {
             !node.children.is_empty(),
             "branch should continue through delegation"
         );
-        assert!(matches!(node.children[0].origin, NodeOrigin::Trace));
+        assert!(matches!(
+            node.children[0].origin,
+            NodeOrigin::Branch {
+                intent: BranchIntent::AlternateServer,
+                ..
+            }
+        ));
         let leaf = primary_leaf(&node);
         assert_eq!(leaf.hop.outcome, HopOutcome::Answered);
         assert_eq!(leaf.hop.zone, "example.com.");
+        assert!(matches!(
+            leaf.origin,
+            NodeOrigin::Branch {
+                intent: BranchIntent::AlternateServer,
+                ..
+            }
+        ));
         match node.origin {
             NodeOrigin::Branch { intent, .. } => {
                 assert_eq!(intent, BranchIntent::AlternateServer);
@@ -332,6 +345,42 @@ mod tests {
             }
             other => panic!("expected branch origin, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn expand_cut_branch_stops_after_first_delegation_step() {
+        let qname = DomainName::parse("example.com.").expect("qname");
+        let mut config = TraceConfig::new(qname.clone(), RecordType::A);
+        config.exchange = Arc::new(DelegatingBranchExchange);
+        let at = NodePath {
+            tree: 0,
+            path: vec![],
+        };
+        let servers = vec![ServerTarget::with_name(
+            IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)),
+            "root.example.",
+        )];
+        let mut budget = QueryBudget::new(64);
+        let nodes = run_expand_cut_branch(
+            &config,
+            &mut budget,
+            &mut SilentProgress,
+            at,
+            servers,
+            qname,
+            RecordType::A,
+            DomainName::parse(".").expect("zone"),
+            vec![],
+        )
+        .expect("expand cut should not follow through to the answer zone");
+
+        assert_eq!(nodes.len(), 1);
+        let mut node = &nodes[0];
+        while let Some(child) = node.children.first() {
+            node = child;
+        }
+        assert_eq!(node.hop.zone, "com.");
+        assert!(matches!(node.hop.outcome, HopOutcome::Referral));
     }
 
     #[test]
