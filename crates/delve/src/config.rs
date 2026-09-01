@@ -181,6 +181,15 @@ impl DelveConfig {
         let default_rtt = defaults.explore_rtt_bar;
 
         let mut out = String::new();
+        let config_path = paths.config_file();
+        out.push_str("# Config file: ");
+        out.push_str(&config_path.display().to_string());
+        out.push('\n');
+        if config_path.exists() {
+            out.push_str("# (file exists)\n");
+        } else {
+            out.push_str("# (file not found; showing defaults)\n");
+        }
         out.push_str(
             "# Commented lines show default values (not set in your config file).\n\
              # Remove the leading # to override a default.\n\n",
@@ -491,6 +500,8 @@ mod tests {
         let paths = DelvePaths::from_root(dir.path());
         let (yaml, warnings) = DelveConfig::dump_yaml(&paths);
         assert!(warnings.is_empty());
+        assert!(yaml.contains(&format!("# Config file: {}", paths.config_file().display())));
+        assert!(yaml.contains("# (file not found; showing defaults)"));
         assert!(yaml.contains("# Commented lines show default values"));
         assert!(yaml.contains("#session:"));
         assert!(yaml.contains("#  retention: never"));
@@ -518,6 +529,8 @@ mod tests {
 
         let (yaml, warnings) = DelveConfig::dump_yaml(&paths);
         assert!(warnings.is_empty());
+        assert!(yaml.contains(&format!("# Config file: {}", paths.config_file().display())));
+        assert!(yaml.contains("# (file exists)"));
         assert!(yaml.contains("session:\n  retention: 180d"));
         assert!(yaml.contains("#  max_queries_per_action: 64"));
         assert!(yaml.contains("  max_parallel_queries: 4"));

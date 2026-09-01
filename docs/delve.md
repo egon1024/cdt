@@ -147,7 +147,7 @@ To see every configurable key with defaults and your active overrides:
 delve config dump
 ```
 
-Commented lines show default values (not set in your config). Uncomment a line to override that default. Sections with no overrides are commented out entirely, including nested blocks such as `rtt_bar`.
+The output begins with the resolved config file path (whether or not the file exists), then the YAML template. Commented lines show default values (not set in your config). Uncomment a line to override that default. Sections with no overrides are commented out entirely, including nested blocks such as `rtt_bar`.
 
 ### Example
 
