@@ -1,3 +1,5 @@
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
 use crate::config::RttBarConfig;
 use crate::explore::rtt_gradient_rgb;
 
@@ -13,7 +15,15 @@ const PAD: f64 = 10.0;
 const HEADER_H: f64 = 26.0;
 const COL_GAP: f64 = 64.0;
 const LABEL_W: usize = 9;
-const TOP_PAD: f64 = 40.0;
+const TITLE_FS: f64 = 15.0;
+const SUBTITLE_FS: f64 = 12.0;
+const TOP_PAD: f64 = 52.0;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SvgTitle {
+    pub primary: String,
+    pub secondary: Option<String>,
+}
 
 struct OutcomeStyle {
     stroke: &'static str,
@@ -56,10 +66,61 @@ fn text(x: f64, y: f64, value: &str, fill: &str, size: f64, weight: &str, anchor
     )
 }
 
+fn char_width(font_size: f64) -> f64 {
+    0.60205 * font_size
+}
+
+fn truncate_to_width(value: &str, max_width: f64, font_size: f64) -> String {
+    let max_cols = (max_width / char_width(font_size)).floor() as usize;
+    if value.width() <= max_cols {
+        return value.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in value.chars() {
+        let w = ch.width().unwrap_or(0);
+        if used + w + 1 > max_cols.saturating_sub(1) {
+            out.push('…');
+            break;
+        }
+        out.push(ch);
+        used += w;
+    }
+    out
+}
+
+fn render_header(width: f64, title: &SvgTitle) -> String {
+    let text_w = (width - 2.0 * PAD).max(0.0);
+    let primary = truncate_to_width(&title.primary, text_w, TITLE_FS);
+    let mut parts = vec![
+        format!(
+            r##"<g id="header"><rect x="0" y="0" width="{width:.1}" height="{TOP_PAD:.1}" fill="#f8fafc"/>"##
+        ),
+        format!(
+            r##"<line x1="0" y1="{TOP_PAD:.1}" x2="{width:.1}" y2="{TOP_PAD:.1}" stroke="#e2e8f0" stroke-width="1"/>"##
+        ),
+        text(PAD, 22.0, &primary, "#0f172a", TITLE_FS, "bold", "start"),
+    ];
+    if let Some(secondary) = &title.secondary {
+        let secondary = truncate_to_width(secondary, text_w, SUBTITLE_FS);
+        parts.push(text(
+            PAD,
+            40.0,
+            &secondary,
+            "#64748b",
+            SUBTITLE_FS,
+            "normal",
+            "start",
+        ));
+    }
+    parts.push("</g>".into());
+    parts.join("")
+}
+
 pub fn render_tree_svg(
     cards: &[HopCard],
     layout: &TreeLayout,
-    title: &str,
+    title: &SvgTitle,
     rtt_config: RttBarConfig,
 ) -> String {
     let width = layout.width;
@@ -69,8 +130,8 @@ pub fn render_tree_svg(
             r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width:.0}" height="{height:.0}" viewBox="0 0 {width:.0} {height:.0}">"#
         ),
         r##"<rect width="100%" height="100%" fill="#ffffff"/>"##.into(),
+        render_header(width, title),
         format!(r#"<g transform="translate(0,{TOP_PAD:.0})">"#),
-        text(PAD, -18.0, title, "#0f172a", 15.0, "bold", "start"),
     ];
 
     for edge in &layout.edges {
@@ -311,7 +372,10 @@ mod tests {
         let svg = render_tree_svg(
             &cards,
             &layout,
-            "delve · example.com. A",
+            &SvgTitle {
+                primary: "delve · example.com. A".into(),
+                secondary: None,
+            },
             RttBarConfig::default(),
         );
         assert!(svg.contains("<svg"));
@@ -345,7 +409,15 @@ mod tests {
         };
         let cards = build_cards(&tree, 0);
         let layout = layout_tree(&cards, &tree);
-        let svg = render_tree_svg(&cards, &layout, "title", RttBarConfig::default());
+        let svg = render_tree_svg(
+            &cards,
+            &layout,
+            &SvgTitle {
+                primary: "title".into(),
+                secondary: None,
+            },
+            RttBarConfig::default(),
+        );
         assert!(svg.contains(r#"data-path="0.0""#));
         assert!(svg.contains("<title>"));
     }
@@ -376,8 +448,35 @@ mod tests {
         };
         let cards = build_cards(&tree, 0);
         let layout = layout_tree(&cards, &tree);
-        let svg = render_tree_svg(&cards, &layout, "title", RttBarConfig::default());
+        let svg = render_tree_svg(
+            &cards,
+            &layout,
+            &SvgTitle {
+                primary: "title".into(),
+                secondary: None,
+            },
+            RttBarConfig::default(),
+        );
         assert!(svg.contains(r#"<path d="M"#));
         assert!(svg.contains(r#"<circle cx="#));
+    }
+
+    #[test]
+    fn header_spans_full_width_and_truncates_long_session_id() {
+        let session = "session 01M1FGVANFKBGJBSZ8CTDGPD78";
+        let title = SvgTitle {
+            primary: "delve  ·  tuininga.org. A  ·  tree 0".into(),
+            secondary: Some(session.into()),
+        };
+        let width = 900.0;
+        let header = render_header(width, &title);
+        assert!(header.contains(r#"id="header""#));
+        assert!(header.contains(&format!(r#"width="{width:.1}""#)));
+        assert!(header.contains("tuininga.org."));
+        assert!(header.contains(session));
+
+        let narrow = truncate_to_width(session, 200.0, SUBTITLE_FS);
+        assert!(narrow.ends_with('…'));
+        assert!(narrow.len() < session.len());
     }
 }

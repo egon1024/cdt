@@ -295,20 +295,22 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
 fn run_session_export(args: SessionExportArgs, runtime: &Runtime) -> Result<(), CliError> {
     use std::io::Write;
 
-    use crate::export::{ExportFormat, ExportLayout, ExportOptions, render_trace_tree};
+    use crate::export::{ExportFormat, ExportLayout, ExportOptions, SvgTitle, render_trace_tree};
 
     let (session_id, _) = resolve_session_target(args.id, Vec::new(), runtime)?;
     let document = runtime.get_session(&session_id)?;
     let entry = document.trees.get(args.tree_index).ok_or(
         crate::export::ExportError::TreeIndexOutOfRange(args.tree_index),
     )?;
-    let title = format!(
-        "delve  ·  {} {}  ·  session {}  ·  tree {}",
-        entry.tree.qname(),
-        entry.tree.qtype(),
-        document.id,
-        args.tree_index
-    );
+    let title = SvgTitle {
+        primary: format!(
+            "delve  ·  {} {}  ·  tree {}",
+            entry.tree.qname(),
+            entry.tree.qtype(),
+            args.tree_index
+        ),
+        secondary: Some(format!("session {}", document.id)),
+    };
     let options = ExportOptions {
         layout: match args.layout {
             SessionExportLayout::Tree => ExportLayout::Tree,

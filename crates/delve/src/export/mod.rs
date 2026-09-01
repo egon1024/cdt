@@ -8,7 +8,7 @@ use crate::config::RttBarConfig;
 
 pub use card::{HopCard, build_cards, path_attribute};
 pub use layout_tree::{TreeEdge, TreeLayout, layout_tree};
-pub use svg::render_tree_svg;
+pub use svg::{SvgTitle, render_tree_svg};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExportLayout {
@@ -27,7 +27,7 @@ pub enum ExportFormat {
 pub struct ExportOptions {
     pub layout: ExportLayout,
     pub format: ExportFormat,
-    pub title: String,
+    pub title: SvgTitle,
     pub rtt_config: RttBarConfig,
 }
 
@@ -104,7 +104,10 @@ mod tests {
             &ExportOptions {
                 layout: ExportLayout::Tree,
                 format: ExportFormat::Svg,
-                title: "test".into(),
+                title: SvgTitle {
+                    primary: "test".into(),
+                    secondary: None,
+                },
                 rtt_config: RttBarConfig::default(),
             },
         )
@@ -168,7 +171,10 @@ mod integration_tests {
             &ExportOptions {
                 layout: ExportLayout::Tree,
                 format: ExportFormat::Svg,
-                title: format!("session {}", document.id),
+                title: SvgTitle {
+                    primary: format!("session {}", document.id),
+                    secondary: None,
+                },
                 rtt_config: RttBarConfig::default(),
             },
         )
@@ -202,7 +208,10 @@ mod integration_tests {
             &ExportOptions {
                 layout: ExportLayout::Tree,
                 format: ExportFormat::Svg,
-                title: document.id.clone(),
+                title: SvgTitle {
+                    primary: document.id.clone(),
+                    secondary: None,
+                },
                 rtt_config: RttBarConfig::default(),
             },
         )
