@@ -60,19 +60,21 @@ RTT bar colors match the explore Compare view (`explore.rtt_bar` in
 
 ## PNG export and packaging
 
-SVG export is always available in default builds.
+SVG export is always available.
 
-PNG export rasterizes the same SVG using `resvg` and is gated behind the Cargo
-feature `export-png`:
+PNG export rasterizes the same SVG using `resvg`. Official `.deb`, `.rpm`, and
+release tarballs build delve with the `export-png` feature enabled, so
+`--format png` works out of the box in installed packages.
+
+When building delve from source without that feature:
 
 ```bash
 cargo build -p delve --features export-png
 cargo install --path crates/delve --features export-png
 ```
 
-Default distro packages may ship SVG-only builds. If `--format png` is requested
-in a build without `export-png`, delve exits with an error explaining that PNG
-export is not enabled in this build.
+If `--format png` is requested in a build without `export-png`, delve exits with
+an error explaining that PNG export is not enabled in that build.
 
 ## Multi-tree sessions
 

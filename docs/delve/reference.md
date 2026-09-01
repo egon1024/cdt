@@ -79,7 +79,7 @@ Installed packages also ship `man delve` and `man delve-trace` for a CLI synopsi
 ## Session export
 
 Export a stored trace tree as SVG or PNG. See [export](export.md) for layouts,
-formats, and the `export-png` Cargo feature for packagers.
+formats, and source-build notes for the optional `export-png` Cargo feature.
 
 ## See also
 
