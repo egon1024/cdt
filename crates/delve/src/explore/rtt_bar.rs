@@ -3,6 +3,7 @@ use ratatui::text::Span;
 
 use crate::config::RttBarConfig;
 
+use super::rtt_color::rtt_gradient_rgb;
 use super::terminal::{self, ColorCapability};
 use super::theme::Theme;
 
@@ -79,45 +80,6 @@ fn style_for_rtt_stepped(rtt_ms: u32, config: RttBarConfig, theme: &Theme) -> St
     } else {
         theme.rtt_red()
     }
-}
-
-fn rtt_gradient_rgb(rtt_ms: u32, config: RttBarConfig) -> (u8, u8, u8) {
-    const GREEN: (u8, u8, u8) = (72, 198, 108);
-    const YELLOW: (u8, u8, u8) = (255, 214, 48);
-    const ORANGE: (u8, u8, u8) = (255, 132, 32);
-    const RED: (u8, u8, u8) = (214, 48, 48);
-
-    if rtt_ms <= config.green_ms {
-        let t = rtt_ms as f32 / config.green_ms as f32;
-        return lerp_rgb(GREEN, YELLOW, t);
-    }
-    if rtt_ms <= config.yellow_ms {
-        return YELLOW;
-    }
-    if rtt_ms <= config.orange_ms {
-        let span = config.orange_ms - config.yellow_ms;
-        let t = (rtt_ms - config.yellow_ms) as f32 / span as f32;
-        return lerp_rgb(YELLOW, ORANGE, t);
-    }
-    if rtt_ms <= config.insane_ms {
-        let span = config.insane_ms - config.orange_ms;
-        let t = (rtt_ms - config.orange_ms) as f32 / span as f32;
-        return lerp_rgb(ORANGE, RED, t);
-    }
-    RED
-}
-
-fn lerp_rgb(start: (u8, u8, u8), end: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
-    let t = t.clamp(0.0, 1.0);
-    (
-        lerp_channel(start.0, end.0, t),
-        lerp_channel(start.1, end.1, t),
-        lerp_channel(start.2, end.2, t),
-    )
-}
-
-fn lerp_channel(start: u8, end: u8, t: f32) -> u8 {
-    (f32::from(start) + (f32::from(end) - f32::from(start)) * t).round() as u8
 }
 
 #[cfg(test)]
