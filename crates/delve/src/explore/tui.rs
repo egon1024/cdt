@@ -1708,7 +1708,7 @@ fn help_lines(view: &ViewStateController, theme: &Theme) -> Vec<Line<'static>> {
             help_binding("Space, Enter", "Toggle expand", theme),
             help_binding("E / C", "Expand all / collapse all", theme),
             help_binding("b", "Branch from selection", theme),
-            help_binding("←/→, h/l", "Scroll tree horizontally", theme),
+            help_binding("h/l, ←/→", "Scroll tree horizontally", theme),
             help_binding("+ / -", "Resize tree/detail split", theme),
             Line::from(""),
             help_section("Hop symbols", theme),
