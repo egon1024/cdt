@@ -88,7 +88,7 @@ pub fn export_trace_tree(
             #[cfg(not(feature = "export-png"))]
             {
                 let _ = svg;
-                Err(ExportError::UnsupportedFormat("png"))
+                Err(ExportError::PngExportDisabled)
             }
         }
     }
@@ -101,7 +101,7 @@ pub fn render_trace_tree(
 ) -> Result<String, ExportError> {
     match export_trace_tree(tree, tree_index, options)? {
         ExportOutput::Svg(svg) => Ok(svg),
-        ExportOutput::Png(_) => Err(ExportError::UnsupportedFormat("png")),
+        ExportOutput::Png(_) => Err(ExportError::PngExportDisabled),
     }
 }
 
@@ -112,6 +112,11 @@ pub enum ExportError {
 
     #[error("format {0} is not available in this build")]
     UnsupportedFormat(&'static str),
+
+    #[error(
+        "PNG export is not enabled in this build; rebuild delve with: cargo build -p delve --features export-png"
+    )]
+    PngExportDisabled,
 
     #[error("tree index {0} is out of range")]
     TreeIndexOutOfRange(usize),
@@ -324,8 +329,8 @@ mod integration_tests {
             },
         )
         .expect_err("png should be unavailable");
-        assert_eq!(err, ExportError::UnsupportedFormat("png"));
-        assert!(err.to_string().contains("not available in this build"));
+        assert_eq!(err, ExportError::PngExportDisabled);
+        assert!(err.to_string().contains("export-png"));
     }
 
     #[cfg(feature = "export-png")]
