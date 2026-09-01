@@ -127,6 +127,18 @@ pub fn layout_tree(cards: &[HopCard], tree: &TraceTree) -> TreeLayout {
         },
     );
 
+    let min_y = positions
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(f64::INFINITY, f64::min);
+    if min_y < PAD {
+        let shift = PAD - min_y;
+        for (_, y) in &mut positions {
+            *y += shift;
+        }
+        cursor_y += shift;
+    }
+
     let mut edges = Vec::new();
     fn collect_edges(
         node: &TraceNode,
@@ -259,6 +271,22 @@ mod tests {
     }
 
     #[test]
+    fn branching_layout_keeps_cards_within_padding() {
+        let tree = branching_tree();
+        let cards = build_cards(&tree, 0);
+        let layout = layout_tree(&cards, &tree);
+        let min_y = layout
+            .cards
+            .iter()
+            .map(|card| card.y)
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            min_y >= PAD,
+            "card layout must not place nodes above padding (min_y={min_y})"
+        );
+    }
+
+    #[test]
     fn branching_layout_has_no_overlapping_cards() {
         let tree = branching_tree();
         let cards = build_cards(&tree, 0);
@@ -285,6 +313,46 @@ mod tests {
                 .edges
                 .iter()
                 .any(|edge| { edge.parent_index == 0 && edge.child_index == 1 && !edge.dashed })
+        );
+    }
+
+    fn single_child_branch_tree() -> TraceTree {
+        TraceTree {
+            request: TraceTreeRequest {
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                started_at: "2026-01-01T00:00:00Z".into(),
+            },
+            root: TraceNode {
+                hop: hop(".", "198.41.0.4", HopOutcome::Referral),
+                origin: NodeOrigin::Trace,
+                children: vec![TraceNode {
+                    hop: hop("com.", "192.41.162.30", HopOutcome::Referral),
+                    origin: NodeOrigin::Trace,
+                    children: vec![TraceNode {
+                        hop: hop("example.com.", "199.43.135.53", HopOutcome::Answered),
+                        origin: NodeOrigin::Trace,
+                        children: vec![],
+                    }],
+                }],
+            },
+            budget_truncated: false,
+        }
+    }
+
+    #[test]
+    fn single_child_branch_keeps_root_below_padding() {
+        let tree = single_child_branch_tree();
+        let cards = build_cards(&tree, 0);
+        let layout = layout_tree(&cards, &tree);
+        let min_y = layout
+            .cards
+            .iter()
+            .map(|card| card.y)
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            min_y >= PAD,
+            "single-child branch must not tuck parents under the header (min_y={min_y})"
         );
     }
 }

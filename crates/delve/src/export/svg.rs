@@ -94,7 +94,7 @@ fn render_header(width: f64, title: &SvgTitle) -> String {
     let primary = truncate_to_width(&title.primary, text_w, TITLE_FS);
     let mut parts = vec![
         format!(
-            r##"<g id="header"><rect x="0" y="0" width="{width:.1}" height="{TOP_PAD:.1}" fill="#f8fafc"/>"##
+            r##"<g id="header"><rect x="0" y="0" width="{width:.1}" height="{TOP_PAD:.1}" fill="#ffffff"/>"##
         ),
         format!(
             r##"<line x1="0" y1="{TOP_PAD:.1}" x2="{width:.1}" y2="{TOP_PAD:.1}" stroke="#e2e8f0" stroke-width="1"/>"##
@@ -125,13 +125,17 @@ pub fn render_tree_svg(
 ) -> String {
     let width = layout.width;
     let height = layout.height + TOP_PAD;
+    let tree_height = layout.height;
     let mut parts = vec![
         format!(
             r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width:.0}" height="{height:.0}" viewBox="0 0 {width:.0} {height:.0}">"#
         ),
-        r##"<rect width="100%" height="100%" fill="#ffffff"/>"##.into(),
+        format!(
+            r##"<defs><clipPath id="tree-content"><rect x="0" y="0" width="{width:.1}" height="{tree_height:.1}"/></clipPath></defs>"##
+        ),
+        format!(r##"<rect x="0" y="0" width="{width:.1}" height="{height:.1}" fill="#ffffff"/>"##),
         render_header(width, title),
-        format!(r#"<g transform="translate(0,{TOP_PAD:.0})">"#),
+        format!(r#"<g transform="translate(0,{TOP_PAD:.0})" clip-path="url(#tree-content)">"#),
     ];
 
     for edge in &layout.edges {
@@ -379,6 +383,8 @@ mod tests {
             RttBarConfig::default(),
         );
         assert!(svg.contains("<svg"));
+        assert!(svg.contains(r#"clipPath id="tree-content""#));
+        assert!(svg.contains(r#"clip-path="url(#tree-content)""#));
         assert!(svg.contains("a.root-servers.net"));
         assert!(svg.contains("REFERRAL"));
         assert!(svg.contains("11 ms"));
