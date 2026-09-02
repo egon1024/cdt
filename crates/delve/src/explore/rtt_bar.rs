@@ -1,5 +1,5 @@
 use ratatui::style::{Color, Style};
-use ratatui::text::Span;
+use ratatui::text::{Line, Span};
 
 use crate::config::RttBarConfig;
 
@@ -7,8 +7,14 @@ use super::rtt_color::rtt_gradient_rgb;
 use super::terminal::{self, ColorCapability};
 use super::theme::Theme;
 
-/// Fixed-width latency bar for Compare. `scale_max_rtt_ms` is the longest RTT among
-/// visible hops; that hop fills the full configured width and others scale relative to it.
+/// Absolute scale used for Browse detail RTT bars (matches export card scale).
+pub const DETAIL_RTT_SCALE_MS: u32 = 500;
+
+/// Glyph used for the unfilled portion of an RTT bar so the full track is visible.
+pub const RTT_BAR_EMPTY: &str = "░";
+
+/// Fixed-width latency bar. `scale_max_rtt_ms` is the value that fills the bar
+/// completely (Compare: max visible RTT; Browse detail: [`DETAIL_RTT_SCALE_MS`]).
 pub fn rtt_bar_spans(
     rtt_ms: u32,
     scale_max_rtt_ms: u32,
@@ -34,10 +40,28 @@ pub fn rtt_bar_spans(
             let ms_at = ((index + 1) as f64 * ms_per_char).round() as u32;
             spans.push(Span::styled("█", style_for_rtt(ms_at, config, theme)));
         } else {
-            spans.push(Span::raw(" "));
+            spans.push(Span::styled(RTT_BAR_EMPTY, theme.meta()));
         }
     }
     spans
+}
+
+/// Plain-text RTT line for outline / dig plain output (no bar glyphs).
+pub fn format_rtt_plain_line(rtt_ms: u64) -> String {
+    format!("rtt: {rtt_ms} ms")
+}
+
+/// Browse detail meta line: `rtt` label, absolute-scale bar, colored `{n} ms`.
+pub fn rtt_detail_line(rtt_ms: u64, config: RttBarConfig, theme: &Theme) -> Line<'static> {
+    let rtt_u32 = rtt_ms.min(u64::from(u32::MAX)) as u32;
+    let mut spans = vec![Span::styled("rtt  ", theme.label())];
+    spans.extend(rtt_bar_spans(rtt_u32, DETAIL_RTT_SCALE_MS, config, theme));
+    spans.push(Span::raw("  "));
+    spans.push(Span::styled(
+        format!("{rtt_ms} ms"),
+        style_for_rtt(rtt_u32, config.normalized(), theme),
+    ));
+    Line::from(spans)
 }
 
 pub fn max_rtt_ms_for_visible(
@@ -133,7 +157,10 @@ mod tests {
         let spans = rtt_bar_spans(10, 100, cfg, &theme);
         assert_eq!(spans.len(), 20);
         assert_eq!(spans.iter().filter(|s| s.content == "█").count(), 2);
-        assert_eq!(spans.iter().filter(|s| s.content == " ").count(), 18);
+        assert_eq!(
+            spans.iter().filter(|s| s.content == RTT_BAR_EMPTY).count(),
+            18
+        );
     }
 
     #[test]
@@ -163,7 +190,30 @@ mod tests {
         let cfg = config();
         let spans = rtt_bar_spans(0, 100, cfg, &theme);
         assert_eq!(spans.len(), 20);
-        assert!(spans.iter().all(|span| span.content == " "));
+        assert!(spans.iter().all(|span| span.content == RTT_BAR_EMPTY));
+    }
+
+    #[test]
+    fn detail_line_uses_absolute_scale_and_colored_ms() {
+        let theme = theme_with_capability(ColorCapability::Truecolor);
+        let cfg = config();
+        let line = rtt_detail_line(200, cfg, &theme);
+        let contents: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(contents.starts_with("rtt  "));
+        assert!(contents.contains("200 ms"));
+        assert!(contents.contains('█'));
+        assert!(contents.contains(RTT_BAR_EMPTY));
+        let ms_span = line
+            .spans
+            .iter()
+            .find(|s| s.content == "200 ms")
+            .expect("ms span");
+        assert_eq!(ms_span.style.fg, Some(Color::Rgb(255, 132, 32)));
+    }
+
+    #[test]
+    fn format_rtt_plain_line_matches_export_style_label() {
+        assert_eq!(format_rtt_plain_line(11), "rtt: 11 ms");
     }
 
     #[test]

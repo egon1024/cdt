@@ -2,6 +2,7 @@ use std::net::IpAddr;
 
 use dns_resolve::{HopOutcome, TraceHop};
 
+use super::rtt_bar::format_rtt_plain_line;
 use super::terminal::{UiSymbols, cache_source_symbol};
 
 pub fn hop_summary_line(hop: &TraceHop, symbols: UiSymbols) -> String {
@@ -39,10 +40,6 @@ pub fn format_server_line(server: &str, server_name: Option<&str>, transport: &s
         "server: {} ({transport})",
         format_server_endpoint(server, server_name)
     )
-}
-
-pub fn format_query_response_time_line(rtt_ms: u64) -> String {
-    format!("query response time: {rtt_ms}ms")
 }
 
 pub fn effective_server_name(server: &str, server_name: Option<&str>) -> Option<String> {
@@ -84,7 +81,7 @@ pub(crate) fn legacy_hop_detail_lines(hop: &TraceHop, symbols: UiSymbols) -> Vec
         format!("zone: {}", hop.zone),
         format!("query: {} {}", hop.qname, hop.qtype),
         format_server_line(&hop.server, hop.server_name.as_deref(), &hop.transport),
-        format_query_response_time_line(hop.rtt_ms),
+        format_rtt_plain_line(hop.rtt_ms),
         format!("rcode: {}", hop.rcode),
         format!("source: {}", cache_source_symbol(hop.from_cache, symbols)),
     ];
@@ -148,11 +145,8 @@ mod tests {
     }
 
     #[test]
-    fn query_response_time_line_uses_expected_label() {
-        assert_eq!(
-            format_query_response_time_line(11),
-            "query response time: 11ms"
-        );
+    fn rtt_plain_line_uses_expected_label() {
+        assert_eq!(format_rtt_plain_line(11), "rtt: 11 ms");
     }
 
     #[test]

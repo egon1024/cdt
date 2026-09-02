@@ -278,6 +278,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
             &tree,
             &visible,
             selected_index,
+            rtt_bar_config,
             &theme,
         );
         detail_scroll = detail_scroll.min(scroll_limits.detail_max_scroll);
@@ -317,6 +318,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                     &view,
                     detail_scroll,
                     tree_scroll_x,
+                    rtt_bar_config,
                     &theme,
                     &session_id,
                 ),
@@ -960,6 +962,7 @@ fn browse_scroll_limits(
     tree: &ExploreTree,
     visible: &[VisibleNode],
     selected_index: usize,
+    rtt_config: RttBarConfig,
     theme: &Theme,
 ) -> BrowseScrollLimits {
     let (tree_area, detail_area) = browse_pane_areas(browse_body_area(terminal_area), browse_split);
@@ -998,7 +1001,7 @@ fn browse_scroll_limits(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded);
     let detail_inner = detail_block.inner(detail_area);
-    let detail_lines = detail_content(tree, visible.get(selected_index), theme);
+    let detail_lines = detail_content(tree, visible.get(selected_index), rtt_config, theme);
     let detail_max_scroll = max_vertical_scroll(
         wrapped_line_count(&detail_lines, detail_inner.width),
         detail_inner.height,
@@ -1357,6 +1360,7 @@ fn render_browse(
     view: &ViewStateController,
     detail_scroll: u16,
     tree_scroll_x: u16,
+    rtt_config: RttBarConfig,
     theme: &Theme,
     session_id: &str,
 ) {
@@ -1431,7 +1435,7 @@ fn render_browse(
     );
     frame.render_widget(tree_widget, tree_area);
 
-    let detail_lines = detail_content(tree, visible.get(selected_index), theme);
+    let detail_lines = detail_content(tree, visible.get(selected_index), rtt_config, theme);
     let detail_block = Block::default()
         .title("Details")
         .title_bottom(footer_line(theme).centered())
@@ -1586,6 +1590,7 @@ fn hop_tree_line(indent: &str, marker: &str, hop: &TraceHop, theme: &Theme) -> L
 fn detail_content(
     tree: &ExploreTree,
     selected: Option<&VisibleNode>,
+    rtt_config: RttBarConfig,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     let Some(selected) = selected else {
@@ -1600,7 +1605,7 @@ fn detail_content(
             theme.meta(),
         ))];
     };
-    let mut lines = hop_detail_styled(hop, theme);
+    let mut lines = hop_detail_styled(hop, theme, rtt_config);
     if let Some(failure) = hop_failure_line(hop) {
         lines.push(Line::from(Span::styled(failure, theme.failure())));
     }
@@ -1842,12 +1847,14 @@ pub(crate) fn simulate_explore_first_frame(
         selected_index = visible.len().saturating_sub(1);
     }
 
+    let rtt_config = RttBarConfig::default();
     let _scroll_limits = browse_scroll_limits(
         terminal_area,
         view.browse_split,
         tree,
         &visible,
         selected_index,
+        rtt_config,
         &theme,
     );
     let _detail_scroll = 0u16;
@@ -1885,7 +1892,7 @@ pub(crate) fn simulate_explore_first_frame(
         if let Some(hop) = tree.hop_at(&node.path) {
             let _ = hop_tree_line("", "  ", hop, &theme);
         }
-        let _ = detail_content(tree, visible.get(selected_index), &theme);
+        let _ = detail_content(tree, visible.get(selected_index), rtt_config, &theme);
     }
 }
 

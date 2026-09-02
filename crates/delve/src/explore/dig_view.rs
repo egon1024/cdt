@@ -2,10 +2,11 @@ use dns_core::response::DnsRecord;
 use dns_resolve::{StoredDnsMessage, TraceHop};
 use ratatui::text::{Line, Span};
 
-use super::detail::{
-    format_query_response_time_line, format_server_endpoint, legacy_hop_detail_lines,
-};
+use crate::config::RttBarConfig;
+
+use super::detail::{format_server_endpoint, legacy_hop_detail_lines};
 use super::flags::{format_flags_plain, format_flags_spans};
+use super::rtt_bar::{format_rtt_plain_line, rtt_detail_line};
 use super::terminal::{UiSymbols, cache_source_symbol};
 use super::theme::Theme;
 
@@ -57,9 +58,9 @@ impl<'a> DigView<'a> {
         lines.join("\n")
     }
 
-    fn to_styled(&self, theme: &Theme) -> Vec<Line<'static>> {
+    fn to_styled(&self, theme: &Theme, rtt_config: RttBarConfig) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
-        lines.extend(self.meta_styled(theme));
+        lines.extend(self.meta_styled(theme, rtt_config));
         lines.push(Line::from(""));
         lines.extend(self.header_styled(theme));
         lines.extend(section_styled("ANSWER", &self.message.answers, theme));
@@ -83,7 +84,7 @@ impl<'a> DigView<'a> {
             format_server_endpoint(self.server, self.server_name),
             self.transport,
         ));
-        lines.push(format_query_response_time_line(self.rtt_ms));
+        lines.push(format_rtt_plain_line(self.rtt_ms));
         lines.push(format!("status: {}", self.rcode));
         lines.push(format!(
             "source: {}",
@@ -98,7 +99,7 @@ impl<'a> DigView<'a> {
         }
     }
 
-    fn meta_styled(&self, theme: &Theme) -> Vec<Line<'static>> {
+    fn meta_styled(&self, theme: &Theme, rtt_config: RttBarConfig) -> Vec<Line<'static>> {
         let server = format_server_endpoint(self.server, self.server_name);
         let mut lines = vec![
             Line::from(vec![
@@ -109,10 +110,7 @@ impl<'a> DigView<'a> {
                 Span::styled("server: ", theme.label()),
                 Span::raw(format!("{server} ({}) ", self.transport)),
             ]),
-            Line::from(vec![
-                Span::styled("query response time: ", theme.label()),
-                Span::styled(format!("{}ms", self.rtt_ms), theme.meta()),
-            ]),
+            rtt_detail_line(self.rtt_ms, rtt_config, theme),
             Line::from(vec![
                 Span::styled("status: ", theme.label()),
                 Span::styled(self.rcode.to_string(), theme.rcode(self.rcode)),
@@ -217,11 +215,15 @@ pub fn hop_detail_plain(hop: &TraceHop, symbols: UiSymbols) -> String {
     }
 }
 
-pub fn hop_detail_styled(hop: &TraceHop, theme: &Theme) -> Vec<Line<'static>> {
+pub fn hop_detail_styled(
+    hop: &TraceHop,
+    theme: &Theme,
+    rtt_config: RttBarConfig,
+) -> Vec<Line<'static>> {
     if hop_has_dig_view(hop) {
-        DigView::from_hop(hop, theme.symbols).to_styled(theme)
+        DigView::from_hop(hop, theme.symbols).to_styled(theme, rtt_config)
     } else {
-        legacy_hop_lines(hop, theme)
+        legacy_hop_lines(hop, theme, rtt_config)
     }
 }
 
@@ -258,11 +260,16 @@ fn record_styled(record: &DnsRecord, theme: &Theme) -> Line<'static> {
     ])
 }
 
-fn legacy_hop_lines(hop: &TraceHop, theme: &Theme) -> Vec<Line<'static>> {
-    legacy_hop_detail_lines(hop, theme.symbols)
-        .into_iter()
-        .map(|line| styled_plain_line(&line, theme))
-        .collect()
+fn legacy_hop_lines(hop: &TraceHop, theme: &Theme, rtt_config: RttBarConfig) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    for line in legacy_hop_detail_lines(hop, theme.symbols) {
+        if line.starts_with("rtt: ") {
+            lines.push(rtt_detail_line(hop.rtt_ms, rtt_config, theme));
+        } else {
+            lines.push(styled_plain_line(&line, theme));
+        }
+    }
+    lines
 }
 
 fn styled_plain_line(line: &str, theme: &Theme) -> Line<'static> {
@@ -341,7 +348,7 @@ mod tests {
         assert!(text.contains(";; AUTHORITY SECTION:"));
         assert!(text.contains("a.gtld-servers.net."));
         assert!(text.contains("server: a.root-servers.net. (198.41.0.4)"));
-        assert!(text.contains("query response time: 11ms"));
+        assert!(text.contains("rtt: 11 ms"));
     }
 
     #[test]

@@ -148,7 +148,7 @@ mod tests {
         let tree = explore_tree_for_document(&document).expect("tree");
         let outline = render_outline(&tree, ui_symbols());
         assert!(outline.contains("example.com. A"));
-        assert!(outline.contains("query response time: 11ms"));
+        assert!(outline.contains("rtt: 11 ms"));
 
         let json = render_tree_json(&tree, &document.id);
         assert!(json.contains("\"event\":\"explore_tree\""));
