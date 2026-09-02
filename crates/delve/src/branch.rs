@@ -221,6 +221,7 @@ pub fn execute_branch(
             &mut planning_budget,
             progress,
             &mut warnings,
+            dry_run,
         )?,
         BranchIntentArg::AlternateServer { target } => {
             let target = resolve_alternate_target(
@@ -614,6 +615,7 @@ fn apply_branch_origin(node: &mut TraceNode, origin: NodeOrigin) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn expand_cut_targets(
     delegation_hop: &dns_resolve::TraceHop,
     cut_is_session_root: bool,
@@ -622,6 +624,7 @@ fn expand_cut_targets(
     budget: &mut QueryBudget,
     progress: &mut dyn TraceProgress,
     warnings: &mut Vec<String>,
+    dry_run: bool,
 ) -> Result<Vec<ServerTarget>, BranchError> {
     let zone = DomainName::parse(&delegation_hop.zone)?;
     let referral = referral_for_hop(delegation_hop);
@@ -669,7 +672,7 @@ fn expand_cut_targets(
             continue;
         };
         match resolve_nameserver_target_for_referral(
-            &ns_name, referral, &fallback, config, budget, &zone, progress,
+            &ns_name, referral, &fallback, config, budget, &zone, progress, dry_run,
         ) {
             Ok(Some(target)) => targets.push(target),
             Ok(None) => {}
@@ -1555,6 +1558,7 @@ mod tests {
             &mut QueryBudget::new(64),
             &mut SilentProgress,
             &mut Vec::new(),
+            false,
         )
         .expect("targets");
         eprintln!("targets={}", targets.len());
