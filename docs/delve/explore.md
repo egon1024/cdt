@@ -27,7 +27,7 @@ Explore requires a **real terminal** (80×24 minimum). For headless environments
 
 ## Browse screen
 
-Two-pane layout: resolution tree on one side, dig-style detail for the selected hop on the other. The Details pane meta block includes an RTT line with a latency bar and millisecond label (same colors as Compare / export); the bar uses a fixed 500 ms scale.
+Two-pane layout: resolution tree on one side, dig-style detail for the selected hop on the other. The Details pane meta block includes an RTT line with a latency bar and millisecond label (same colors as Compare / export); the bar uses a fixed 250 ms scale.
 
 | Key | Action |
 |-----|--------|

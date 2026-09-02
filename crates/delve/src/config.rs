@@ -5,11 +5,15 @@ use crate::paths::DelvePaths;
 const DEFAULT_RETENTION: &str = "never";
 const DEFAULT_MAX_QUERIES: usize = 64;
 const DEFAULT_MAX_PARALLEL_QUERIES: usize = 8;
-const DEFAULT_RTT_GREEN_MS: u32 = 50;
-const DEFAULT_RTT_YELLOW_MS: u32 = 150;
-const DEFAULT_RTT_ORANGE_MS: u32 = 500;
-const DEFAULT_RTT_INSANE_MS: u32 = 2000;
+const DEFAULT_RTT_GREEN_MS: u32 = 5;
+const DEFAULT_RTT_YELLOW_MS: u32 = 125;
+const DEFAULT_RTT_ORANGE_MS: u32 = 250;
+const DEFAULT_RTT_INSANE_MS: u32 = 1000;
 const DEFAULT_RTT_BAR_WIDTH: u16 = 20;
+
+/// Fixed RTT scale for absolute-length bars (Browse detail, SVG export cards).
+/// Matches the default `orange_ms` color threshold.
+pub const RTT_BAR_ABSOLUTE_SCALE_MS: u32 = DEFAULT_RTT_ORANGE_MS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RttBarConfig {
@@ -489,10 +493,10 @@ mod tests {
     #[test]
     fn default_rtt_bar_config_matches_expected_thresholds() {
         let config = DelveConfig::default().explore_rtt_bar;
-        assert_eq!(config.green_ms, 50);
-        assert_eq!(config.yellow_ms, 150);
-        assert_eq!(config.orange_ms, 500);
-        assert_eq!(config.insane_ms, 2000);
+        assert_eq!(config.green_ms, 5);
+        assert_eq!(config.yellow_ms, 125);
+        assert_eq!(config.orange_ms, 250);
+        assert_eq!(config.insane_ms, 1000);
         assert_eq!(config.max_width, 20);
     }
 
@@ -513,7 +517,7 @@ mod tests {
         assert!(yaml.contains("#explore:"));
         assert!(yaml.contains("#  persist_view_state: true"));
         assert!(yaml.contains("#  rtt_bar:"));
-        assert!(yaml.contains("#    green_ms: 50"));
+        assert!(yaml.contains("#    green_ms: 5"));
         assert!(!yaml.contains("\n  retention: "));
         assert!(!yaml.contains("\n  rtt_bar:\n"));
     }
@@ -538,6 +542,6 @@ mod tests {
         assert!(yaml.contains("  max_parallel_queries: 4"));
         assert!(yaml.contains("#  persist_view_state: true"));
         assert!(yaml.contains("  rtt_bar:\n    green_ms: 75"));
-        assert!(yaml.contains("#    yellow_ms: 150"));
+        assert!(yaml.contains("#    yellow_ms: 125"));
     }
 }

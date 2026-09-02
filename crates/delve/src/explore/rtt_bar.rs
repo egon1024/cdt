@@ -4,11 +4,12 @@ use ratatui::text::{Line, Span};
 use crate::config::RttBarConfig;
 
 use super::rtt_color::rtt_gradient_rgb;
+use crate::config::RTT_BAR_ABSOLUTE_SCALE_MS;
 use super::terminal::{self, ColorCapability};
 use super::theme::Theme;
 
 /// Absolute scale used for Browse detail RTT bars (matches export card scale).
-pub const DETAIL_RTT_SCALE_MS: u32 = 500;
+pub const DETAIL_RTT_SCALE_MS: u32 = RTT_BAR_ABSOLUTE_SCALE_MS;
 
 /// Glyph used for the unfilled portion of an RTT bar so the full track is visible.
 pub const RTT_BAR_EMPTY: &str = "░";

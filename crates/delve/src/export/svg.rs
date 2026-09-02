@@ -1,6 +1,6 @@
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::config::RttBarConfig;
+use crate::config::{RttBarConfig, RTT_BAR_ABSOLUTE_SCALE_MS};
 use crate::explore::rtt_gradient_rgb;
 
 use super::card::{HopCard, RowKind, card_rows, outcome_label};
@@ -242,7 +242,7 @@ fn render_card(
         match row.kind {
             RowKind::Rtt => {
                 let bar_w = 96.0;
-                let scale_ms = 500.0;
+                let scale_ms = f64::from(RTT_BAR_ABSOLUTE_SCALE_MS);
                 let frac = (card.hop.rtt_ms as f64 / scale_ms).clamp(0.0, 1.0);
                 let filled = if card.hop.rtt_ms == 0 {
                     0.0

@@ -25,10 +25,10 @@ trace:
   max_parallel_queries: 8
 explore:
   rtt_bar:
-    green_ms: 50
-    yellow_ms: 150
-    orange_ms: 500
-    insane_ms: 2000
+    green_ms: 5
+    yellow_ms: 125
+    orange_ms: 250
+    insane_ms: 1000
     max_width: 20
 ```
 
@@ -82,7 +82,7 @@ Hops that do not reach a later milestone still show a partial transition toward 
 
 Override detection with `DELVE_TRUECOLOR=1` (force gradient) or `DELVE_BASIC_COLORS=1` (force stepped bands).
 
-Defaults: `green_ms` **50**, `yellow_ms` **150**, `orange_ms` **500**, `insane_ms` **2000**, `max_width` **20** characters.
+Defaults: `green_ms` **5**, `yellow_ms` **125**, `orange_ms` **250**, `insane_ms` **1000**, `max_width` **20** characters.
 
 ## See also
 

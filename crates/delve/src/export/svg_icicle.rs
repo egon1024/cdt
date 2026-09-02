@@ -1,4 +1,4 @@
-use crate::config::RttBarConfig;
+use crate::config::{RttBarConfig, RTT_BAR_ABSOLUTE_SCALE_MS};
 use crate::explore::rtt_gradient_rgb;
 
 use super::card::{HopCard, outcome_label};
@@ -175,7 +175,8 @@ fn render_row(
         if key == IcicleColumnKey::Rtt {
             let bar_x = x0 + column.x;
             let bar_y = y + ROW_H / 2.0 - 5.0;
-            let frac = (card.hop.rtt_ms as f64 / 500.0).clamp(0.0, 1.0);
+            let frac =
+                (card.hop.rtt_ms as f64 / f64::from(RTT_BAR_ABSOLUTE_SCALE_MS)).clamp(0.0, 1.0);
             let filled = if card.hop.rtt_ms == 0 {
                 0.0
             } else {
