@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::trace_options_help::TRACE_OPTIONS_HELP;
 
@@ -73,8 +73,42 @@ pub enum SessionSubcommand {
     Events(SessionEventsArgs),
     /// Explore a stored session in the interactive tree TUI.
     Explore(SessionExploreArgs),
+    /// Export a stored session as SVG (or PNG when enabled).
+    Export(SessionExportArgs),
     /// Branch a stored trace at a node.
     Branch(SessionBranchArgs),
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq, Default)]
+pub enum SessionExportFormat {
+    #[default]
+    Svg,
+    Png,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq, Default)]
+pub enum SessionExportLayout {
+    #[default]
+    Tree,
+    Icicle,
+}
+
+#[derive(Debug, Parser)]
+pub struct SessionExportArgs {
+    /// Session id or prefix. When omitted, uses the default session.
+    pub id: Option<String>,
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = SessionExportFormat::Svg)]
+    pub format: SessionExportFormat,
+    /// Diagram layout.
+    #[arg(long, value_enum, default_value_t = SessionExportLayout::Tree)]
+    pub layout: SessionExportLayout,
+    /// Trace tree index within the session document.
+    #[arg(long, default_value_t = 0)]
+    pub tree_index: usize,
+    /// Output file path, or `-` for stdout.
+    #[arg(long, short)]
+    pub output: Option<String>,
 }
 
 #[derive(Debug, Parser)]

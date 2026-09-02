@@ -21,6 +21,7 @@ Command synopsis and trace options. For concepts (sessions, branching, expansion
 | `delve session explore [id]` | Interactive tree explorer (TUI); omit id for the default session |
 | `delve session outline [id]` | Indented resolution tree on stdout; omit id for the default session |
 | `delve session events [id]` | Structured JSON explore tree on stdout; omit id for the default session |
+| `delve session export [id]` | Export trace tree as SVG or PNG; omit id for the default session |
 | `delve session branch [id]` | Extend a stored trace at a node (live queries) |
 | `delve cache stats` | Response cache statistics |
 | `delve cache purge` | Remove expired cache entries |
@@ -74,6 +75,11 @@ delve trace example.com +events > trace.ndjson
 ```
 
 Installed packages also ship `man delve` and `man delve-trace` for a CLI synopsis.
+
+## Session export
+
+Export a stored trace tree as SVG or PNG. See [export](export.md) for layouts
+and formats.
 
 ## See also
 

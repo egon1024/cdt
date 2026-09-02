@@ -7,7 +7,8 @@ use thiserror::Error;
 
 use crate::args::{
     CacheCommand, CacheSubcommand, Cli, Command, ConfigCommand, ConfigSubcommand,
-    SessionBranchArgs, SessionCommand, SessionSubcommand, TraceArgs,
+    SessionBranchArgs, SessionCommand, SessionExportArgs, SessionExportFormat, SessionExportLayout,
+    SessionSubcommand, TraceArgs,
 };
 use crate::branch::{
     BranchError, BranchIntentArg, format_branch_report, parse_server_target, resolve_branch_target,
@@ -58,6 +59,12 @@ pub enum CliError {
 
     #[error(transparent)]
     Branch(#[from] BranchError),
+
+    #[error(transparent)]
+    Export(#[from] crate::export::ExportError),
+
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 }
 
 impl Cli {
@@ -280,8 +287,58 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
             run_explore(&runtime, &mut document)?;
             Ok(())
         }
+        SessionSubcommand::Export(args) => run_session_export(args, &runtime),
         SessionSubcommand::Branch(args) => run_session_branch(args, &runtime),
     }
+}
+
+fn run_session_export(args: SessionExportArgs, runtime: &Runtime) -> Result<(), CliError> {
+    use std::io::Write;
+
+    use crate::export::{ExportFormat, ExportLayout, ExportOptions, SvgTitle, export_trace_tree};
+
+    let (session_id, _) = resolve_session_target(args.id, Vec::new(), runtime)?;
+    let document = runtime.get_session(&session_id)?;
+    let entry = document.trees.get(args.tree_index).ok_or(
+        crate::export::ExportError::TreeIndexOutOfRange(args.tree_index),
+    )?;
+    let title = SvgTitle {
+        primary: format!(
+            "delve  ·  {} {}  ·  tree {}",
+            entry.tree.qname(),
+            entry.tree.qtype(),
+            args.tree_index
+        ),
+        secondary: Some(format!("session {}", document.id)),
+    };
+    let options = ExportOptions {
+        layout: match args.layout {
+            SessionExportLayout::Tree => ExportLayout::Tree,
+            SessionExportLayout::Icicle => ExportLayout::Icicle,
+        },
+        format: match args.format {
+            SessionExportFormat::Svg => ExportFormat::Svg,
+            SessionExportFormat::Png => ExportFormat::Png,
+        },
+        title,
+        rtt_config: runtime.config.explore_rtt_bar,
+    };
+    let output = export_trace_tree(&entry.tree, args.tree_index, &options)?;
+    match args.output.as_deref() {
+        Some("-") | None => {
+            let mut stdout = io::stdout().lock();
+            match output {
+                crate::export::ExportOutput::Svg(svg) => stdout.write_all(svg.as_bytes())?,
+                crate::export::ExportOutput::Png(png) => stdout.write_all(&png)?,
+            }
+            stdout.flush()?;
+        }
+        Some(path) => match output {
+            crate::export::ExportOutput::Svg(svg) => std::fs::write(path, svg.as_bytes())?,
+            crate::export::ExportOutput::Png(png) => std::fs::write(path, png)?,
+        },
+    }
+    Ok(())
 }
 
 fn run_session_branch(args: SessionBranchArgs, runtime: &Runtime) -> Result<(), CliError> {

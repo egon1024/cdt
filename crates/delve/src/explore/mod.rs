@@ -8,6 +8,8 @@ mod pane_split;
 mod path_timing;
 mod refresh;
 mod rtt_bar;
+mod rtt_color;
+pub use rtt_color::rtt_gradient_rgb;
 mod terminal;
 mod theme;
 mod tree;
