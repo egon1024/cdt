@@ -84,6 +84,7 @@ jobs:
             -v "${PWD}/release-artifacts:/artifacts:ro" \
             fedora:41 \
             bash -euxo pipefail -c '
+              dnf install -y --setopt=install_weak_deps=False man-db >/dev/null
               rpm -ivh "/artifacts/cdt-${PACKAGE_VERSION}-1.x86_64.rpm"
               test -x /usr/bin/cdt
               test -x /usr/bin/delve
