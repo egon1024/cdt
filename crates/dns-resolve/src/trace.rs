@@ -562,6 +562,11 @@ fn resolve_all_nameserver_targets_from_referral(
 }
 
 /// Resolve a single referral nameserver to a query target.
+///
+/// When `offline_only` is true, only glue from the referral and addresses seeded
+/// from the stored session tree are used. Live DNS is not queried. Branch dry-run
+/// planning uses this mode so `--dry-run` does not depend on network reachability.
+#[allow(clippy::too_many_arguments)]
 pub fn resolve_nameserver_target_for_referral(
     ns_name: &DomainName,
     referral: &DnsResponse,
@@ -570,7 +575,23 @@ pub fn resolve_nameserver_target_for_referral(
     budget: &mut QueryBudget,
     parent_zone: &DomainName,
     progress: &mut dyn TraceProgress,
+    offline_only: bool,
 ) -> Result<Option<ServerTarget>> {
+    if offline_only {
+        let addresses = filter_addresses(
+            &referral.glue_for(ns_name),
+            config.ipv4_only,
+            config.ipv6_only,
+        );
+        if let Some(address) = addresses.first() {
+            return Ok(Some(ServerTarget::with_name(*address, ns_name.to_string())));
+        }
+        if let Some(targets) = cached_ns_targets(config, ns_name) {
+            return Ok(targets.into_iter().next());
+        }
+        return Ok(None);
+    }
+
     match resolve_nameserver(
         ns_name,
         referral,
