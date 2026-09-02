@@ -89,7 +89,8 @@ jobs:
               test -x /usr/bin/delve
               cdt version
               delve --help >/dev/null
-              man delve | grep -q '^delve'
-              man cdt | grep -q '^cdt'
+              packaged_files=$(rpm -ql cdt)
+              [[ $packaged_files == *"/usr/share/man/man1/delve.1.gz"* ]]
+              [[ $packaged_files == *"/usr/share/man/man1/cdt.1.gz"* ]]
               rpm -q cdt
             '

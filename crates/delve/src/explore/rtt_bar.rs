@@ -4,9 +4,9 @@ use ratatui::text::{Line, Span};
 use crate::config::RttBarConfig;
 
 use super::rtt_color::rtt_gradient_rgb;
-use crate::config::RTT_BAR_ABSOLUTE_SCALE_MS;
 use super::terminal::{self, ColorCapability};
 use super::theme::Theme;
+use crate::config::RTT_BAR_ABSOLUTE_SCALE_MS;
 
 /// Absolute scale used for Browse detail RTT bars (matches export card scale).
 pub const DETAIL_RTT_SCALE_MS: u32 = RTT_BAR_ABSOLUTE_SCALE_MS;
