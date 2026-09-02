@@ -84,13 +84,13 @@ jobs:
             -v "${PWD}/release-artifacts:/artifacts:ro" \
             fedora:41 \
             bash -euxo pipefail -c '
-              dnf install -y --setopt=install_weak_deps=False man-db >/dev/null
               rpm -ivh "/artifacts/cdt-${PACKAGE_VERSION}-1.x86_64.rpm"
               test -x /usr/bin/cdt
               test -x /usr/bin/delve
               cdt version
               delve --help >/dev/null
-              man delve | grep -q '^delve'
-              man cdt | grep -q '^cdt'
+              packaged_files=$(rpm -ql cdt)
+              [[ $packaged_files == *"/usr/share/man/man1/delve.1.gz"* ]]
+              [[ $packaged_files == *"/usr/share/man/man1/cdt.1.gz"* ]]
               rpm -q cdt
             '
