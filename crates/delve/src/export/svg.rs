@@ -1,6 +1,6 @@
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::config::{RttBarConfig, RTT_BAR_ABSOLUTE_SCALE_MS};
+use crate::config::{RTT_BAR_ABSOLUTE_SCALE_MS, RttBarConfig};
 use crate::explore::rtt_gradient_rgb;
 
 use super::card::{HopCard, RowKind, card_rows, outcome_label};

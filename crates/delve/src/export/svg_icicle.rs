@@ -1,4 +1,4 @@
-use crate::config::{RttBarConfig, RTT_BAR_ABSOLUTE_SCALE_MS};
+use crate::config::{RTT_BAR_ABSOLUTE_SCALE_MS, RttBarConfig};
 use crate::explore::rtt_gradient_rgb;
 
 use super::card::{HopCard, outcome_label};
