@@ -16,7 +16,9 @@ use crate::branch::{
 use crate::config::DelveConfig;
 use crate::dig_options::{ParseError, TraceOptions, parse_trace_args};
 use crate::expand_confirm::{ExpandConfirmOutcome, confirm_expand_all, expand_all_is_tty};
-use crate::explore::{ExploreError, run_events, run_explore, run_outline};
+use crate::explore::{
+    ExploreError, run_events_with_compare, run_explore, run_outline_with_compare,
+};
 use crate::hop_display::{HopDisplayState, print_hop_human};
 use crate::progress::StderrProgress;
 use crate::replay::{print_final_answer, print_reused_session_notice, replay_session};
@@ -271,13 +273,23 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
         SessionSubcommand::Outline(args) => {
             let (session_id, _) = resolve_session_target(args.id, Vec::new(), &runtime)?;
             let document = runtime.get_session(&session_id)?;
-            run_outline(&document)?;
+            run_outline_with_compare(
+                &document,
+                args.compare_at_hop,
+                args.compare_at_path.as_deref(),
+                &dns_resolve::DatagramIcmpProber::default(),
+            )?;
             Ok(())
         }
         SessionSubcommand::Events(args) => {
             let (session_id, _) = resolve_session_target(args.id, Vec::new(), &runtime)?;
             let document = runtime.get_session(&session_id)?;
-            run_events(&document)?;
+            run_events_with_compare(
+                &document,
+                args.compare_at_hop,
+                args.compare_at_path.as_deref(),
+                &dns_resolve::DatagramIcmpProber::default(),
+            )?;
             Ok(())
         }
         SessionSubcommand::Explore(args) => {

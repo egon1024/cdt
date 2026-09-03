@@ -6,16 +6,16 @@ Inspect stored traces without network I/O: interactive TUI, one-shot outline, an
 
 | Command | Output |
 |---------|--------|
-| **`session explore`** | TUI with Browse (tree + detail) and Compare (full tree, aligned columns, RTT bars, path-timing analytics); `Tab` cycles screens; `?` help |
-| **`session outline`** | `session: <id>` header + indented tree on stdout |
-| **`session events`** | Structured JSON explore tree on stdout |
+| **`session explore`** | TUI with Browse (tree + detail) and Compare (fork-scoped sibling path table, DNS/ICMP RTT); `Tab` cycles screens; `?` help |
+| **`session outline`** | `session: <id>` header + indented tree on stdout; `--compare-at-hop` / `--compare-at-path` prints a path comparison |
+| **`session events`** | Structured JSON explore tree on stdout; `--compare-at-hop` / `--compare-at-path` emits `path_comparison` JSON |
 | **`session show --json`** | Flat JSON trace snapshot on stdout |
 
 ```bash
 delve session explore              # default session, TUI
 delve session explore 01J...       # explicit id, TUI
-delve session outline 01J...       # print tree once and exit
-delve session events 01J...        # JSON tree on stdout
+delve session outline 01J... --compare-at-hop=3
+delve session events 01J... --compare-at-hop=3
 delve session show --json          # flat JSON for the default session
 ```
 
@@ -47,7 +47,9 @@ Two-pane layout: resolution tree on one side, dig-style detail for the selected 
 
 ## Compare screen
 
-Full-tree view with aligned columns and RTT bars. Switch with `Tab` from Browse or press `m` when siblings exist. Compare is skipped or shows an explanatory message when the selected node has no siblings to compare.
+Sibling-path table for the focused fork: one row per alternate server, with hop count, cumulative DNS RTT, delta vs the fastest successful sibling, ICMP RTT (`n/a` when probing is unavailable), outcome, and referral-set differences. Cache-served hops are marked so they are not read as network RTT. Switch with `Tab` from Browse or press `m` when siblings exist. Sequential cycling skips Compare when the selection has no sibling paths; pressing `2` or `m` in that case explains why it is unavailable.
+
+`session outline --compare-at-hop=N` and `session events --compare-at-hop=N` print the same metrics as text and JSON (no DNS queries).
 
 Whole-tree fastest, slowest, and average RTTs appear in the summary strip at the top. Stats include **answered** leaf paths only (failed or referral-only terminals are excluded). When the trace was budget-truncated, the strip notes that path statistics may be incomplete.
 

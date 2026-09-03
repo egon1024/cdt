@@ -65,6 +65,7 @@ pub fn rtt_detail_line(rtt_ms: u64, config: RttBarConfig, theme: &Theme) -> Line
     Line::from(spans)
 }
 
+#[allow(dead_code)]
 pub fn max_rtt_ms_for_visible(
     tree: &super::tree::ExploreTree,
     visible: &[super::tree::VisibleNode],

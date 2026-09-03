@@ -136,12 +136,24 @@ pub struct SessionBranchArgs {
 pub struct SessionOutlineArgs {
     /// Session id or prefix. When omitted, uses the default session.
     pub id: Option<String>,
+    /// Print a path comparison for the fork at this outline display index.
+    #[arg(long, conflicts_with = "compare_at_path")]
+    pub compare_at_hop: Option<usize>,
+    /// Print a path comparison for the fork at this stable node path.
+    #[arg(long, conflicts_with = "compare_at_hop")]
+    pub compare_at_path: Option<String>,
 }
 
 #[derive(Debug, Parser)]
 pub struct SessionEventsArgs {
     /// Session id or prefix. When omitted, uses the default session.
     pub id: Option<String>,
+    /// Emit structured path comparison JSON for the fork at this outline display index.
+    #[arg(long, conflicts_with = "compare_at_path")]
+    pub compare_at_hop: Option<usize>,
+    /// Emit structured path comparison JSON for the fork at this stable node path.
+    #[arg(long, conflicts_with = "compare_at_hop")]
+    pub compare_at_path: Option<String>,
 }
 
 #[derive(Debug, Parser)]

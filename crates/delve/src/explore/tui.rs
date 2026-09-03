@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -8,7 +9,9 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use dns_resolve::{HopOutcome, NodePath, RefreshProgress, TraceHop, TraceProgress};
+use dns_resolve::{
+    DatagramIcmpProber, HopOutcome, IcmpProber, NodePath, RefreshProgress, TraceHop, TraceProgress,
+};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
@@ -26,16 +29,18 @@ use crate::paths::DelvePaths;
 use crate::runtime::Runtime;
 use crate::session::SessionDocument;
 
-use super::compare::{CompareColumns, compare_row};
+use super::compare_screen::{
+    CompareScreenModel, CompareViewport, scroll_for_row, sticky_header_lines, summary_row_line,
+};
 use super::detail::hop_failure_line;
 use super::dig_view::hop_detail_styled;
 use super::pane_split::{AxisScrollHints, VerticalPaneSplit};
+use super::path_summary::enrich_icmp_cached;
 use super::path_timing::{
     build_compare_timing, fork_full_path_lines, fork_sibling_lines, path_on_highlight,
     whole_tree_summary_lines,
 };
 use super::refresh::refresh_document_tree;
-use super::rtt_bar::max_rtt_ms_for_visible;
 use super::terminal::{ColorCapability, cache_source_legend, cache_source_symbol};
 use super::theme::Theme;
 use super::tree::{ExploreTree, VisibleNode};
@@ -148,6 +153,8 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
     let mut refresh_overlay = RefreshOverlay::None;
     let mut unsaved_rtt_refresh = false;
     let mut persist_warning_shown = false;
+    let mut icmp_cache: HashMap<String, Option<u64>> = HashMap::new();
+    let icmp_prober = DatagramIcmpProber::default();
 
     loop {
         let mut branch_finished = false;
@@ -285,21 +292,22 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
         tree_scroll_x = tree_scroll_x.min(scroll_limits.tree_max_scroll_x);
 
         if view.active_screen == ActiveScreen::Compare {
-            let compare_visible = tree.visible_nodes(&view.expanded_paths);
-            if view.compare_row >= compare_visible.len() {
-                view.compare_row = compare_visible.len().saturating_sub(1);
+            if let Some(model) = CompareScreenModel::from_tree(&tree, &view.selection) {
+                if view.compare_row >= model.rows().len() {
+                    view.compare_row = model.rows().len().saturating_sub(1);
+                }
+                let compare_limits = compare_scroll_limits(
+                    Rect::from((Position::ORIGIN, terminal.size()?)),
+                    &view,
+                    &tree,
+                    model.rows().len(),
+                );
+                compare_scroll = compare_scroll.min(compare_limits.max_scroll);
             }
-            let compare_limits = compare_scroll_limits(
-                Rect::from((Position::ORIGIN, terminal.size()?)),
-                &view,
-                &tree,
-                compare_visible.len(),
-            );
-            compare_scroll = compare_scroll.min(compare_limits.max_scroll);
         }
 
         terminal.draw(|frame| {
-            let header = screen_indicator(&view, &theme);
+            let header = screen_indicator(&view, &tree, &theme);
             let body = frame.area();
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -326,11 +334,12 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                     frame,
                     chunks[1],
                     &tree,
-                    &visible,
                     &view,
                     compare_scroll,
                     rtt_bar_config,
                     &theme,
+                    &mut icmp_cache,
+                    &icmp_prober,
                 ),
             }
 
@@ -550,64 +559,64 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                         theme.toggle_color();
                         view.mark_dirty();
                     }
-                    KeyCode::Tab => {
-                        if cycle_screen_forward(&mut view, &tree) {
-                            sync_compare_scroll(
+                    KeyCode::Tab => match cycle_screen_forward(&mut view, &tree) {
+                        ScreenCycle::EnteredCompare => {
+                            sync_compare_scroll_for_view(
                                 &mut compare_scroll,
-                                view.selected_visible_index(&tree),
-                                visible.len(),
-                                compare_scroll_limits(
-                                    Rect::from((Position::ORIGIN, terminal.size()?)),
-                                    &view,
-                                    &tree,
-                                    visible.len(),
-                                ),
-                            );
-                        }
-                    }
-                    KeyCode::BackTab => {
-                        if cycle_screen_backward(&mut view, &tree) {
-                            sync_compare_scroll(
-                                &mut compare_scroll,
-                                view.selected_visible_index(&tree),
-                                visible.len(),
-                                compare_scroll_limits(
-                                    Rect::from((Position::ORIGIN, terminal.size()?)),
-                                    &view,
-                                    &tree,
-                                    visible.len(),
-                                ),
-                            );
-                        }
-                    }
-                    KeyCode::Char('1') => select_screen(&mut view, ActiveScreen::Browse, &tree),
-                    KeyCode::Char('2') => {
-                        select_screen(&mut view, ActiveScreen::Compare, &tree);
-                        sync_compare_scroll(
-                            &mut compare_scroll,
-                            view.selected_visible_index(&tree),
-                            visible.len(),
-                            compare_scroll_limits(
-                                Rect::from((Position::ORIGIN, terminal.size()?)),
                                 &view,
                                 &tree,
-                                visible.len(),
-                            ),
-                        );
+                                terminal.size()?,
+                            );
+                        }
+                        ScreenCycle::SkippedUnavailable => {}
+                        ScreenCycle::LeftCompare => {}
+                    },
+                    KeyCode::BackTab => match cycle_screen_backward(&mut view, &tree) {
+                        ScreenCycle::EnteredCompare => {
+                            sync_compare_scroll_for_view(
+                                &mut compare_scroll,
+                                &view,
+                                &tree,
+                                terminal.size()?,
+                            );
+                        }
+                        ScreenCycle::SkippedUnavailable => {}
+                        ScreenCycle::LeftCompare => {}
+                    },
+                    KeyCode::Char('1') => {
+                        let _ = select_screen(&mut view, ActiveScreen::Browse, &tree);
+                    }
+                    KeyCode::Char('2') => {
+                        if !select_screen(&mut view, ActiveScreen::Compare, &tree) {
+                            set_screen_notice(
+                                &mut screen_notice,
+                                ActiveScreen::Browse,
+                                COMPARE_UNAVAILABLE_MESSAGE,
+                            );
+                        } else {
+                            sync_compare_scroll_for_view(
+                                &mut compare_scroll,
+                                &view,
+                                &tree,
+                                terminal.size()?,
+                            );
+                        }
                     }
                     KeyCode::Char('m') => {
-                        jump_to_compare(&mut view, &tree);
-                        sync_compare_scroll(
-                            &mut compare_scroll,
-                            view.selected_visible_index(&tree),
-                            visible.len(),
-                            compare_scroll_limits(
-                                Rect::from((Position::ORIGIN, terminal.size()?)),
+                        if !jump_to_compare(&mut view, &tree) {
+                            set_screen_notice(
+                                &mut screen_notice,
+                                view.active_screen,
+                                COMPARE_UNAVAILABLE_MESSAGE,
+                            );
+                        } else {
+                            sync_compare_scroll_for_view(
+                                &mut compare_scroll,
                                 &view,
                                 &tree,
-                                visible.len(),
-                            ),
-                        );
+                                terminal.size()?,
+                            );
+                        }
                     }
                     KeyCode::Char('E') => {
                         view.expand_all(&tree);
@@ -656,17 +665,19 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                 scroll_limits,
                             );
                         } else {
+                            let row_count = CompareScreenModel::from_tree(&tree, &view.selection)
+                                .map(|model| model.rows().len())
+                                .unwrap_or(0);
                             let compare_limits = compare_scroll_limits(
                                 Rect::from((Position::ORIGIN, terminal.size()?)),
                                 &view,
                                 &tree,
-                                visible.len(),
+                                row_count,
                             );
                             handle_compare_keys(
                                 key,
                                 &mut view,
                                 &tree,
-                                &visible,
                                 &mut compare_scroll,
                                 compare_limits,
                                 &mut screen_notice,
@@ -875,7 +886,20 @@ impl TraceProgress for ChannelProgress {
     }
 }
 
-fn screen_indicator(view: &ViewStateController, theme: &Theme) -> Line<'static> {
+const COMPARE_UNAVAILABLE_MESSAGE: &str = "select a node with multiple paths to compare";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScreenCycle {
+    EnteredCompare,
+    LeftCompare,
+    SkippedUnavailable,
+}
+
+fn screen_indicator(
+    view: &ViewStateController,
+    tree: &ExploreTree,
+    theme: &Theme,
+) -> Line<'static> {
     let browse = Span::styled(
         if view.active_screen == ActiveScreen::Browse {
             "[Browse*]"
@@ -888,61 +912,100 @@ fn screen_indicator(view: &ViewStateController, theme: &Theme) -> Line<'static> 
             theme.meta()
         },
     );
+    let compare_available = tree.compare_available(&view.selection);
+    let compare_label = if view.active_screen == ActiveScreen::Compare {
+        "[Compare*]"
+    } else if compare_available {
+        "[Compare]"
+    } else {
+        "[Compare n/a]"
+    };
     let compare = Span::styled(
-        if view.active_screen == ActiveScreen::Compare {
-            "[Compare*]"
-        } else {
-            "[Compare]"
-        },
+        compare_label,
         if view.active_screen == ActiveScreen::Compare {
             theme.accent_bold()
-        } else {
+        } else if compare_available {
             theme.meta()
+        } else {
+            theme.failure()
         },
     );
     Line::from(vec![browse, Span::raw("  "), compare])
 }
 
-fn activate_compare(view: &mut ViewStateController, tree: &ExploreTree) {
+fn activate_compare(view: &mut ViewStateController, tree: &ExploreTree) -> bool {
+    let Some(fork) = tree.compare_fork(&view.selection) else {
+        return false;
+    };
     view.active_screen = ActiveScreen::Compare;
-    view.compare_row = view.selected_visible_index(tree);
-    view.compare_fork = tree.compare_fork(&view.selection).map(|fork| fork.at);
+    view.compare_fork = Some(fork.at.clone());
+    view.compare_row = fork.row;
     view.mark_dirty();
+    true
 }
 
-fn cycle_screen_forward(view: &mut ViewStateController, tree: &ExploreTree) -> bool {
+fn cycle_screen_forward(view: &mut ViewStateController, tree: &ExploreTree) -> ScreenCycle {
     if view.active_screen == ActiveScreen::Browse {
-        activate_compare(view, tree);
-        true
+        if activate_compare(view, tree) {
+            ScreenCycle::EnteredCompare
+        } else {
+            ScreenCycle::SkippedUnavailable
+        }
     } else {
         view.active_screen = ActiveScreen::Browse;
         view.mark_dirty();
-        false
+        ScreenCycle::LeftCompare
     }
 }
 
-fn cycle_screen_backward(view: &mut ViewStateController, tree: &ExploreTree) -> bool {
+fn cycle_screen_backward(view: &mut ViewStateController, tree: &ExploreTree) -> ScreenCycle {
     if view.active_screen == ActiveScreen::Compare {
         view.active_screen = ActiveScreen::Browse;
         view.mark_dirty();
-        false
+        ScreenCycle::LeftCompare
+    } else if activate_compare(view, tree) {
+        ScreenCycle::EnteredCompare
     } else {
-        activate_compare(view, tree);
-        true
+        ScreenCycle::SkippedUnavailable
     }
 }
 
-fn select_screen(view: &mut ViewStateController, screen: ActiveScreen, tree: &ExploreTree) {
+fn select_screen(view: &mut ViewStateController, screen: ActiveScreen, tree: &ExploreTree) -> bool {
     if screen == ActiveScreen::Compare {
-        activate_compare(view, tree);
-        return;
+        return activate_compare(view, tree);
     }
     view.active_screen = screen;
     view.mark_dirty();
+    true
 }
 
-fn jump_to_compare(view: &mut ViewStateController, tree: &ExploreTree) {
-    activate_compare(view, tree);
+fn jump_to_compare(view: &mut ViewStateController, tree: &ExploreTree) -> bool {
+    activate_compare(view, tree)
+}
+
+fn reveal_path(view: &mut ViewStateController, tree: &ExploreTree, path: &NodePath) {
+    view.selection = path.clone();
+    let mut ancestor = Vec::new();
+    let root = NodePath::root(path.tree);
+    if tree.has_children(&root) && !view.expanded_paths.iter().any(|existing| existing == &root) {
+        view.expanded_paths.push(root);
+    }
+    for index in &path.path {
+        let current = NodePath {
+            tree: path.tree,
+            path: ancestor.clone(),
+        };
+        if tree.has_children(&current)
+            && !view
+                .expanded_paths
+                .iter()
+                .any(|existing| existing == &current)
+        {
+            view.expanded_paths.push(current);
+        }
+        ancestor.push(*index);
+    }
+    view.mark_dirty();
 }
 
 fn browse_body_area(terminal_area: Rect) -> Rect {
@@ -1112,63 +1175,47 @@ fn handle_compare_keys(
     key: event::KeyEvent,
     view: &mut ViewStateController,
     tree: &ExploreTree,
-    visible: &[VisibleNode],
     compare_scroll: &mut u16,
     scroll_limits: CompareScrollLimits,
     screen_notice: &mut Option<ScreenNotice>,
 ) {
-    let selected_index = view.selected_visible_index(tree);
+    let Some(mut model) = CompareScreenModel::from_tree(tree, &view.selection) else {
+        if matches!(key.code, KeyCode::Enter | KeyCode::Esc) {
+            view.active_screen = ActiveScreen::Browse;
+            view.mark_dirty();
+        }
+        return;
+    };
+    model.row = view.compare_row.min(model.rows().len().saturating_sub(1));
     match key.code {
-        KeyCode::Down | KeyCode::Char('j') if selected_index + 1 < visible.len() => {
-            let new_index = selected_index + 1;
-            view.set_selection_visible_index(tree, new_index);
-            view.compare_fork = tree.compare_fork(&view.selection).map(|fork| fork.at);
-            sync_compare_scroll(compare_scroll, new_index, visible.len(), scroll_limits);
+        KeyCode::Down | KeyCode::Char('j') => {
+            model.move_row(1);
+            apply_compare_row(view, &model);
+            sync_compare_row_scroll(compare_scroll, model.row, scroll_limits);
         }
         KeyCode::Up | KeyCode::Char('k') => {
-            let new_index = selected_index.saturating_sub(1);
-            view.set_selection_visible_index(tree, new_index);
-            view.compare_fork = tree.compare_fork(&view.selection).map(|fork| fork.at);
-            sync_compare_scroll(compare_scroll, new_index, visible.len(), scroll_limits);
-        }
-        KeyCode::Char(' ') => {
-            if let Some(node) = visible.get(selected_index)
-                && node.expandable
-            {
-                view.toggle_expansion(&node.path);
-            }
+            model.move_row(-1);
+            apply_compare_row(view, &model);
+            sync_compare_row_scroll(compare_scroll, model.row, scroll_limits);
         }
         KeyCode::Enter => {
+            if let Some(path) = model.selected_path().cloned() {
+                reveal_path(view, tree, &path);
+            }
             view.active_screen = ActiveScreen::Browse;
             view.mark_dirty();
         }
         KeyCode::Char('E') => view.expand_all(tree),
         KeyCode::Char('C') => view.collapse_all(tree),
         KeyCode::Char('F') => {
-            if view.compare_fork.is_some() {
-                view.show_fork_full_path_panel = !view.show_fork_full_path_panel;
-                view.mark_dirty();
-                *screen_notice = None;
-            } else {
-                set_screen_notice(
-                    screen_notice,
-                    ActiveScreen::Compare,
-                    "no fork context for full-path panel",
-                );
-            }
+            view.show_fork_full_path_panel = !view.show_fork_full_path_panel;
+            view.mark_dirty();
+            *screen_notice = None;
         }
         KeyCode::Char('B') => {
-            if view.compare_fork.is_some() {
-                view.show_fork_sibling_panel = !view.show_fork_sibling_panel;
-                view.mark_dirty();
-                *screen_notice = None;
-            } else {
-                set_screen_notice(
-                    screen_notice,
-                    ActiveScreen::Compare,
-                    "no fork context for sibling breakdown",
-                );
-            }
+            view.show_fork_sibling_panel = !view.show_fork_sibling_panel;
+            view.mark_dirty();
+            *screen_notice = None;
         }
         KeyCode::Char('f') => {
             let timing = build_compare_timing(tree, view.compare_fork.as_ref());
@@ -1201,15 +1248,34 @@ fn handle_compare_keys(
     }
 }
 
-fn sync_compare_scroll(
+fn apply_compare_row(view: &mut ViewStateController, model: &CompareScreenModel) {
+    view.compare_row = model.row;
+    view.compare_fork = Some(model.comparison.fork.clone());
+    if let Some(path) = model.selected_path() {
+        view.selection = path.clone();
+    }
+    view.mark_dirty();
+}
+
+fn sync_compare_scroll_for_view(
     scroll: &mut u16,
-    selected_index: usize,
-    _visible_rows: usize,
-    limits: CompareScrollLimits,
+    view: &ViewStateController,
+    tree: &ExploreTree,
+    size: ratatui::layout::Size,
 ) {
-    let line_index = limits.first_row_line + selected_index;
-    ensure_line_visible(line_index, scroll, limits.inner_height, limits.total_lines);
-    *scroll = (*scroll).min(limits.max_scroll);
+    let row_count = CompareScreenModel::from_tree(tree, &view.selection)
+        .map(|model| model.rows().len())
+        .unwrap_or(0);
+    let limits = compare_scroll_limits(Rect::from((Position::ORIGIN, size)), view, tree, row_count);
+    sync_compare_row_scroll(scroll, view.compare_row, limits);
+}
+
+fn sync_compare_row_scroll(scroll: &mut u16, row: usize, limits: CompareScrollLimits) {
+    let viewport = CompareViewport {
+        header_lines: limits.first_row_line,
+        inner_height: limits.inner_height,
+    };
+    *scroll = scroll_for_row(row, viewport, *scroll).min(limits.max_scroll);
 }
 
 fn compare_scroll_limits(
@@ -1226,7 +1292,10 @@ fn compare_scroll_limits(
     let inner = block.inner(body);
     let layout = compare_layout(view, tree, visible_rows);
     CompareScrollLimits {
-        max_scroll: max_vertical_scroll(layout.total_lines, inner.height),
+        max_scroll: max_vertical_scroll(
+            layout.total_lines.saturating_sub(layout.first_row_line),
+            inner.height.saturating_sub(layout.first_row_line as u16),
+        ),
         inner_height: inner.height,
         first_row_line: layout.first_row_line,
         total_lines: layout.total_lines,
@@ -1244,38 +1313,24 @@ fn compare_layout(
     tree: &ExploreTree,
     visible_rows: usize,
 ) -> CompareLayout {
+    let theme = Theme::from_env();
     let timing = build_compare_timing(tree, view.compare_fork.as_ref());
-    let mut before = whole_tree_summary_lines(&timing, &Theme::from_env()).len();
+    let header_lines = CompareScreenModel::from_tree(tree, &view.selection)
+        .map(|model| {
+            whole_tree_summary_lines(&timing, &theme).len()
+                + sticky_header_lines(&model.comparison, &theme).len()
+        })
+        .unwrap_or(2);
+    let mut extra = 0;
     if view.show_fork_full_path_panel {
-        before += fork_full_path_lines(&timing, &Theme::from_env()).len() + 1;
+        extra += fork_full_path_lines(&timing, &theme).len() + 1;
     }
-    let first_row_line = before + 2;
-    let mut total = first_row_line + visible_rows;
     if view.show_fork_sibling_panel {
-        total += 1 + fork_sibling_lines(&timing, &Theme::from_env()).len();
+        extra += 1 + fork_sibling_lines(&timing, &theme).len();
     }
     CompareLayout {
-        total_lines: total,
-        first_row_line,
-    }
-}
-
-fn ensure_line_visible(
-    line_index: usize,
-    scroll: &mut u16,
-    viewport_height: u16,
-    total_lines: usize,
-) {
-    let viewport = viewport_height as usize;
-    if viewport == 0 {
-        return;
-    }
-    let scroll_usize = *scroll as usize;
-    if line_index < scroll_usize {
-        *scroll = line_index as u16;
-    } else if line_index >= scroll_usize + viewport {
-        let max_scroll = total_lines.saturating_sub(viewport);
-        *scroll = (line_index + 1).saturating_sub(viewport).min(max_scroll) as u16;
+        total_lines: header_lines + visible_rows + extra,
+        first_row_line: header_lines,
     }
 }
 
@@ -1284,70 +1339,96 @@ fn render_compare(
     frame: &mut ratatui::Frame<'_>,
     area: Rect,
     tree: &ExploreTree,
-    visible: &[VisibleNode],
     view: &ViewStateController,
     compare_scroll: u16,
     rtt_config: RttBarConfig,
     theme: &Theme,
+    icmp_cache: &mut HashMap<String, Option<u64>>,
+    prober: &dyn IcmpProber,
 ) {
-    let columns = CompareColumns::for_visible(tree, visible);
-    let selected_index = view.selected_visible_index(tree);
-    let scale_max_rtt_ms = max_rtt_ms_for_visible(tree, visible);
-    let timing = build_compare_timing(tree, view.compare_fork.as_ref());
-    let mut lines = whole_tree_summary_lines(&timing, theme);
-    if view.show_fork_full_path_panel {
-        lines.push(Line::from(""));
-        lines.extend(fork_full_path_lines(&timing, theme));
-    }
-    lines.push(columns.header(theme));
-    lines.push(Line::from(""));
+    let Some(mut model) = CompareScreenModel::from_tree(tree, &view.selection) else {
+        let widget = Paragraph::new(COMPARE_UNAVAILABLE_MESSAGE)
+            .block(
+                Block::default()
+                    .title("Compare")
+                    .title_bottom(footer_line(theme).centered())
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(theme.border_focused()),
+            )
+            .wrap(Wrap { trim: false });
+        frame.render_widget(widget, area);
+        return;
+    };
+    enrich_icmp_cached(&mut model.comparison, tree.trace(), icmp_cache, prober);
+    model.row = view.compare_row.min(model.rows().len().saturating_sub(1));
+
+    let mut header = whole_tree_summary_lines(
+        &build_compare_timing(tree, view.compare_fork.as_ref()),
+        theme,
+    );
+    header.extend(sticky_header_lines(&model.comparison, theme));
+    let mut body_lines = Vec::new();
     let highlight = view.highlighted_path.as_deref();
-    for (index, node) in visible.iter().enumerate() {
-        let path_highlighted =
-            highlight.is_some_and(|path| path_on_highlight(&node.path.path, path));
-        if let Some(row) = compare_row(
-            node,
-            tree,
-            index == selected_index,
-            path_highlighted,
-            columns,
+    for (index, summary) in model.rows().iter().enumerate() {
+        let path_highlighted = highlight.is_some_and(|path| {
+            path_on_highlight(&summary.path.path, path) || path.starts_with(&summary.path.path)
+        });
+        body_lines.push(summary_row_line(
+            summary,
+            index == model.row || path_highlighted,
             rtt_config,
-            scale_max_rtt_ms,
             theme,
-        ) {
-            lines.push(row);
+        ));
+        if index == model.row {
+            for hop in &summary.dns_rtt_per_hop {
+                let mark = if hop.from_cache { " (cache)" } else { "" };
+                body_lines.push(Line::from(Span::styled(
+                    format!("    {} {}ms{mark}", hop.zone, hop.rtt_ms),
+                    theme.meta(),
+                )));
+            }
         }
     }
+    let timing = build_compare_timing(tree, view.compare_fork.as_ref());
+    if view.show_fork_full_path_panel {
+        body_lines.push(Line::from(""));
+        body_lines.extend(fork_full_path_lines(&timing, theme));
+    }
     if view.show_fork_sibling_panel {
-        lines.push(Line::from(""));
-        lines.extend(fork_sibling_lines(&timing, theme));
+        body_lines.push(Line::from(""));
+        body_lines.extend(fork_sibling_lines(&timing, theme));
     }
 
+    let title = format!(
+        "Compare — {} sibling path{}",
+        model.rows().len(),
+        if model.rows().len() == 1 { "" } else { "s" }
+    );
     let block = Block::default()
-        .title("Compare")
+        .title(title)
+        .title_bottom(footer_line(theme).centered())
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(theme.border_focused());
     let inner = block.inner(area);
-    let max_scroll = max_vertical_scroll(lines.len(), inner.height);
-    let clamped_scroll = compare_scroll.min(max_scroll);
-    let scroll_hints = AxisScrollHints::vertical(clamped_scroll, max_scroll).format_vertical();
-    let title = format!(
-        "Compare — answered paths only; • marks forks; latency bar scales to visible max{scroll_hints}"
-    );
+    frame.render_widget(block, area);
 
-    let widget = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .title(title)
-                .title_bottom(footer_line(theme).centered())
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(theme.border_focused()),
-        )
-        .wrap(Wrap { trim: false })
-        .scroll((clamped_scroll, 0));
-    frame.render_widget(widget, area);
+    let header_height = (header.len() as u16).min(inner.height);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(header_height), Constraint::Min(0)])
+        .split(inner);
+    frame.render_widget(Paragraph::new(header).wrap(Wrap { trim: false }), chunks[0]);
+    let body_height = chunks[1].height;
+    let max_scroll = max_vertical_scroll(body_lines.len(), body_height);
+    let clamped = compare_scroll.min(max_scroll);
+    frame.render_widget(
+        Paragraph::new(body_lines)
+            .wrap(Wrap { trim: false })
+            .scroll((clamped, 0)),
+        chunks[1],
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1770,10 +1851,8 @@ fn help_lines(view: &ViewStateController, theme: &Theme) -> Vec<Line<'static>> {
     } else {
         lines.extend([
             help_section("Compare", theme),
-            help_binding("j/k, ↑/↓", "Move selection (scrolls view)", theme),
-            help_binding("Space", "Toggle expand", theme),
-            help_binding("E / C", "Expand all / collapse all", theme),
-            help_binding("Enter", "Return to Browse", theme),
+            help_binding("j/k, ↑/↓", "Move among sibling paths", theme),
+            help_binding("Enter", "Return to Browse at selected path", theme),
             help_binding("F", "Toggle fork full-path stats panel", theme),
             help_binding("B", "Toggle fork sibling hop RTT panel", theme),
             help_binding("f / s", "Highlight fastest / slowest answered path", theme),
@@ -1861,30 +1940,31 @@ pub(crate) fn simulate_explore_first_frame(
     let _tree_scroll_x = 0u16;
 
     if view.active_screen == ActiveScreen::Compare {
-        let compare_visible = tree.visible_nodes(&view.expanded_paths);
-        let mut compare_row_index = view.compare_row;
-        if compare_row_index >= compare_visible.len() {
-            compare_row_index = compare_visible.len().saturating_sub(1);
+        let mut icmp_cache = HashMap::new();
+        struct UnavailableProber;
+        impl IcmpProber for UnavailableProber {
+            fn probe(
+                &self,
+                _addr: std::net::IpAddr,
+                _timeout: std::time::Duration,
+            ) -> dns_resolve::IcmpProbeResult {
+                dns_resolve::IcmpProbeResult::Unavailable
+            }
         }
-        let _compare_limits =
-            compare_scroll_limits(terminal_area, view, tree, compare_visible.len());
-        let _compare_scroll = 0u16;
-        let columns = CompareColumns::for_visible(tree, &compare_visible);
-        let scale_max_rtt_ms = max_rtt_ms_for_visible(tree, &compare_visible);
-        let timing = build_compare_timing(tree, view.compare_fork.as_ref());
-        let _ = whole_tree_summary_lines(&timing, &theme);
-        let _ = columns.header(&theme);
-        for (index, node) in compare_visible.iter().enumerate() {
-            let _ = compare_row(
-                node,
-                tree,
-                index == compare_row_index,
-                false,
-                columns,
-                RttBarConfig::default(),
-                scale_max_rtt_ms,
-                &theme,
+        if let Some(model) = CompareScreenModel::from_tree(tree, &view.selection) {
+            let mut comparison = model.comparison;
+            enrich_icmp_cached(
+                &mut comparison,
+                tree.trace(),
+                &mut icmp_cache,
+                &UnavailableProber,
             );
+            let _ = sticky_header_lines(&comparison, &theme);
+            for (index, summary) in comparison.paths.iter().enumerate() {
+                let _ = summary_row_line(summary, index == model.row, rtt_config, &theme);
+            }
+            let _compare_limits =
+                compare_scroll_limits(terminal_area, view, tree, comparison.paths.len());
         }
     }
 
@@ -2022,6 +2102,82 @@ mod tests {
             Some("refreshed 3 hops")
         );
         assert_eq!(screen_notice_message(&notice, ActiveScreen::Browse), None);
+    }
+
+    fn fork_explore_tree() -> ExploreTree {
+        super::super::tree::build_explore_tree(&TraceTree {
+            request: TraceTreeRequest {
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                started_at: "2026-08-25T00:00:00Z".into(),
+            },
+            root: TraceNode {
+                hop: sample_hop(),
+                origin: NodeOrigin::Trace,
+                children: vec![
+                    tuininga_answered_leaf("192.0.2.10", "ns1", 10),
+                    tuininga_answered_leaf("192.0.2.11", "ns2", 20),
+                ],
+            },
+            budget_truncated: false,
+        })
+    }
+
+    #[test]
+    fn tab_skips_compare_without_sibling_paths() {
+        let tree = super::super::tree::build_explore_tree(&dns_resolve::build_linear_tree(
+            vec![sample_hop()],
+            dns_resolve::TraceTreeRequest {
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                started_at: "2026-08-25T00:00:00Z".into(),
+            },
+        ));
+        let mut view = ViewStateController::default_for_tree(&tree);
+        assert_eq!(
+            cycle_screen_forward(&mut view, &tree),
+            ScreenCycle::SkippedUnavailable
+        );
+        assert_eq!(view.active_screen, ActiveScreen::Browse);
+        assert!(!select_screen(&mut view, ActiveScreen::Compare, &tree));
+        assert_eq!(view.active_screen, ActiveScreen::Browse);
+    }
+
+    #[test]
+    fn compare_rows_appear_after_branch_and_enter_returns_to_path() {
+        let tree = fork_explore_tree();
+        let mut view = ViewStateController::default_for_tree(&tree);
+        assert!(activate_compare(&mut view, &tree));
+        assert_eq!(view.active_screen, ActiveScreen::Compare);
+        let mut scroll = 0u16;
+        handle_compare_keys(
+            event::KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &mut view,
+            &tree,
+            &mut scroll,
+            CompareScrollLimits {
+                max_scroll: 0,
+                inner_height: 20,
+                first_row_line: 3,
+                total_lines: 5,
+            },
+            &mut None,
+        );
+        handle_compare_keys(
+            event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut view,
+            &tree,
+            &mut scroll,
+            CompareScrollLimits {
+                max_scroll: 0,
+                inner_height: 20,
+                first_row_line: 3,
+                total_lines: 5,
+            },
+            &mut None,
+        );
+        assert_eq!(view.active_screen, ActiveScreen::Browse);
+        assert_eq!(view.selection.path, vec![1]);
     }
 
     fn sample_hop() -> dns_resolve::TraceHop {

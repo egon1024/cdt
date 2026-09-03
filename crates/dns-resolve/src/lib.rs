@@ -25,6 +25,7 @@ use time::OffsetDateTime;
 
 pub mod job_queue;
 pub mod path_timing;
+pub mod probe;
 pub mod root_hints;
 pub mod rtt_refresh;
 pub mod trace;
@@ -47,6 +48,7 @@ pub use tree::{
 pub use job_queue::{
     BranchJobRequest, TerminalSiblingExpansion, run_branch_job, run_expand_cut_branch,
 };
+pub use probe::{DatagramIcmpProber, IcmpProbeResult, IcmpProber, probe_icmp_rtt};
 
 #[derive(Debug, Error)]
 pub enum ResolveError {
@@ -732,5 +734,26 @@ mod cache_tests {
         assert_eq!(recorded[0].server, "1.2.3.4");
         assert_eq!(recorded[0].context, "trace");
         assert!(recorded[0].thread_id.starts_with("ThreadId("));
+    }
+
+    struct NoopProgress;
+
+    impl TraceProgress for NoopProgress {
+        fn hop(&mut self, _hop: &TraceHop, _path: &NodePath) {}
+        fn message(&mut self, _message: &str) {}
+    }
+
+    #[test]
+    fn ordinary_trace_does_not_attempt_icmp() {
+        crate::probe::reset_icmp_probe_attempts();
+        let qname = DomainName::parse("example.com.").expect("qname");
+        let mut config = TraceConfig::new(qname, RecordType::A);
+        config.start_servers = Some(vec![IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))]);
+        config.use_cache = false;
+        config.exchange = Arc::new(CountingExchange {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let _ = crate::run_trace(&config, &mut NoopProgress);
+        assert_eq!(crate::probe::icmp_probe_attempts(), 0);
     }
 }
