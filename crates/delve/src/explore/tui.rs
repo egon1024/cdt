@@ -30,7 +30,8 @@ use crate::runtime::Runtime;
 use crate::session::SessionDocument;
 
 use super::compare_screen::{
-    CompareScreenModel, CompareViewport, scroll_for_row, sticky_header_lines, summary_row_line,
+    CompareScreenModel, CompareViewport, hop_detail_lines, hop_scale_ms, scroll_for_row,
+    sticky_header_lines, summary_row_line,
 };
 use super::detail::hop_failure_line;
 use super::dig_view::hop_detail_styled;
@@ -1368,6 +1369,7 @@ fn render_compare(
         theme,
     );
     header.extend(sticky_header_lines(&model.comparison, theme));
+    let hop_scale = hop_scale_ms(&model.comparison);
     let mut body_lines = Vec::new();
     let highlight = view.highlighted_path.as_deref();
     for (index, summary) in model.rows().iter().enumerate() {
@@ -1377,17 +1379,10 @@ fn render_compare(
         body_lines.push(summary_row_line(
             summary,
             index == model.row || path_highlighted,
-            rtt_config,
             theme,
         ));
         if index == model.row {
-            for hop in &summary.dns_rtt_per_hop {
-                let mark = if hop.from_cache { " (cache)" } else { "" };
-                body_lines.push(Line::from(Span::styled(
-                    format!("    {} {}ms{mark}", hop.zone, hop.rtt_ms),
-                    theme.meta(),
-                )));
-            }
+            body_lines.extend(hop_detail_lines(summary, hop_scale, rtt_config, theme));
         }
     }
     let timing = build_compare_timing(tree, view.compare_fork.as_ref());
@@ -1960,8 +1955,10 @@ pub(crate) fn simulate_explore_first_frame(
                 &UnavailableProber,
             );
             let _ = sticky_header_lines(&comparison, &theme);
+            let hop_scale = hop_scale_ms(&comparison);
             for (index, summary) in comparison.paths.iter().enumerate() {
-                let _ = summary_row_line(summary, index == model.row, rtt_config, &theme);
+                let _ = summary_row_line(summary, index == model.row, &theme);
+                let _ = hop_detail_lines(summary, hop_scale, rtt_config, &theme);
             }
             let _compare_limits =
                 compare_scroll_limits(terminal_area, view, tree, comparison.paths.len());

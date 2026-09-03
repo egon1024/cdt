@@ -15,7 +15,8 @@ pub const DETAIL_RTT_SCALE_MS: u32 = RTT_BAR_ABSOLUTE_SCALE_MS;
 pub const RTT_BAR_EMPTY: &str = "░";
 
 /// Fixed-width latency bar. `scale_max_rtt_ms` is the value that fills the bar
-/// completely (Compare: max visible RTT; Browse detail: [`DETAIL_RTT_SCALE_MS`]).
+/// completely (Compare: slowest hop in the comparison; Browse detail:
+/// [`DETAIL_RTT_SCALE_MS`]).
 pub fn rtt_bar_spans(
     rtt_ms: u32,
     scale_max_rtt_ms: u32,
@@ -65,20 +66,6 @@ pub fn rtt_detail_line(rtt_ms: u64, config: RttBarConfig, theme: &Theme) -> Line
     Line::from(spans)
 }
 
-#[allow(dead_code)]
-pub fn max_rtt_ms_for_visible(
-    tree: &super::tree::ExploreTree,
-    visible: &[super::tree::VisibleNode],
-) -> u32 {
-    visible
-        .iter()
-        .filter_map(|node| tree.hop_at(&node.path))
-        .map(|hop| hop.rtt_ms.min(u32::MAX as u64) as u32)
-        .max()
-        .unwrap_or(0)
-        .max(1)
-}
-
 pub fn style_for_rtt(rtt_ms: u32, config: RttBarConfig, theme: &Theme) -> Style {
     if !theme.color_enabled {
         return Style::default();
@@ -112,28 +99,6 @@ fn style_for_rtt_stepped(rtt_ms: u32, config: RttBarConfig, theme: &Theme) -> St
 mod tests {
     use super::*;
     use crate::config::RttBarConfig;
-    use dns_resolve::{HopOutcome, TraceHop, TraceTreeRequest, build_linear_tree};
-
-    fn hop(rtt_ms: u64) -> TraceHop {
-        TraceHop {
-            zone: ".".into(),
-            server: "1.1.1.1".into(),
-            server_name: None,
-            qname: "example.com.".into(),
-            qtype: "A".into(),
-            transport: "udp".into(),
-            rtt_ms,
-            rcode: "NOERROR".into(),
-            nsid: None,
-            ede_code: None,
-            ede_text: None,
-            referral_ns: vec![],
-            glue: vec![],
-            response: Default::default(),
-            from_cache: false,
-            outcome: HopOutcome::Answered,
-        }
-    }
 
     fn config() -> RttBarConfig {
         RttBarConfig {
@@ -283,20 +248,5 @@ mod tests {
         let late = rtt_gradient_rgb(75, cfg);
         assert!(late.1 > 198);
         assert!(late.0 > 72);
-    }
-
-    #[test]
-    fn max_rtt_for_visible_reads_hop_rtts() {
-        let trace = build_linear_tree(
-            vec![hop(40), hop(120)],
-            TraceTreeRequest {
-                qname: "example.com.".into(),
-                qtype: "A".into(),
-                started_at: "2026-01-01T00:00:00Z".into(),
-            },
-        );
-        let tree = super::super::tree::build_explore_tree(&trace);
-        let visible = tree.visible_nodes(&tree.default_expanded_paths());
-        assert_eq!(max_rtt_ms_for_visible(&tree, &visible), 120);
     }
 }

@@ -5,9 +5,12 @@ use ratatui::text::{Line, Span};
 
 use crate::config::RttBarConfig;
 
-use super::path_summary::{ForkComparison, PathSummary, comparison_for_explore};
+use super::path_summary::{ForkComparison, HopTiming, PathSummary, comparison_for_explore};
+use super::rtt_bar::rtt_bar_spans;
 use super::theme::Theme;
 use super::tree::ExploreTree;
+
+const HOP_ZONE_WIDTH: usize = 22;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompareViewport {
@@ -99,13 +102,7 @@ pub fn sticky_header_lines(comparison: &ForkComparison, theme: &Theme) -> Vec<Li
     lines
 }
 
-pub fn summary_row_line(
-    summary: &PathSummary,
-    selected: bool,
-    rtt_config: RttBarConfig,
-    theme: &Theme,
-) -> Line<'static> {
-    let _ = rtt_config;
+pub fn summary_row_line(summary: &PathSummary, selected: bool, theme: &Theme) -> Line<'static> {
     let style = if selected {
         theme.tree_selected()
     } else if summary.failed {
@@ -145,6 +142,58 @@ pub fn summary_row_line(
         ),
         style,
     ))
+}
+
+/// Bar scale for per-hop lines: the slowest hop anywhere in the comparison, so
+/// hop bars stay comparable when the operator moves between rows.
+pub fn hop_scale_ms(comparison: &ForkComparison) -> u32 {
+    comparison
+        .paths
+        .iter()
+        .flat_map(|path| path.dns_rtt_per_hop.iter())
+        .map(|hop| hop.rtt_ms.min(u64::from(u32::MAX)) as u32)
+        .max()
+        .unwrap_or(0)
+        .max(1)
+}
+
+pub fn hop_detail_lines(
+    summary: &PathSummary,
+    scale_max_rtt_ms: u32,
+    rtt_config: RttBarConfig,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    summary
+        .dns_rtt_per_hop
+        .iter()
+        .map(|hop| hop_detail_line(hop, scale_max_rtt_ms, rtt_config, theme))
+        .collect()
+}
+
+fn hop_detail_line(
+    hop: &HopTiming,
+    scale_max_rtt_ms: u32,
+    rtt_config: RttBarConfig,
+    theme: &Theme,
+) -> Line<'static> {
+    let zone = truncate(&hop.zone, HOP_ZONE_WIDTH);
+    let padding = HOP_ZONE_WIDTH.saturating_sub(zone.chars().count());
+    let mut spans = vec![Span::styled(
+        format!("    {zone}{}  ", " ".repeat(padding)),
+        theme.zone(),
+    )];
+    spans.extend(rtt_bar_spans(
+        hop.rtt_ms.min(u64::from(u32::MAX)) as u32,
+        scale_max_rtt_ms,
+        rtt_config,
+        theme,
+    ));
+    let mark = if hop.from_cache { " (cache)" } else { "" };
+    spans.push(Span::styled(
+        format!("  {}ms{mark}", hop.rtt_ms),
+        theme.meta(),
+    ));
+    Line::from(spans)
 }
 
 fn format_referral(only_here: &[String], missing: &[String]) -> String {
@@ -304,28 +353,53 @@ mod tests {
         let mut tree = fork_tree(2);
         tree.tree.root.children[0].hop.from_cache = true;
         let model = CompareScreenModel::from_tree(&tree, &NodePath::root(0)).expect("model");
-        let line = summary_row_line(
-            &model.rows()[0],
-            false,
-            RttBarConfig::default(),
-            &Theme::from_env(),
-        );
+        let line = summary_row_line(&model.rows()[0], false, &Theme::from_env());
         let text: String = line
             .spans
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
         assert!(text.contains("cache"));
-        let other: String = summary_row_line(
-            &model.rows()[1],
-            false,
-            RttBarConfig::default(),
-            &Theme::from_env(),
-        )
-        .spans
-        .iter()
-        .map(|span| span.content.as_ref())
-        .collect();
+        let other: String = summary_row_line(&model.rows()[1], false, &Theme::from_env())
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
         assert!(!other.contains("cache"));
+    }
+
+    #[test]
+    fn hop_lines_bar_the_slowest_hop_and_mark_cache() {
+        let mut tree = fork_tree(2);
+        tree.tree.root.children[0].hop.from_cache = true;
+        tree.tree.root.children[1].hop.rtt_ms = 400;
+        let model = CompareScreenModel::from_tree(&tree, &NodePath::root(0)).expect("model");
+        let scale = hop_scale_ms(&model.comparison);
+        assert_eq!(scale, 400);
+
+        let theme = Theme::from_env();
+        let config = RttBarConfig::default();
+        let cached = hop_detail_lines(&model.rows()[0], scale, config, &theme);
+        let slow = hop_detail_lines(&model.rows()[1], scale, config, &theme);
+        assert_eq!(cached.len(), 1);
+        assert_eq!(slow.len(), 1);
+
+        let cached_text: String = cached[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        let slow_text: String = slow[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(cached_text.contains("(cache)"));
+        assert!(!slow_text.contains("(cache)"));
+        assert!(slow_text.contains("400ms"));
+
+        let filled = |line: &Line<'_>| line.spans.iter().filter(|span| span.content == "█").count();
+        assert_eq!(filled(&slow[0]), config.normalized().max_width as usize);
+        assert!(filled(&cached[0]) < filled(&slow[0]));
     }
 }

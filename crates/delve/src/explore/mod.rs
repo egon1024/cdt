@@ -1,5 +1,3 @@
-#[allow(dead_code)]
-mod compare;
 mod compare_screen;
 mod detail;
 mod dig_view;
@@ -510,7 +508,6 @@ mod tests {
         use super::compare_screen::{CompareScreenModel, summary_row_line};
         use super::path_summary::summarize_fork;
         use super::theme::Theme;
-        use crate::config::RttBarConfig;
         use dns_resolve::NodePath;
 
         let document = fork_document();
@@ -537,7 +534,7 @@ mod tests {
             assert_eq!(path.outcome, model.rows()[index].outcome);
             assert!(text.contains(&path.label));
             assert!(text.contains(&format!("{}ms", path.dns_rtt_total_ms)));
-            let row = summary_row_line(path, false, RttBarConfig::default(), &theme);
+            let row = summary_row_line(path, false, &theme);
             let row_text: String = row.spans.iter().map(|span| span.content.as_ref()).collect();
             assert!(row_text.contains(&path.hop_count.to_string()));
             assert!(row_text.contains(&path.outcome));

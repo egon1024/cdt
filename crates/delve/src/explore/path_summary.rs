@@ -287,15 +287,33 @@ fn apply_referral_diffs(paths: &mut [PathSummary]) {
         .iter()
         .map(|path| path.referral_ns.iter().cloned().collect())
         .collect();
-    let union: BTreeSet<String> = sets.iter().flat_map(|set| set.iter().cloned()).collect();
-    let intersection: BTreeSet<String> = sets.iter().fold(union.clone(), |acc, set| {
-        acc.intersection(set).cloned().collect()
-    });
+    // A path that returned no referral set (failed, or answered at the fork) has
+    // nothing to differ from, and must not drag the baseline for the paths that did.
+    let comparable: Vec<&BTreeSet<String>> = sets.iter().filter(|set| !set.is_empty()).collect();
+    let (union, intersection) = if comparable.len() < 2 {
+        (BTreeSet::new(), BTreeSet::new())
+    } else {
+        let union: BTreeSet<String> = comparable
+            .iter()
+            .flat_map(|set| set.iter().cloned())
+            .collect();
+        let intersection: BTreeSet<String> = comparable.iter().fold(union.clone(), |acc, set| {
+            acc.intersection(set).cloned().collect()
+        });
+        (union, intersection)
+    };
     for (index, path) in paths.iter_mut().enumerate() {
         let set = &sets[index];
-        path.referral_diff = ReferralDiff {
-            only_here: set.difference(&intersection).cloned().collect(),
-            missing: union.difference(set).cloned().collect(),
+        path.referral_diff = if set.is_empty() {
+            ReferralDiff {
+                only_here: Vec::new(),
+                missing: Vec::new(),
+            }
+        } else {
+            ReferralDiff {
+                only_here: set.difference(&intersection).cloned().collect(),
+                missing: union.difference(set).cloned().collect(),
+            }
         };
     }
 }
@@ -670,6 +688,22 @@ mod tests {
                 .iter()
                 .any(|name| name == "c.gtld-servers.net.")
         );
+    }
+
+    #[test]
+    fn matching_referral_sets_report_no_difference() {
+        let mut tree = differing_length_tree();
+        // Make the two answered siblings agree on the referral set; the failed
+        // sibling still has none of its own.
+        tree.root.children[1].hop.referral_ns = tree.root.children[0].hop.referral_ns.clone();
+        let comparison = summarize_fork(&tree, &NodePath::root(0)).expect("fork");
+        for path in &comparison.paths {
+            assert!(path.referral_diff.only_here.is_empty());
+            assert!(path.referral_diff.missing.is_empty());
+        }
+        let text = render_comparison_text(&comparison);
+        assert!(!text.contains("+a.gtld-servers.net."));
+        assert!(!text.contains("-a.gtld-servers.net."));
     }
 
     #[test]
