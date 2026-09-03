@@ -5,7 +5,7 @@ use crate::paths::DelvePaths;
 const DEFAULT_RETENTION: &str = "never";
 const DEFAULT_MAX_QUERIES: usize = 64;
 const DEFAULT_MAX_PARALLEL_QUERIES: usize = 8;
-const DEFAULT_RTT_GREEN_MS: u32 = 5;
+const DEFAULT_RTT_GREEN_MS: u32 = 50;
 const DEFAULT_RTT_YELLOW_MS: u32 = 125;
 const DEFAULT_RTT_ORANGE_MS: u32 = 250;
 const DEFAULT_RTT_INSANE_MS: u32 = 1000;
@@ -493,7 +493,7 @@ mod tests {
     #[test]
     fn default_rtt_bar_config_matches_expected_thresholds() {
         let config = DelveConfig::default().explore_rtt_bar;
-        assert_eq!(config.green_ms, 5);
+        assert_eq!(config.green_ms, 50);
         assert_eq!(config.yellow_ms, 125);
         assert_eq!(config.orange_ms, 250);
         assert_eq!(config.insane_ms, 1000);
@@ -517,7 +517,7 @@ mod tests {
         assert!(yaml.contains("#explore:"));
         assert!(yaml.contains("#  persist_view_state: true"));
         assert!(yaml.contains("#  rtt_bar:"));
-        assert!(yaml.contains("#    green_ms: 5"));
+        assert!(yaml.contains("#    green_ms: 50"));
         assert!(!yaml.contains("\n  retention: "));
         assert!(!yaml.contains("\n  rtt_bar:\n"));
     }

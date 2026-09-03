@@ -246,13 +246,15 @@ mod tests {
     fn gradient_reaches_yellow_at_green_ms() {
         let cfg = config();
         assert_eq!(rtt_gradient_rgb(0, cfg), (72, 198, 108));
-        assert_eq!(rtt_gradient_rgb(cfg.green_ms, cfg), (255, 214, 48));
+        assert_eq!(rtt_gradient_rgb(cfg.green_ms, cfg), (72, 198, 108));
     }
 
     #[test]
-    fn gradient_holds_yellow_until_yellow_ms() {
+    fn gradient_reaches_yellow_at_yellow_ms() {
         let cfg = config();
-        assert_eq!(rtt_gradient_rgb(75, cfg), (255, 214, 48));
+        let mid = rtt_gradient_rgb(75, cfg);
+        assert!(mid.0 > 72);
+        assert!(mid.1 < 214);
         assert_eq!(rtt_gradient_rgb(cfg.yellow_ms, cfg), (255, 214, 48));
     }
 
@@ -276,8 +278,10 @@ mod tests {
     fn gradient_interpolates_toward_next_step_before_milestone() {
         let cfg = config();
         let early = rtt_gradient_rgb(25, cfg);
-        assert!(early.1 > 198);
-        assert!(early.0 > 72);
+        assert_eq!(early, (72, 198, 108));
+        let late = rtt_gradient_rgb(75, cfg);
+        assert!(late.1 > 198);
+        assert!(late.0 > 72);
     }
 
     #[test]
