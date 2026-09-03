@@ -25,7 +25,7 @@ trace:
   max_parallel_queries: 8
 explore:
   rtt_bar:
-    green_ms: 5
+    green_ms: 50
     yellow_ms: 125
     orange_ms: 250
     insane_ms: 1000
@@ -64,8 +64,8 @@ On terminals that report **256-color** or **truecolor** support (or common moder
 
 | Range | Gradient |
 |-------|----------|
-| `0` → `green_ms` | green → yellow (fully yellow at `green_ms`) |
-| `green_ms` → `yellow_ms` | solid yellow |
+| `0` → `green_ms` | solid green |
+| `green_ms` → `yellow_ms` | green → yellow (fully yellow at `yellow_ms`) |
 | `yellow_ms` → `orange_ms` | yellow → orange (fully orange at `orange_ms`) |
 | `orange_ms` → `insane_ms` | orange → red (fully red at `insane_ms`) |
 
@@ -82,7 +82,7 @@ Hops that do not reach a later milestone still show a partial transition toward 
 
 Override detection with `DELVE_TRUECOLOR=1` (force gradient) or `DELVE_BASIC_COLORS=1` (force stepped bands).
 
-Defaults: `green_ms` **5**, `yellow_ms` **125**, `orange_ms` **250**, `insane_ms` **1000**, `max_width` **20** characters.
+Defaults: `green_ms` **50**, `yellow_ms` **125**, `orange_ms` **250**, `insane_ms` **1000**, `max_width` **20** characters.
 
 ## See also
 
