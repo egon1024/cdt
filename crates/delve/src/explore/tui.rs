@@ -30,8 +30,8 @@ use crate::runtime::Runtime;
 use crate::session::SessionDocument;
 
 use super::compare_screen::{
-    CompareScreenModel, CompareViewport, hop_detail_lines, hop_scale_ms, scroll_for_row,
-    sticky_header_lines, summary_row_line,
+    CompareScreenModel, CompareViewport, hop_detail_lines, hop_scale_ms, path_scale_ms,
+    scroll_for_row, sticky_header_lines, summary_row_line,
 };
 use super::detail::hop_failure_line;
 use super::dig_view::hop_detail_styled;
@@ -1390,6 +1390,7 @@ fn render_compare(
         theme,
     );
     header.extend(sticky_header_lines(&model.comparison, theme));
+    let path_scale = path_scale_ms(&model.comparison);
     let hop_scale = hop_scale_ms(&model.comparison);
     let mut body_lines = Vec::new();
     let highlight = view.highlighted_path.as_deref();
@@ -1400,6 +1401,8 @@ fn render_compare(
         body_lines.push(summary_row_line(
             summary,
             index == model.row || path_highlighted,
+            path_scale,
+            rtt_config,
             theme,
         ));
         if index == model.row {
@@ -1981,8 +1984,10 @@ pub(crate) fn simulate_explore_first_frame(
             );
             let _ = sticky_header_lines(&comparison, &theme);
             let hop_scale = hop_scale_ms(&comparison);
+            let path_scale = path_scale_ms(&comparison);
             for (index, summary) in comparison.paths.iter().enumerate() {
-                let _ = summary_row_line(summary, index == model.row, &theme);
+                let _ =
+                    summary_row_line(summary, index == model.row, path_scale, rtt_config, &theme);
                 let _ = hop_detail_lines(summary, hop_scale, rtt_config, &theme);
             }
             let _compare_limits =

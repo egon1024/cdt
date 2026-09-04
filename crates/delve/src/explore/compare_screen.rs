@@ -96,13 +96,32 @@ pub fn sticky_header_lines(comparison: &ForkComparison, theme: &Theme) -> Vec<Li
         Span::styled(format!(" {:>8}", "dns"), theme.label()),
         Span::styled(format!(" {:>6}", "Δ"), theme.label()),
         Span::styled(format!(" {:>6}", "icmp"), theme.label()),
+        Span::raw("  "),
+        Span::styled("latency", theme.label()),
         Span::styled("  outcome", theme.label()),
         Span::styled("  referral", theme.label()),
     ]));
     lines
 }
 
-pub fn summary_row_line(summary: &PathSummary, selected: bool, theme: &Theme) -> Line<'static> {
+/// Bar scale for summary rows: slowest total DNS RTT in the fork comparison.
+pub fn path_scale_ms(comparison: &ForkComparison) -> u32 {
+    comparison
+        .paths
+        .iter()
+        .map(|path| path.dns_rtt_total_ms.min(u64::from(u32::MAX)) as u32)
+        .max()
+        .unwrap_or(0)
+        .max(1)
+}
+
+pub fn summary_row_line(
+    summary: &PathSummary,
+    selected: bool,
+    scale_max_rtt_ms: u32,
+    rtt_config: RttBarConfig,
+    theme: &Theme,
+) -> Line<'static> {
     let style = if selected {
         theme.tree_selected()
     } else if summary.failed {
@@ -125,14 +144,27 @@ pub fn summary_row_line(summary: &PathSummary, selected: bool, theme: &Theme) ->
     } else {
         " cache".to_string()
     };
-    Line::from(Span::styled(
+    let mut spans = vec![Span::styled(
         format!(
-            "{marker}{:<21} {:>4} {:>8} {:>6} {:>6}  {:<16} {}{}",
+            "{marker}{:<21} {:>4} {:>8} {:>6} {:>6}",
             truncate(&summary.label, 21),
             summary.hop_count,
             format!("{}ms", summary.dns_rtt_total_ms),
             delta,
             icmp,
+        ),
+        style,
+    )];
+    spans.push(Span::raw("  "));
+    spans.extend(rtt_bar_spans(
+        summary.dns_rtt_total_ms.min(u64::from(u32::MAX)) as u32,
+        scale_max_rtt_ms,
+        rtt_config,
+        theme,
+    ));
+    spans.push(Span::styled(
+        format!(
+            "  {:<16} {}{}",
             truncate(&summary.outcome, 16),
             format_referral(
                 &summary.referral_diff.only_here,
@@ -141,7 +173,8 @@ pub fn summary_row_line(summary: &PathSummary, selected: bool, theme: &Theme) ->
             cache_mark
         ),
         style,
-    ))
+    ));
+    Line::from(spans)
 }
 
 /// Bar scale for per-hop lines: the slowest hop anywhere in the comparison, so
@@ -353,19 +386,42 @@ mod tests {
         let mut tree = fork_tree(2);
         tree.tree.root.children[0].hop.from_cache = true;
         let model = CompareScreenModel::from_tree(&tree, &NodePath::root(0)).expect("model");
-        let line = summary_row_line(&model.rows()[0], false, &Theme::from_env());
+        let theme = Theme::from_env();
+        let config = RttBarConfig::default();
+        let scale = path_scale_ms(&model.comparison);
+        let line = summary_row_line(&model.rows()[0], false, scale, config, &theme);
         let text: String = line
             .spans
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
         assert!(text.contains("cache"));
-        let other: String = summary_row_line(&model.rows()[1], false, &Theme::from_env())
+        let other: String = summary_row_line(&model.rows()[1], false, scale, config, &theme)
             .spans
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
         assert!(!other.contains("cache"));
+    }
+
+    #[test]
+    fn summary_rows_include_latency_bar_for_every_path() {
+        let mut tree = fork_tree(2);
+        tree.tree.root.children[1].hop.rtt_ms = 200;
+        let model = CompareScreenModel::from_tree(&tree, &NodePath::root(0)).expect("model");
+        let theme = Theme::from_env();
+        let config = RttBarConfig::default();
+        let scale = path_scale_ms(&model.comparison);
+        assert_eq!(scale, 200);
+
+        let filled = |line: &Line<'_>| line.spans.iter().filter(|span| span.content == "█").count();
+        for summary in model.rows() {
+            let line = summary_row_line(summary, false, scale, config, &theme);
+            assert!(filled(&line) > 0, "expected bar on every summary row");
+        }
+        let slow = summary_row_line(&model.rows()[1], false, scale, config, &theme);
+        let fast = summary_row_line(&model.rows()[0], false, scale, config, &theme);
+        assert!(filled(&slow) > filled(&fast));
     }
 
     #[test]

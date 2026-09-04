@@ -505,7 +505,7 @@ mod tests {
 
     #[test]
     fn compare_screen_text_and_json_agree() {
-        use super::compare_screen::{CompareScreenModel, summary_row_line};
+        use super::compare_screen::{CompareScreenModel, path_scale_ms, summary_row_line};
         use super::path_summary::summarize_fork;
         use super::theme::Theme;
         use dns_resolve::NodePath;
@@ -519,6 +519,8 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
         let model = CompareScreenModel::from_tree(&tree, &NodePath::root(0)).expect("screen");
         let theme = Theme::from_env();
+        let path_scale = path_scale_ms(&model.comparison);
+        let rtt_config = crate::config::RttBarConfig::default();
 
         assert_eq!(projection.paths.len(), 2);
         assert_eq!(model.rows().len(), 2);
@@ -534,7 +536,7 @@ mod tests {
             assert_eq!(path.outcome, model.rows()[index].outcome);
             assert!(text.contains(&path.label));
             assert!(text.contains(&format!("{}ms", path.dns_rtt_total_ms)));
-            let row = summary_row_line(path, false, &theme);
+            let row = summary_row_line(path, false, path_scale, rtt_config, &theme);
             let row_text: String = row.spans.iter().map(|span| span.content.as_ref()).collect();
             assert!(row_text.contains(&path.hop_count.to_string()));
             assert!(row_text.contains(&path.outcome));
