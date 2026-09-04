@@ -93,6 +93,51 @@ impl ExploreTree {
         self.compare_fork(selection).is_some()
     }
 
+    /// Shallowest fork anywhere in the tree, used to tell the operator where
+    /// comparison is reachable when the current selection has no sibling paths.
+    pub fn nearest_fork(&self) -> Option<NodePath> {
+        let mut queue = std::collections::VecDeque::from([NodePath::root(self.tree_index)]);
+        while let Some(path) = queue.pop_front() {
+            let Some(node) = self.tree.resolve(&path) else {
+                continue;
+            };
+            if node.children.len() >= 2 {
+                return Some(path);
+            }
+            for index in 0..node.children.len() {
+                let mut child = path.path.clone();
+                child.push(index);
+                queue.push_back(NodePath {
+                    tree: path.tree,
+                    path: child,
+                });
+            }
+        }
+        None
+    }
+
+    /// Why Compare cannot be shown for `selection`, naming the fork to select
+    /// with the same display index `session outline` prints and `--at-hop` takes.
+    pub fn compare_unavailable_reason(&self, selection: &NodePath) -> String {
+        match self.nearest_fork() {
+            Some(fork) if &fork == selection => {
+                "no sibling paths at this node yet; branch it to compare alternatives".into()
+            }
+            Some(fork) => {
+                let path = fork.to_string();
+                match self.tree.display_index_for_path(&fork) {
+                    Some(index) => format!(
+                        "no sibling paths at this node; select hop {index} (at-path {path}) to compare"
+                    ),
+                    None => {
+                        format!("no sibling paths at this node; select at-path {path} to compare")
+                    }
+                }
+            }
+            None => "this trace has a single path, so there is nothing to compare".into(),
+        }
+    }
+
     pub fn selection_for_visible_index(
         &self,
         index: usize,
@@ -339,6 +384,64 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    /// Every real trace forks below the root, and explore opens with the root
+    /// selected, so the unavailable message has to say where the fork is instead
+    /// of only that the current node has none.
+    #[test]
+    fn compare_unavailable_reason_points_at_the_nearest_fork() {
+        let tree = build_explore_tree(&trace_with_root(
+            TraceNode {
+                hop: hop(".", "tuininga.org.", "198.41.0.4"),
+                origin: dns_resolve::NodeOrigin::Trace,
+                children: vec![TraceNode {
+                    hop: hop("org.", "tuininga.org.", "199.249.112.1"),
+                    origin: dns_resolve::NodeOrigin::Trace,
+                    children: vec![
+                        TraceNode {
+                            hop: hop("tuininga.org.", "tuininga.org.", "193.47.99.5"),
+                            origin: dns_resolve::NodeOrigin::Trace,
+                            children: Vec::new(),
+                        },
+                        TraceNode {
+                            hop: hop("tuininga.org.", "tuininga.org.", "88.198.229.192"),
+                            origin: dns_resolve::NodeOrigin::Trace,
+                            children: Vec::new(),
+                        },
+                    ],
+                }],
+            },
+            "tuininga.org.",
+        ));
+
+        let root = NodePath::root(0);
+        assert!(!tree.compare_available(&root));
+        assert_eq!(
+            tree.nearest_fork(),
+            Some(NodePath {
+                tree: 0,
+                path: vec![0]
+            })
+        );
+        let reason = tree.compare_unavailable_reason(&root);
+        assert!(reason.contains("select hop 1"), "{reason}");
+        assert!(reason.contains("at-path 0.0"), "{reason}");
+    }
+
+    #[test]
+    fn compare_unavailable_reason_states_a_single_path_trace() {
+        let tree = build_explore_tree(&trace_with_hops(
+            "example.com.",
+            vec![
+                hop(".", "example.com.", "198.41.0.4"),
+                hop("com.", "example.com.", "192.41.162.30"),
+            ],
+        ));
+        assert_eq!(tree.nearest_fork(), None);
+        let reason = tree.compare_unavailable_reason(&NodePath::root(0));
+        assert!(reason.contains("single path"), "{reason}");
+        assert!(!reason.contains("at-path"), "{reason}");
     }
 
     #[test]

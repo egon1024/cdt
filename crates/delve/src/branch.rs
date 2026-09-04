@@ -31,6 +31,11 @@ pub enum ServerTargetInput {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BranchPlan {
+    /// Display index of the planned cut, as `session outline` prints it and
+    /// `--at-hop` accepts it.
+    pub hop: Option<usize>,
+    /// Planned cut in `--at-path` syntax.
+    pub path: String,
     pub zone: String,
     pub server: String,
     pub qname: String,
@@ -196,6 +201,8 @@ pub fn execute_branch(
                 path: format_path(&cut_path),
             })?;
     let delegation_hop = cut_node.hop.clone();
+    let cut_hop_index = session_tree.tree.display_index_for_path(&cut_path);
+    let cut_label = format_path(&cut_path);
 
     let mut warnings = Vec::new();
     let mut planning_budget = QueryBudget::new(runtime.config.trace_max_queries_per_action);
@@ -234,13 +241,22 @@ pub fn execute_branch(
                 &mut warnings,
             )?;
             if target.is_empty() {
-                return Ok(empty_report(dry_run, &delegation_hop, Vec::new(), warnings));
+                return Ok(empty_report(
+                    dry_run,
+                    &delegation_hop,
+                    cut_hop_index,
+                    &cut_label,
+                    Vec::new(),
+                    warnings,
+                ));
             }
             target
         }
     };
 
     let plan = BranchPlan {
+        hop: cut_hop_index,
+        path: cut_label.clone(),
         zone: delegation_hop.zone.clone(),
         server: delegation_hop.server.clone(),
         qname: delegation_hop.qname.clone(),
@@ -253,14 +269,21 @@ pub fn execute_branch(
             nodes_added: 0,
             updated_at: None,
             warnings,
-            budget_truncated: false,
+            budget_truncated: planning_budget.truncated,
             dry_run: true,
             plan: Some(plan),
         });
     }
 
     if targets.is_empty() {
-        return Ok(empty_report(dry_run, &delegation_hop, targets, warnings));
+        return Ok(empty_report(
+            dry_run,
+            &delegation_hop,
+            cut_hop_index,
+            &cut_label,
+            targets,
+            warnings,
+        ));
     }
 
     let qname = DomainName::parse(&hop.qname)?;
@@ -336,6 +359,8 @@ pub fn execute_branch(
         return Ok(empty_report(
             dry_run,
             &delegation_hop,
+            cut_hop_index,
+            &cut_label,
             targets_for_report,
             warnings,
         ));
@@ -373,6 +398,8 @@ pub fn execute_branch(
 fn empty_report(
     dry_run: bool,
     hop: &dns_resolve::TraceHop,
+    cut_hop_index: Option<usize>,
+    cut_label: &str,
     targets: Vec<ServerTarget>,
     warnings: Vec<String>,
 ) -> BranchReport {
@@ -383,6 +410,8 @@ fn empty_report(
         budget_truncated: false,
         dry_run,
         plan: Some(BranchPlan {
+            hop: cut_hop_index,
+            path: cut_label.to_string(),
             zone: hop.zone.clone(),
             server: hop.server.clone(),
             qname: hop.qname.clone(),
@@ -845,18 +874,7 @@ fn parent_path(path: &[usize]) -> Vec<usize> {
 }
 
 fn format_path(path: &NodePath) -> String {
-    if path.path.is_empty() {
-        return path.tree.to_string();
-    }
-    format!(
-        "{}.{}",
-        path.tree,
-        path.path
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(".")
-    )
+    path.to_string()
 }
 
 fn server_label(server: &ServerTarget) -> String {
@@ -930,9 +948,13 @@ fn referral_for_hop(hop: &dns_resolve::TraceHop) -> Option<dns_core::response::D
 pub fn format_branch_report(report: &BranchReport) -> String {
     let mut lines = Vec::new();
     if let Some(plan) = &report.plan {
+        let hop = match plan.hop {
+            Some(index) => format!("hop {index}"),
+            None => "hop ?".to_string(),
+        };
         lines.push(format!(
-            "node: zone {} server {} query {}",
-            plan.zone, plan.server, plan.qname
+            "node: {hop} (at-path {}) zone {} server {} query {}",
+            plan.path, plan.zone, plan.server, plan.qname
         ));
         if plan.targets.is_empty() {
             lines.push("nothing to query at this cut".into());
@@ -950,9 +972,7 @@ pub fn format_branch_report(report: &BranchReport) -> String {
     }
     if report.dry_run {
         lines.push("dry run: no queries issued".into());
-        return lines.join("\n");
-    }
-    if report.nodes_added == 0 {
+    } else if report.nodes_added == 0 {
         lines.push("no nodes added".into());
     } else {
         lines.push(format!("added {} node(s)", report.nodes_added));
@@ -1765,6 +1785,8 @@ mod tests {
             budget_truncated: false,
             dry_run: false,
             plan: Some(BranchPlan {
+                hop: Some(0),
+                path: "0".into(),
                 zone: ".".into(),
                 server: "198.41.0.4".into(),
                 qname: "tuininga.org.".into(),
@@ -1776,6 +1798,98 @@ mod tests {
         assert!(text.contains("queried:"));
         assert!(text.contains("b0.org.afilias-nst.org"));
         assert!(text.contains("no nodes added"));
+    }
+
+    /// A dry run used to return before the warning loop, so an empty plan gave
+    /// the operator "nothing to query at this cut" with no reason and no hint
+    /// that the per-action cap had been reached.
+    #[test]
+    fn dry_run_report_keeps_warnings_and_budget_notice() {
+        let report = BranchReport {
+            nodes_added: 0,
+            updated_at: None,
+            warnings: vec!["all nameservers at this zone cut already queried".into()],
+            budget_truncated: true,
+            dry_run: true,
+            plan: Some(BranchPlan {
+                hop: Some(1),
+                path: "0.0".into(),
+                zone: "org.".into(),
+                server: "199.249.112.1".into(),
+                qname: "tuininga.org.".into(),
+                targets: Vec::new(),
+            }),
+        };
+        let text = format_branch_report(&report);
+        assert!(text.contains("nothing to query at this cut"));
+        assert!(text.contains("dry run: no queries issued"));
+        assert!(text.contains("warning: all nameservers at this zone cut already queried"));
+        assert!(text.contains("warning: per-action query cap reached"));
+    }
+
+    /// The node line has to name the hop and path it resolved, so `--at-hop=N`
+    /// can be checked against what `session outline` prints.
+    #[test]
+    fn report_node_line_names_resolved_hop_and_path() {
+        let report = BranchReport {
+            nodes_added: 0,
+            updated_at: None,
+            warnings: Vec::new(),
+            budget_truncated: false,
+            dry_run: true,
+            plan: Some(BranchPlan {
+                hop: Some(1),
+                path: "0.0".into(),
+                zone: "org.".into(),
+                server: "199.249.112.1".into(),
+                qname: "tuininga.org.".into(),
+                targets: Vec::new(),
+            }),
+        };
+        let text = format_branch_report(&report);
+        assert!(
+            text.starts_with(
+                "node: hop 1 (at-path 0.0) zone org. server 199.249.112.1 query tuininga.org."
+            ),
+            "{text}"
+        );
+    }
+
+    /// `+expand=last` leaves the terminal cut fully queried, so a dry run there
+    /// has nothing to do. It must say why, and name the hop it resolved, rather
+    /// than reporting a bare "nothing to query at this cut".
+    #[test]
+    fn dry_run_at_fully_queried_cut_explains_why_nothing_is_queried() {
+        let mut document = sample_document(
+            tuininga_tree(),
+            TraceRequest::from_options(&TraceOptions {
+                qname: "tuininga.org.".into(),
+                ..Default::default()
+            }),
+        );
+        let runtime = runtime();
+        let at = resolve_branch_target(&document, Some(1), None).expect("hop 1");
+        let report = execute_branch(
+            &mut document,
+            at,
+            BranchIntentArg::ExpandCut,
+            true,
+            &runtime,
+            &mut SilentProgress,
+            None,
+        )
+        .expect("branch");
+        let text = format_branch_report(&report);
+        assert!(
+            text.contains("node: hop 1 (at-path 0.0) zone org. server 199.249.112.1"),
+            "{text}"
+        );
+        assert!(text.contains("nothing to query at this cut"), "{text}");
+        assert!(
+            text.contains("warning: all nameservers at this zone cut already queried"),
+            "{text}"
+        );
+        assert!(text.contains("dry run: no queries issued"), "{text}");
     }
 
     #[test]
@@ -2298,6 +2412,8 @@ mod tests {
             budget_truncated: false,
             dry_run: false,
             plan: Some(BranchPlan {
+                hop: Some(1),
+                path: "0.0".into(),
                 zone: "com.".into(),
                 server: "192.0.0.1".into(),
                 qname: "example.com.".into(),

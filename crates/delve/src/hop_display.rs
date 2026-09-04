@@ -2,10 +2,10 @@ use dns_resolve::{NodePath, TraceHop};
 
 use crate::explore::{cache_source_symbol, ui_symbols};
 
-/// Tracks hop numbering and repeated query fields across a trace or session replay.
+/// Tracks query numbering and repeated query fields across a trace or session replay.
 #[derive(Debug, Default)]
 pub struct HopDisplayState {
-    hop_count: usize,
+    query_count: usize,
     last_qname: Option<String>,
     last_qtype: Option<String>,
     emitted_hop: bool,
@@ -24,15 +24,17 @@ pub fn format_hop_human(state: &mut HopDisplayState, hop: &TraceHop, path: &Node
         output.push('\n');
     }
     state.emitted_hop = true;
-    state.hop_count += 1;
+    state.query_count += 1;
 
     let indent = "  ".repeat(path.path.len());
     let path_label = format_path(path);
     let query = format_query(state, hop);
 
+    // The ordinal counts queries in completion order, which is not the display
+    // index `--at-hop` takes; `at-path` is the stable handle for this node.
     let mut line = format!(
-        "{indent}hop {} path {path_label}  [{}] {query}  {} via {} in {}ms ({}) {}",
-        state.hop_count,
+        "{indent}query {} at-path {path_label}  [{}] {query}  {} via {} in {}ms ({}) {}",
+        state.query_count,
         hop.zone,
         hop.server,
         hop.transport,
@@ -73,16 +75,7 @@ pub fn print_hop_human(state: &mut HopDisplayState, hop: &TraceHop, path: &NodeP
 }
 
 fn format_path(path: &NodePath) -> String {
-    if path.path.is_empty() {
-        return "[]".into();
-    }
-    let joined = path
-        .path
-        .iter()
-        .map(|index| index.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    format!("[{joined}]")
+    path.to_string()
 }
 
 fn format_query(state: &mut HopDisplayState, hop: &TraceHop) -> String {
@@ -137,9 +130,32 @@ mod tests {
                 path: vec![0],
             },
         );
-        assert!(text.starts_with("  hop 1 path [0]"));
+        assert!(text.starts_with("  query 1 at-path 0.0"));
         assert!(text.contains("example.com. A"));
         assert!(!text.starts_with('\n'));
+    }
+
+    /// The printed path must be pasteable into `--at-path` / `--compare-at-path`.
+    #[test]
+    fn printed_path_uses_the_at_path_syntax() {
+        let mut state = HopDisplayState::new();
+        let root = format_hop_human(
+            &mut state,
+            &sample_hop("example.com.", "A", "."),
+            &NodePath::root(0),
+        );
+        let deep = format_hop_human(
+            &mut state,
+            &sample_hop("example.com.", "A", "com."),
+            &NodePath {
+                tree: 0,
+                path: vec![1, 2],
+            },
+        );
+        assert!(root.contains("at-path 0 "), "{root}");
+        assert!(deep.contains("at-path 0.1.2 "), "{deep}");
+        assert!(!root.contains("path []"));
+        assert!(!deep.contains("[1,2]"));
     }
 
     #[test]
@@ -159,7 +175,7 @@ mod tests {
             },
         );
         assert!(second.starts_with('\n'));
-        assert!(second.contains("hop 2 path [0]"));
+        assert!(second.contains("query 2 at-path 0.0"));
         assert!(second.contains("] ·  1.1.1.1"));
         assert!(!second.contains("example.com. A  1.1.1.1"));
     }

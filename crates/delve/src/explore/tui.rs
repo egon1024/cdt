@@ -362,21 +362,16 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
             if refresh_overlay == RefreshOverlay::ConfirmExitSave {
                 render_refresh_confirm_overlay(frame, &theme);
             }
-            if let Some(message) = screen_notice_message(&screen_notice, ActiveScreen::Browse)
+            if let Some(message) = screen_notice_message(&screen_notice, view.active_screen)
                 && branch_overlay == BranchOverlay::None
                 && branch_progress.is_none()
                 && refresh_overlay == RefreshOverlay::None
                 && refresh_progress.is_none()
             {
-                render_message_overlay(frame, &theme, message);
-            }
-            if let Some(message) = screen_notice_message(&screen_notice, ActiveScreen::Compare)
-                && refresh_overlay == RefreshOverlay::None
-                && refresh_progress.is_none()
-                && branch_overlay == BranchOverlay::None
-                && branch_progress.is_none()
-            {
-                render_compare_notice(frame, &theme, message);
+                match view.active_screen {
+                    ActiveScreen::Browse => render_message_overlay(frame, &theme, message),
+                    ActiveScreen::Compare => render_compare_notice(frame, &theme, message),
+                }
             }
         })?;
 
@@ -562,6 +557,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                     }
                     KeyCode::Tab => match cycle_screen_forward(&mut view, &tree) {
                         ScreenCycle::EnteredCompare => {
+                            screen_notice = None;
                             sync_compare_scroll_for_view(
                                 &mut compare_scroll,
                                 &view,
@@ -570,10 +566,11 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                             );
                         }
                         ScreenCycle::SkippedUnavailable => {}
-                        ScreenCycle::LeftCompare => {}
+                        ScreenCycle::LeftCompare => screen_notice = None,
                     },
                     KeyCode::BackTab => match cycle_screen_backward(&mut view, &tree) {
                         ScreenCycle::EnteredCompare => {
+                            screen_notice = None;
                             sync_compare_scroll_for_view(
                                 &mut compare_scroll,
                                 &view,
@@ -582,19 +579,22 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                             );
                         }
                         ScreenCycle::SkippedUnavailable => {}
-                        ScreenCycle::LeftCompare => {}
+                        ScreenCycle::LeftCompare => screen_notice = None,
                     },
                     KeyCode::Char('1') => {
-                        let _ = select_screen(&mut view, ActiveScreen::Browse, &tree);
+                        if select_screen(&mut view, ActiveScreen::Browse, &tree) {
+                            screen_notice = None;
+                        }
                     }
                     KeyCode::Char('2') => {
                         if !select_screen(&mut view, ActiveScreen::Compare, &tree) {
                             set_screen_notice(
                                 &mut screen_notice,
-                                ActiveScreen::Browse,
-                                COMPARE_UNAVAILABLE_MESSAGE,
+                                view.active_screen,
+                                tree.compare_unavailable_reason(&view.selection),
                             );
                         } else {
+                            screen_notice = None;
                             sync_compare_scroll_for_view(
                                 &mut compare_scroll,
                                 &view,
@@ -608,9 +608,10 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                             set_screen_notice(
                                 &mut screen_notice,
                                 view.active_screen,
-                                COMPARE_UNAVAILABLE_MESSAGE,
+                                tree.compare_unavailable_reason(&view.selection),
                             );
                         } else {
+                            screen_notice = None;
                             sync_compare_scroll_for_view(
                                 &mut compare_scroll,
                                 &view,
@@ -886,8 +887,6 @@ impl TraceProgress for ChannelProgress {
         )));
     }
 }
-
-const COMPARE_UNAVAILABLE_MESSAGE: &str = "select a node with multiple paths to compare";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScreenCycle {
@@ -1348,7 +1347,7 @@ fn render_compare(
     prober: &dyn IcmpProber,
 ) {
     let Some(mut model) = CompareScreenModel::from_tree(tree, &view.selection) else {
-        let widget = Paragraph::new(COMPARE_UNAVAILABLE_MESSAGE)
+        let widget = Paragraph::new(tree.compare_unavailable_reason(&view.selection))
             .block(
                 Block::default()
                     .title("Compare")
@@ -1587,12 +1586,14 @@ fn render_branch_overlay(
 fn render_message_overlay(frame: &mut ratatui::Frame<'_>, theme: &Theme, message: &str) {
     let area = centered_rect(60, 30, frame.area());
     frame.render_widget(Clear, area);
-    let widget = Paragraph::new(message).block(
-        Block::default()
-            .title("Notice")
-            .borders(Borders::ALL)
-            .border_style(theme.border_focused()),
-    );
+    let widget = Paragraph::new(message)
+        .block(
+            Block::default()
+                .title("Notice")
+                .borders(Borders::ALL)
+                .border_style(theme.border_focused()),
+        )
+        .wrap(Wrap { trim: false });
     frame.render_widget(widget, area);
 }
 
@@ -1604,7 +1605,9 @@ fn render_compare_notice(frame: &mut ratatui::Frame<'_>, theme: &Theme, message:
         height: 2,
     };
     frame.render_widget(Clear, area);
-    let widget = Paragraph::new(message).style(theme.meta());
+    let widget = Paragraph::new(message)
+        .style(theme.meta())
+        .wrap(Wrap { trim: false });
     frame.render_widget(widget, area);
 }
 
@@ -2099,6 +2102,68 @@ mod tests {
             Some("refreshed 3 hops")
         );
         assert_eq!(screen_notice_message(&notice, ActiveScreen::Browse), None);
+
+        // The frame looks the notice up by active screen, so a Browse notice
+        // cannot paint over Compare once the operator gets there.
+        let mut browse_notice = None;
+        set_screen_notice(
+            &mut browse_notice,
+            ActiveScreen::Browse,
+            "no sibling paths at this node; select hop 1 (at-path 0.0) to compare",
+        );
+        assert_eq!(
+            screen_notice_message(&browse_notice, ActiveScreen::Compare),
+            None
+        );
+    }
+
+    /// Pressing `2` where Compare is unavailable must name the fork to select,
+    /// not just say the current node has no siblings.
+    #[test]
+    fn compare_unavailable_notice_names_the_fork() {
+        let tree = super::super::tree::build_explore_tree(&TraceTree {
+            request: TraceTreeRequest {
+                qname: "tuininga.org.".into(),
+                qtype: "A".into(),
+                started_at: "2026-08-25T00:00:00Z".into(),
+            },
+            root: TraceNode {
+                hop: sample_hop(),
+                origin: NodeOrigin::Trace,
+                children: vec![TraceNode {
+                    hop: sample_hop(),
+                    origin: NodeOrigin::Trace,
+                    children: vec![
+                        tuininga_answered_leaf("192.0.2.10", "ns1", 10),
+                        tuininga_answered_leaf("192.0.2.11", "ns2", 20),
+                    ],
+                }],
+            },
+            budget_truncated: false,
+        });
+        let mut view = ViewStateController::default_for_tree(&tree);
+        view.selection = NodePath::root(0);
+
+        assert!(!select_screen(&mut view, ActiveScreen::Compare, &tree));
+        assert_eq!(view.active_screen, ActiveScreen::Browse);
+
+        let mut notice = None;
+        set_screen_notice(
+            &mut notice,
+            view.active_screen,
+            tree.compare_unavailable_reason(&view.selection),
+        );
+        let message = screen_notice_message(&notice, ActiveScreen::Browse).expect("notice");
+        assert!(message.contains("select hop 1"), "{message}");
+        assert!(message.contains("at-path 0.0"), "{message}");
+
+        // Following the hint reaches Compare.
+        view.selection = NodePath {
+            tree: 0,
+            path: vec![0],
+        };
+        assert!(select_screen(&mut view, ActiveScreen::Compare, &tree));
+        assert_eq!(view.active_screen, ActiveScreen::Compare);
     }
 
     fn fork_explore_tree() -> ExploreTree {

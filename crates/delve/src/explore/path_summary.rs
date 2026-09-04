@@ -153,7 +153,7 @@ pub fn enrich_icmp_cached(
 pub fn render_comparison_text(comparison: &ForkComparison) -> String {
     let mut lines = Vec::new();
     lines.push(format!(
-        "Compare fork {} ({})  path {}",
+        "Compare fork {} ({})  at-path {}",
         comparison.fork_zone,
         comparison.fork_qname,
         format_node_path(&comparison.fork)
@@ -359,17 +359,7 @@ fn answer_signature(hop: &TraceHop) -> Vec<(String, String, String)> {
 }
 
 fn format_node_path(path: &NodePath) -> String {
-    if path.path.is_empty() {
-        return "[0]".to_string();
-    }
-    format!(
-        "[0.{}]",
-        path.path
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(".")
-    )
+    path.to_string()
 }
 
 fn format_referral_diff(diff: &ReferralDiff) -> String {

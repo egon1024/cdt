@@ -12,7 +12,9 @@ Human progress goes to **stderr**. With `+events`, structured NDJSON events go t
 
 A stored session holds one or more **trace trees**. Each tree is a nested structure of **nodes** — one DNS exchange per node, with child nodes for the next steps (delegation, referral resolution, alias legs, or branches).
 
-Nodes are addressed by a **path** (for example `0.1.2`): child indices from the tree root. Paths are stable for the lifetime of a session because nodes are only appended, never reordered. The explore TUI, `session outline`, and `session branch --at-path` all use the same path notation.
+Nodes are addressed by a **path** (for example `0.1.2`): the tree index followed by child indices from that tree's root. Paths are stable for the lifetime of a session because nodes are only appended, never reordered. Live trace progress, the explore TUI, `session outline`, and `session branch --at-path` all use the same path notation.
+
+Nodes also have a **display index** — the number `session outline` prints in brackets (`[0]`, `[1]`, …), counting nodes top to bottom. That is what `--at-hop` and `--compare-at-hop` take. Live trace progress instead labels each line `query N at-path P`, where `N` counts queries in completion order: `N` is not a display index, so pass `at-path P` to address a node you saw during a trace, or read the index from `session outline`.
 
 ## Expansion at trace time
 
@@ -92,10 +94,12 @@ delve session branch --at-hop 5 --server @203.0.113.7
 delve session branch --dry-run --at-path 0.2 --expand   # plan only
 ```
 
-- **`--at-path`** — stable node path (same as in `session outline` / explore)
+- **`--at-path`** — stable node path (same as in live progress, `session outline`, and explore)
 - **`--at-hop`** — display index from `session outline` (alternative to path)
 - **`--expand`** — query every nameserver at the zone cut that was not queried on the selected path
 - **`--server`** — query one named nameserver or `@address` at the cut
+
+Every report starts by naming the cut it resolved (`node: hop 1 (at-path 0.0) zone org. …`), so you can confirm `--at-hop` landed where you meant. Under `+expand=last` the final cut is already fully queried, so `--expand` there reports `nothing to query at this cut` with a warning saying every listed nameserver was queried; branch at a cut further up (often `--at-hop 0`, the root cut) to reach unqueried servers.
 
 Branching updates the session in place (`updated_at` changes). The branched session becomes the default session for subsequent commands.
 

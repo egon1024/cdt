@@ -47,6 +47,18 @@ impl NodePath {
     }
 }
 
+/// Dotted form accepted by `--at-path` / `--compare-at-path`: tree index first,
+/// then one child index per level (`0` is the first tree's root).
+impl std::fmt::Display for NodePath {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}", self.tree)?;
+        for index in &self.path {
+            write!(formatter, ".{index}")?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TraceNode {
     pub hop: TraceHop,
@@ -214,6 +226,20 @@ mod tests {
             from_cache: false,
             outcome: HopOutcome::Answered,
         }
+    }
+
+    #[test]
+    fn node_path_displays_in_at_path_syntax() {
+        assert_eq!(NodePath::root(0).to_string(), "0");
+        assert_eq!(NodePath::root(2).to_string(), "2");
+        assert_eq!(
+            NodePath {
+                tree: 0,
+                path: vec![1, 2]
+            }
+            .to_string(),
+            "0.1.2"
+        );
     }
 
     #[test]
