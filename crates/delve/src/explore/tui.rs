@@ -1124,16 +1124,12 @@ fn handle_compare_keys(
             view.compare_fork = tree.compare_fork(&view.selection).map(|fork| fork.at);
             sync_compare_scroll(compare_scroll, new_index, visible.len(), scroll_limits);
         }
-        KeyCode::Char(' ') => {
+        KeyCode::Enter | KeyCode::Char(' ') => {
             if let Some(node) = visible.get(selected_index)
                 && node.expandable
             {
                 view.toggle_expansion(&node.path);
             }
-        }
-        KeyCode::Enter => {
-            view.active_screen = ActiveScreen::Browse;
-            view.mark_dirty();
         }
         KeyCode::Char('E') => view.expand_all(tree),
         KeyCode::Char('C') => view.collapse_all(tree),
@@ -1784,8 +1780,9 @@ fn help_lines(view: &ViewStateController, theme: &Theme) -> Vec<Line<'static>> {
     } else {
         lines.extend([
             help_section("Compare", theme),
-            help_binding("j/k, ↑/↓", "Move among sibling paths", theme),
-            help_binding("Enter", "Return to Browse at selected path", theme),
+            help_binding("j/k, ↑/↓", "Move selection", theme),
+            help_binding("Space, Enter", "Toggle expand", theme),
+            help_binding("Tab / 1", "Return to Browse", theme),
             help_binding("F", "Toggle fork full-path stats panel", theme),
             help_binding("B", "Toggle fork sibling hop RTT panel", theme),
             help_binding("f / s", "Highlight fastest / slowest answered path", theme),
@@ -2115,7 +2112,38 @@ mod tests {
     }
 
     #[test]
-    fn compare_selection_moves_with_j_and_returns_to_browse() {
+    fn compare_enter_toggles_expansion_without_leaving_compare() {
+        let tree = fork_explore_tree();
+        let mut view = ViewStateController::default_for_tree(&tree);
+        activate_compare(&mut view, &tree);
+        assert_eq!(view.active_screen, ActiveScreen::Compare);
+        let visible = tree.visible_nodes(&view.expanded_paths);
+        let root = visible.first().expect("root");
+        assert!(root.expandable);
+        let was_expanded = root.expanded;
+
+        let mut scroll = 0u16;
+        handle_compare_keys(
+            event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut view,
+            &tree,
+            &visible,
+            &mut scroll,
+            CompareScrollLimits {
+                max_scroll: 0,
+                inner_height: 20,
+                first_row_line: 3,
+                total_lines: 5,
+            },
+            &mut None,
+        );
+        assert_eq!(view.active_screen, ActiveScreen::Compare);
+        let expanded = tree.visible_nodes(&view.expanded_paths);
+        assert_ne!(expanded.first().expect("root").expanded, was_expanded);
+    }
+
+    #[test]
+    fn compare_j_moves_selection() {
         let tree = fork_explore_tree();
         let mut view = ViewStateController::default_for_tree(&tree);
         activate_compare(&mut view, &tree);
@@ -2136,21 +2164,6 @@ mod tests {
             },
             &mut None,
         );
-        handle_compare_keys(
-            event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &mut view,
-            &tree,
-            &visible,
-            &mut scroll,
-            CompareScrollLimits {
-                max_scroll: 0,
-                inner_height: 20,
-                first_row_line: 3,
-                total_lines: 5,
-            },
-            &mut None,
-        );
-        assert_eq!(view.active_screen, ActiveScreen::Browse);
         assert_eq!(view.selection.path, vec![0]);
     }
 

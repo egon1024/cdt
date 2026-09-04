@@ -47,7 +47,7 @@ Two-pane layout: resolution tree on one side, dig-style detail for the selected 
 
 ## Compare screen
 
-Full trace tree with aligned columns: zone, server, name, rcode, RTT, and a latency bar on every hop. The tree mirrors Browse expansion (`Space`, `E`, `C`); `j`/`k` move selection; `Enter` returns to Browse on the selected hop. Forks are marked with `•`.
+Full trace tree with aligned columns: zone, server, name, rcode, RTT, and a latency bar on every hop. The tree mirrors Browse expansion (`Space` / `Enter`, `E`, `C`); `j`/`k` move selection; `Tab` or `1` returns to Browse. Forks are marked with `•`.
 
 Whole-tree fastest, slowest, and average RTTs appear in a summary strip at the top. Stats include **answered** leaf paths only (failed or referral-only terminals are excluded). When the trace was budget-truncated, the strip notes that path statistics may be incomplete.
 
