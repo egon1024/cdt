@@ -1584,12 +1584,24 @@ fn hop_tree_line(indent: &str, marker: &str, hop: &TraceHop, theme: &Theme) -> L
     } else {
         Span::raw("")
     };
+    let status = if failed {
+        "FAILED"
+    } else {
+        hop.rcode.as_str()
+    };
     Line::from(vec![
         Span::raw(format!("{indent}{marker}")),
         prefix,
         Span::styled(format!("[{}] ", hop.zone), theme.zone()),
         Span::raw(format!("{} {}  ", hop.qname, hop.qtype)),
-        Span::styled(hop.rcode.clone(), theme.rcode(&hop.rcode)),
+        Span::styled(
+            status.to_string(),
+            if failed {
+                theme.failure()
+            } else {
+                theme.rcode(&hop.rcode)
+            },
+        ),
         Span::styled(
             format!("  {}  ", cache_source_symbol(hop.from_cache, theme.symbols)),
             theme.cache_source(hop.from_cache),
