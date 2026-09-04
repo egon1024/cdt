@@ -53,6 +53,20 @@ pub fn format_rtt_plain_line(rtt_ms: u64) -> String {
     format!("rtt: {rtt_ms} ms")
 }
 
+/// Slowest hop among visible Compare rows; bars scale relative to this value.
+pub fn max_rtt_ms_for_visible(
+    tree: &super::tree::ExploreTree,
+    visible: &[super::tree::VisibleNode],
+) -> u32 {
+    visible
+        .iter()
+        .filter_map(|node| tree.hop_at(&node.path))
+        .map(|hop| hop.rtt_ms.min(u64::from(u32::MAX)) as u32)
+        .max()
+        .unwrap_or(0)
+        .max(1)
+}
+
 /// Browse detail meta line: `rtt` label, absolute-scale bar, colored `{n} ms`.
 pub fn rtt_detail_line(rtt_ms: u64, config: RttBarConfig, theme: &Theme) -> Line<'static> {
     let rtt_u32 = rtt_ms.min(u64::from(u32::MAX)) as u32;
@@ -115,6 +129,41 @@ mod tests {
         theme.color_enabled = true;
         theme.color_capability = capability;
         theme
+    }
+
+    #[test]
+    fn max_rtt_ms_for_visible_reads_slowest_hop() {
+        use crate::explore::tree::build_explore_tree;
+        use dns_resolve::{TraceHop, TraceTreeRequest, build_linear_tree};
+
+        let trace = build_linear_tree(
+            vec![TraceHop {
+                zone: ".".into(),
+                server: "1.1.1.1".into(),
+                server_name: None,
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                transport: "udp".into(),
+                rtt_ms: 120,
+                rcode: "NOERROR".into(),
+                nsid: None,
+                ede_code: None,
+                ede_text: None,
+                referral_ns: vec![],
+                glue: vec![],
+                response: Default::default(),
+                from_cache: false,
+                outcome: dns_resolve::HopOutcome::Referral,
+            }],
+            TraceTreeRequest {
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                started_at: "2026-08-25T00:00:00Z".into(),
+            },
+        );
+        let tree = build_explore_tree(&trace);
+        let visible = tree.visible_nodes(&[]);
+        assert_eq!(max_rtt_ms_for_visible(&tree, &visible), 120);
     }
 
     #[test]

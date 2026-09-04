@@ -6,7 +6,7 @@ Inspect stored traces without network I/O: interactive TUI, one-shot outline, an
 
 | Command | Output |
 |---------|--------|
-| **`session explore`** | TUI with Browse (tree + detail) and Compare (fork-scoped sibling path table, DNS/ICMP RTT); `Tab` cycles screens; `?` help |
+| **`session explore`** | TUI with Browse (tree + detail) and Compare (full trace tree with per-hop latency bars); `Tab` cycles screens; `?` help |
 | **`session outline`** | `session: <id>` header + indented tree on stdout; `--compare-at-hop` / `--compare-at-path` prints a path comparison |
 | **`session events`** | Structured JSON explore tree on stdout; `--compare-at-hop` / `--compare-at-path` emits `path_comparison` JSON |
 | **`session show --json`** | Flat JSON trace snapshot on stdout |
@@ -47,13 +47,13 @@ Two-pane layout: resolution tree on one side, dig-style detail for the selected 
 
 ## Compare screen
 
-Sibling-path table for the focused fork: one row per alternate server, with hop count, cumulative DNS RTT, delta vs the fastest successful sibling, a latency bar column (all rows, scaled to the slowest sibling), ICMP RTT (`n/a` when probing is unavailable), outcome, and referral-set differences. Siblings that returned the same referral set leave the referral column blank. Cache-served hops are marked so they are not read as network RTT.
+Full trace tree with aligned columns: zone, server, name, rcode, RTT, and a latency bar on every hop. The tree mirrors Browse expansion (`Space`, `E`, `C`); `j`/`k` move selection; `Enter` returns to Browse on the selected hop. Forks are marked with `•`.
 
-Compare is scoped to a fork: each row is an alternate server at the same zone cut. Explore opens on the root, which usually has only one child, so pressing `Tab`, `2`, or `m` jumps to the nearest fork in the tree and opens Compare there. The header shows `[Compare n/a]` only when the trace has no fork at all (a single linear path). In that case Tab stays on Browse and shows `this trace has a single path, so there is nothing to compare`.
+Whole-tree fastest, slowest, and average RTTs appear in a summary strip at the top. Stats include **answered** leaf paths only (failed or referral-only terminals are excluded). When the trace was budget-truncated, the strip notes that path statistics may be incomplete.
 
-`session outline --compare-at-hop=N` and `session events --compare-at-hop=N` print the same metrics as text and JSON (no DNS queries).
+Fork-scoped sibling comparison (DNS/ICMP metrics, referral diffs) is available from the CLI:
 
-Whole-tree fastest, slowest, and average RTTs appear in the summary strip at the top. Stats include **answered** leaf paths only (failed or referral-only terminals are excluded). When the trace was budget-truncated, the strip notes that path statistics may be incomplete.
+`session outline --compare-at-hop=N` and `session events --compare-at-hop=N` print the same fork table as text and JSON (no DNS queries).
 
 ### Compare analytics keys
 

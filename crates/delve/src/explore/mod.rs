@@ -1,3 +1,5 @@
+mod compare;
+#[allow(dead_code)] // fork-scoped projection; interactive Compare uses the full-tree renderer
 mod compare_screen;
 mod detail;
 mod dig_view;
