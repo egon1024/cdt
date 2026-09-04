@@ -49,7 +49,7 @@ Two-pane layout: resolution tree on one side, dig-style detail for the selected 
 
 Sibling-path table for the focused fork: one row per alternate server, with hop count, cumulative DNS RTT, delta vs the fastest successful sibling, ICMP RTT (`n/a` when probing is unavailable), outcome, and referral-set differences. Siblings that returned the same referral set leave the referral column blank. Cache-served hops are marked so they are not read as network RTT, and the selected row expands into per-hop lines with latency bars so one slow hop stands out.
 
-Compare is scoped to a fork, so it is unavailable while the selection has no sibling paths — including the root node explore starts on, whose only child is the first delegation. Switch with `Tab` from Browse or press `m` when siblings exist. Sequential cycling skips Compare when it is unavailable; pressing `2` or `m` names the hop to select instead (`no sibling paths at this node; select hop 1 (at-path 0.0) to compare`), or says the trace has a single path when it has no fork at all.
+Compare is scoped to a fork: each row is an alternate server at the same zone cut. Explore opens on the root, which usually has only one child, so pressing `Tab`, `2`, or `m` jumps to the nearest fork in the tree and opens Compare there. The header shows `[Compare n/a]` only when the trace has no fork at all (a single linear path). In that case Tab stays on Browse and shows `this trace has a single path, so there is nothing to compare`.
 
 `session outline --compare-at-hop=N` and `session events --compare-at-hop=N` print the same metrics as text and JSON (no DNS queries).
 
