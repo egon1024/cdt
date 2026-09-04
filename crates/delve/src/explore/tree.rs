@@ -93,6 +93,11 @@ impl ExploreTree {
         self.compare_fork(selection).is_some()
     }
 
+    /// True when Compare can be opened at all (some fork exists in the tree).
+    pub fn compare_openable(&self) -> bool {
+        self.nearest_fork().is_some()
+    }
+
     /// Shallowest fork anywhere in the tree, used to tell the operator where
     /// comparison is reachable when the current selection has no sibling paths.
     pub fn nearest_fork(&self) -> Option<NodePath> {
@@ -116,26 +121,9 @@ impl ExploreTree {
         None
     }
 
-    /// Why Compare cannot be shown for `selection`, naming the fork to select
-    /// with the same display index `session outline` prints and `--at-hop` takes.
-    pub fn compare_unavailable_reason(&self, selection: &NodePath) -> String {
-        match self.nearest_fork() {
-            Some(fork) if &fork == selection => {
-                "no sibling paths at this node yet; branch it to compare alternatives".into()
-            }
-            Some(fork) => {
-                let path = fork.to_string();
-                match self.tree.display_index_for_path(&fork) {
-                    Some(index) => format!(
-                        "no sibling paths at this node; select hop {index} (at-path {path}) to compare"
-                    ),
-                    None => {
-                        format!("no sibling paths at this node; select at-path {path} to compare")
-                    }
-                }
-            }
-            None => "this trace has a single path, so there is nothing to compare".into(),
-        }
+    /// Why Compare cannot be opened at all (no fork anywhere in the tree).
+    pub fn compare_unavailable_reason(&self, _selection: &NodePath) -> String {
+        "this trace has a single path, so there is nothing to compare".into()
     }
 
     pub fn selection_for_visible_index(
@@ -386,11 +374,10 @@ mod tests {
         );
     }
 
-    /// Every real trace forks below the root, and explore opens with the root
-    /// selected, so the unavailable message has to say where the fork is instead
-    /// of only that the current node has none.
+    /// Explore opens on the root, but Compare can still open when a fork exists
+    /// deeper in the tree.
     #[test]
-    fn compare_unavailable_reason_points_at_the_nearest_fork() {
+    fn compare_openable_when_fork_is_below_root_selection() {
         let tree = build_explore_tree(&trace_with_root(
             TraceNode {
                 hop: hop(".", "tuininga.org.", "198.41.0.4"),
@@ -417,6 +404,7 @@ mod tests {
 
         let root = NodePath::root(0);
         assert!(!tree.compare_available(&root));
+        assert!(tree.compare_openable());
         assert_eq!(
             tree.nearest_fork(),
             Some(NodePath {
@@ -424,9 +412,6 @@ mod tests {
                 path: vec![0]
             })
         );
-        let reason = tree.compare_unavailable_reason(&root);
-        assert!(reason.contains("select hop 1"), "{reason}");
-        assert!(reason.contains("at-path 0.0"), "{reason}");
     }
 
     #[test]

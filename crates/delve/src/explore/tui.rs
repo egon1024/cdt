@@ -565,7 +565,13 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                 terminal.size()?,
                             );
                         }
-                        ScreenCycle::SkippedUnavailable => {}
+                        ScreenCycle::SkippedUnavailable => {
+                            set_screen_notice(
+                                &mut screen_notice,
+                                view.active_screen,
+                                tree.compare_unavailable_reason(&view.selection),
+                            );
+                        }
                         ScreenCycle::LeftCompare => screen_notice = None,
                     },
                     KeyCode::BackTab => match cycle_screen_backward(&mut view, &tree) {
@@ -578,7 +584,13 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                 terminal.size()?,
                             );
                         }
-                        ScreenCycle::SkippedUnavailable => {}
+                        ScreenCycle::SkippedUnavailable => {
+                            set_screen_notice(
+                                &mut screen_notice,
+                                view.active_screen,
+                                tree.compare_unavailable_reason(&view.selection),
+                            );
+                        }
                         ScreenCycle::LeftCompare => screen_notice = None,
                     },
                     KeyCode::Char('1') => {
@@ -912,10 +924,10 @@ fn screen_indicator(
             theme.meta()
         },
     );
-    let compare_available = tree.compare_available(&view.selection);
+    let compare_openable = tree.compare_openable();
     let compare_label = if view.active_screen == ActiveScreen::Compare {
         "[Compare*]"
-    } else if compare_available {
+    } else if compare_openable {
         "[Compare]"
     } else {
         "[Compare n/a]"
@@ -924,7 +936,7 @@ fn screen_indicator(
         compare_label,
         if view.active_screen == ActiveScreen::Compare {
             theme.accent_bold()
-        } else if compare_available {
+        } else if compare_openable {
             theme.meta()
         } else {
             theme.failure()
@@ -934,9 +946,19 @@ fn screen_indicator(
 }
 
 fn activate_compare(view: &mut ViewStateController, tree: &ExploreTree) -> bool {
-    let Some(fork) = tree.compare_fork(&view.selection) else {
+    if let Some(fork) = tree.compare_fork(&view.selection) {
+        return enter_compare(view, fork);
+    }
+    let Some(fork_path) = tree.nearest_fork() else {
         return false;
     };
+    reveal_path(view, tree, &fork_path);
+    tree.compare_fork(&view.selection)
+        .map(|fork| enter_compare(view, fork))
+        .unwrap_or(false)
+}
+
+fn enter_compare(view: &mut ViewStateController, fork: super::tree::CompareFork) -> bool {
     view.active_screen = ActiveScreen::Compare;
     view.compare_fork = Some(fork.at.clone());
     view.compare_row = fork.row;
@@ -2117,10 +2139,10 @@ mod tests {
         );
     }
 
-    /// Pressing `2` where Compare is unavailable must name the fork to select,
-    /// not just say the current node has no siblings.
+    /// Pressing `2` from the root jumps to the nearest fork instead of staying
+    /// on Browse with Compare unavailable.
     #[test]
-    fn compare_unavailable_notice_names_the_fork() {
+    fn compare_from_root_jumps_to_nearest_fork() {
         let tree = super::super::tree::build_explore_tree(&TraceTree {
             request: TraceTreeRequest {
                 qname: "tuininga.org.".into(),
@@ -2144,26 +2166,15 @@ mod tests {
         let mut view = ViewStateController::default_for_tree(&tree);
         view.selection = NodePath::root(0);
 
-        assert!(!select_screen(&mut view, ActiveScreen::Compare, &tree));
-        assert_eq!(view.active_screen, ActiveScreen::Browse);
-
-        let mut notice = None;
-        set_screen_notice(
-            &mut notice,
-            view.active_screen,
-            tree.compare_unavailable_reason(&view.selection),
-        );
-        let message = screen_notice_message(&notice, ActiveScreen::Browse).expect("notice");
-        assert!(message.contains("select hop 1"), "{message}");
-        assert!(message.contains("at-path 0.0"), "{message}");
-
-        // Following the hint reaches Compare.
-        view.selection = NodePath {
-            tree: 0,
-            path: vec![0],
-        };
         assert!(select_screen(&mut view, ActiveScreen::Compare, &tree));
         assert_eq!(view.active_screen, ActiveScreen::Compare);
+        assert_eq!(
+            view.compare_fork,
+            Some(NodePath {
+                tree: 0,
+                path: vec![0]
+            })
+        );
     }
 
     fn fork_explore_tree() -> ExploreTree {
