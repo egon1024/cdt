@@ -1584,11 +1584,7 @@ fn hop_tree_line(indent: &str, marker: &str, hop: &TraceHop, theme: &Theme) -> L
     } else {
         Span::raw("")
     };
-    let status = if failed {
-        "FAILED"
-    } else {
-        hop.rcode.as_str()
-    };
+    let status = if failed { "FAILED" } else { hop.rcode.as_str() };
     Line::from(vec![
         Span::raw(format!("{indent}{marker}")),
         prefix,
