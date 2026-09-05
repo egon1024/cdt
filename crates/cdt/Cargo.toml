@@ -7,6 +7,10 @@ license.workspace = true
 rust-version.workspace = true
 build = "build.rs"
 
+[lib]
+name = "cdt"
+path = "src/lib.rs"
+
 [[bin]]
 name = "cdt"
 path = "src/main.rs"
@@ -16,3 +20,5 @@ clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml = "0.8"
+
+[build-dependencies]

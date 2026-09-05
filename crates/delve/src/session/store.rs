@@ -1,11 +1,11 @@
-use dns_resolve::TraceResult;
+use dns_resolve::TraceTree;
 use thiserror::Error;
 
 use crate::config::SessionRetention;
 use crate::retention::PurgeReport;
 use crate::trace_request::TraceRequest;
 
-use super::document::{SessionDocument, SessionSummary};
+use super::document::{SessionDocument, SessionListItem};
 use super::id::{is_ambiguous_prefix, resolve_prefix};
 use super::ndjson::NdjsonSessionStore;
 use super::sqlite::SqliteSessionStore;
@@ -27,14 +27,21 @@ pub enum SessionError {
     #[error("session serialization error: {0}")]
     Serialization(String),
 
-    #[error("no last session; run a trace or specify a session id")]
-    NoLastSession,
+    #[error("no sessions stored; run a trace or specify a session id")]
+    NoSessions,
+
+    #[error("session {id} uses unsupported format version {version}")]
+    UnsupportedFormat { id: String, version: u32 },
+
+    #[error("unsupported legacy session store at {path}; remove or migrate the file")]
+    UnsupportedLegacyStore { path: String },
 }
 
 pub trait SessionStore: Send {
-    fn save(&mut self, result: &TraceResult, request: &TraceRequest) -> Result<String>;
+    fn save(&mut self, result: &TraceTree, request: &TraceRequest) -> Result<String>;
+    fn update(&mut self, document: &SessionDocument) -> Result<()>;
     fn get(&self, id: &str) -> Result<SessionDocument>;
-    fn list(&self) -> Result<Vec<SessionSummary>>;
+    fn list(&self) -> Result<Vec<SessionListItem>>;
     fn remove(&mut self, id: &str) -> Result<()>;
     fn all_ids(&self) -> Result<Vec<String>>;
     fn set_pinned(&mut self, id: &str, pinned: bool) -> Result<()>;
@@ -43,6 +50,8 @@ pub trait SessionStore: Send {
         retention: SessionRetention,
         dry_run: bool,
     ) -> Result<PurgeReport>;
+    fn purge_session(&mut self, id: &str, dry_run: bool) -> Result<PurgeReport>;
+    fn purge_all(&mut self, dry_run: bool) -> Result<PurgeReport>;
 }
 
 pub struct OpenSessionStore {
@@ -50,8 +59,12 @@ pub struct OpenSessionStore {
 }
 
 impl SessionStore for OpenSessionStore {
-    fn save(&mut self, result: &TraceResult, request: &TraceRequest) -> Result<String> {
+    fn save(&mut self, result: &TraceTree, request: &TraceRequest) -> Result<String> {
         self.inner.save(result, request)
+    }
+
+    fn update(&mut self, document: &SessionDocument) -> Result<()> {
+        self.inner.update(document)
     }
 
     fn get(&self, id: &str) -> Result<SessionDocument> {
@@ -59,7 +72,7 @@ impl SessionStore for OpenSessionStore {
         self.inner.get(&resolved)
     }
 
-    fn list(&self) -> Result<Vec<SessionSummary>> {
+    fn list(&self) -> Result<Vec<SessionListItem>> {
         self.inner.list()
     }
 
@@ -83,6 +96,15 @@ impl SessionStore for OpenSessionStore {
         dry_run: bool,
     ) -> Result<PurgeReport> {
         self.inner.purge_by_retention(retention, dry_run)
+    }
+
+    fn purge_session(&mut self, id: &str, dry_run: bool) -> Result<PurgeReport> {
+        let resolved = self.resolve_lookup_id(id)?;
+        self.inner.purge_session(&resolved, dry_run)
+    }
+
+    fn purge_all(&mut self, dry_run: bool) -> Result<PurgeReport> {
+        self.inner.purge_all(dry_run)
     }
 }
 

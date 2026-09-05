@@ -1,235 +1,262 @@
-use dns_resolve::{FinalAnswer, TraceHop, TraceResult};
+use dns_resolve::{NodePath, TraceHop, TraceNode, TraceTree};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ExploreNode {
-    Delegation {
-        hop_index: usize,
-        children: Vec<ExploreNode>,
-    },
-    Resolve {
-        target: String,
-        children: Vec<ExploreNode>,
-    },
-    Hop {
-        hop_index: usize,
-    },
-    Final,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct ExploreTree {
     pub qname: String,
     pub qtype: String,
-    pub children: Vec<ExploreNode>,
-    trace: TraceResult,
+    pub tree_index: usize,
+    pub tree: TraceTree,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisibleNode {
+    pub path: NodePath,
+    pub depth: usize,
+    pub expandable: bool,
+    pub expanded: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompareFork {
+    pub at: NodePath,
+    pub row: usize,
 }
 
 impl ExploreTree {
-    pub fn hop(&self, index: usize) -> &TraceHop {
-        &self.trace.hops[index]
+    pub fn trace(&self) -> &TraceTree {
+        &self.tree
     }
 
-    pub fn trace(&self) -> &TraceResult {
-        &self.trace
-    }
-}
-
-pub fn build_explore_tree(trace: &TraceResult) -> ExploreTree {
-    let alias_legs = alias_delegation_legs(&trace.hops);
-    let mut children = if alias_legs.len() >= 2 {
-        build_alias_chain_children(&trace.hops, &alias_legs)
-    } else {
-        build_main_path_children(
-            &trace.hops,
-            &normalize_qname(&trace.qname),
-            0..trace.hops.len(),
-        )
-    };
-
-    if trace.final_response.is_some() && should_show_final_node(trace) {
-        attach_final_node(&mut children);
+    pub fn node_at(&self, path: &NodePath) -> Option<&TraceNode> {
+        self.tree.resolve(path)
     }
 
-    ExploreTree {
-        qname: trace.qname.clone(),
-        qtype: trace.qtype.clone(),
-        children,
-        trace: trace.clone(),
+    pub fn hop_at(&self, path: &NodePath) -> Option<&TraceHop> {
+        self.tree.resolve(path).map(|node| &node.hop)
     }
-}
 
-fn attach_final_node(children: &mut Vec<ExploreNode>) {
-    if let Some(ExploreNode::Resolve {
-        children: inner, ..
-    }) = children.last_mut()
-    {
-        inner.push(ExploreNode::Final);
-    } else {
-        children.push(ExploreNode::Final);
+    pub fn has_children(&self, path: &NodePath) -> bool {
+        self.tree
+            .resolve(path)
+            .is_some_and(|node| !node.children.is_empty())
     }
-}
 
-/// The trace stores the authoritative exchange as both the last hop and
-/// `final_response`. Skip a separate Final node when they describe the same query.
-fn should_show_final_node(trace: &TraceResult) -> bool {
-    let Some(answer) = trace.final_response.as_ref() else {
-        return false;
-    };
-    let Some(last_hop) = trace.hops.last() else {
-        return true;
-    };
-    !final_answer_matches_hop(last_hop, answer, &trace.qname)
-}
+    pub fn default_expanded_paths(&self) -> Vec<NodePath> {
+        let mut paths = Vec::new();
+        collect_expandable_paths(&self.tree.root, self.tree_index, &[], &mut paths);
+        paths
+    }
 
-fn final_answer_matches_hop(hop: &TraceHop, answer: &FinalAnswer, trace_qname: &str) -> bool {
-    let answer_qname = if answer.qname.is_empty() {
-        trace_qname
-    } else {
-        answer.qname.as_str()
-    };
-    hop.server == answer.server
-        && hop.rtt_ms == answer.rtt_ms
-        && hop.rcode == answer.rcode
-        && normalize_qname(&hop.qname) == normalize_qname(answer_qname)
-}
+    pub fn visible_nodes(&self, expanded_paths: &[NodePath]) -> Vec<VisibleNode> {
+        let mut visible = Vec::new();
+        append_visible(
+            &self.tree.root,
+            self.tree_index,
+            &[],
+            0,
+            expanded_paths,
+            &mut visible,
+        );
+        visible
+    }
 
-fn build_alias_chain_children(hops: &[TraceHop], legs: &[(usize, usize)]) -> Vec<ExploreNode> {
-    legs.iter()
-        .map(|(start, end)| {
-            let target = hops[*start].qname.clone();
-            let main_qname = normalize_qname(&target);
-            let children = build_main_path_children(hops, &main_qname, *start..*end);
-            ExploreNode::Resolve { target, children }
-        })
-        .collect()
-}
-
-fn build_main_path_children(
-    hops: &[TraceHop],
-    main_qname: &str,
-    range: std::ops::Range<usize>,
-) -> Vec<ExploreNode> {
-    let mut children = Vec::new();
-    let mut index = range.start;
-
-    while index < range.end {
-        let hop_qname = normalize_qname(&hops[index].qname);
-        if hop_qname == main_qname {
-            let hop_index = index;
-            index += 1;
-            let resolution_children =
-                collect_resolution_groups(hops, main_qname, &mut index, range.end);
-            children.push(ExploreNode::Delegation {
-                hop_index,
-                children: resolution_children,
+    pub fn compare_fork(&self, selection: &NodePath) -> Option<CompareFork> {
+        let node = self.tree.resolve(selection)?;
+        if node.children.len() >= 2 {
+            return Some(CompareFork {
+                at: selection.clone(),
+                row: 0,
             });
-        } else {
-            children.push(collect_resolution_group(
-                hops, main_qname, &mut index, range.end,
-            ));
         }
+        if selection.path.is_empty() {
+            return None;
+        }
+        let parent_path = parent_path(&selection.path);
+        let parent = self.tree.resolve(&NodePath {
+            tree: selection.tree,
+            path: parent_path.clone(),
+        })?;
+        if parent.children.len() < 2 {
+            return None;
+        }
+        let row = selection.path.last().copied().unwrap_or(0);
+        Some(CompareFork {
+            at: NodePath {
+                tree: selection.tree,
+                path: parent_path,
+            },
+            row,
+        })
     }
 
-    children
-}
-
-fn alias_delegation_legs(hops: &[TraceHop]) -> Vec<(usize, usize)> {
-    let mut legs = Vec::new();
-    let mut index = 0;
-
-    while index < hops.len() {
-        if !is_root_zone(&hops[index].zone) {
-            index += 1;
-            continue;
-        }
-
-        let qname_norm = normalize_qname(&hops[index].qname);
-        let start = index;
-        index += 1;
-        while index < hops.len() && normalize_qname(&hops[index].qname) == qname_norm {
-            index += 1;
-        }
-
-        if is_alias_delegation_leg(hops, start, index) {
-            legs.push((start, index));
-        }
+    pub fn compare_available(&self, selection: &NodePath) -> bool {
+        self.compare_fork(selection).is_some()
     }
 
-    legs
-}
-
-fn is_alias_delegation_leg(hops: &[TraceHop], start: usize, end: usize) -> bool {
-    if end <= start + 1 {
-        return false;
+    /// True when Compare can be opened at all (some fork exists in the tree).
+    pub fn compare_openable(&self) -> bool {
+        self.nearest_fork().is_some()
     }
 
-    is_root_zone(&hops[start].zone) && hops[start..end].iter().any(|hop| !is_root_zone(&hop.zone))
-}
-
-fn collect_resolution_groups(
-    hops: &[TraceHop],
-    main_qname: &str,
-    index: &mut usize,
-    end: usize,
-) -> Vec<ExploreNode> {
-    let mut groups = Vec::new();
-    while *index < end && normalize_qname(&hops[*index].qname) != main_qname {
-        groups.push(collect_resolution_group(hops, main_qname, index, end));
-    }
-    groups
-}
-
-fn collect_resolution_group(
-    hops: &[TraceHop],
-    main_qname: &str,
-    index: &mut usize,
-    end: usize,
-) -> ExploreNode {
-    let target = hops[*index].qname.clone();
-    let target_norm = normalize_qname(&target);
-    let mut children = Vec::new();
-
-    while *index < end {
-        let hop_qname = normalize_qname(&hops[*index].qname);
-        if hop_qname == main_qname {
-            break;
+    /// Shallowest fork anywhere in the tree, used to tell the operator where
+    /// comparison is reachable when the current selection has no sibling paths.
+    pub fn nearest_fork(&self) -> Option<NodePath> {
+        let mut queue = std::collections::VecDeque::from([NodePath::root(self.tree_index)]);
+        while let Some(path) = queue.pop_front() {
+            let Some(node) = self.tree.resolve(&path) else {
+                continue;
+            };
+            if node.children.len() >= 2 {
+                return Some(path);
+            }
+            for index in 0..node.children.len() {
+                let mut child = path.path.clone();
+                child.push(index);
+                queue.push_back(NodePath {
+                    tree: path.tree,
+                    path: child,
+                });
+            }
         }
-        if hop_qname != target_norm {
-            break;
-        }
-        children.push(ExploreNode::Hop { hop_index: *index });
-        *index += 1;
+        None
     }
 
-    ExploreNode::Resolve { target, children }
-}
+    /// Why Compare cannot be opened at all (no fork anywhere in the tree).
+    pub fn compare_unavailable_reason(&self, _selection: &NodePath) -> String {
+        "this trace has a single path, so there is nothing to compare".into()
+    }
 
-fn is_root_zone(zone: &str) -> bool {
-    normalize_zone(zone) == "."
-}
+    pub fn selection_for_visible_index(
+        &self,
+        index: usize,
+        expanded: &[NodePath],
+    ) -> Option<NodePath> {
+        self.visible_nodes(expanded)
+            .get(index)
+            .map(|node| node.path.clone())
+    }
 
-fn normalize_zone(zone: &str) -> String {
-    let trimmed = zone.trim_end_matches('.');
-    if trimmed.is_empty() {
-        ".".into()
-    } else {
-        format!("{}.", trimmed.to_ascii_lowercase())
+    pub fn visible_index_for_selection(
+        &self,
+        selection: &NodePath,
+        expanded: &[NodePath],
+    ) -> Option<usize> {
+        self.visible_nodes(expanded)
+            .iter()
+            .position(|node| node.path == *selection)
+    }
+
+    pub fn nearest_visible_ancestor(
+        &self,
+        selection: &NodePath,
+        expanded: &[NodePath],
+    ) -> NodePath {
+        let visible = self.visible_nodes(expanded);
+        if visible.iter().any(|node| node.path == *selection) {
+            return selection.clone();
+        }
+        let mut path = selection.path.clone();
+        while !path.is_empty() {
+            path.pop();
+            let candidate = NodePath {
+                tree: selection.tree,
+                path: path.clone(),
+            };
+            if visible.iter().any(|node| node.path == candidate) {
+                return candidate;
+            }
+        }
+        visible
+            .first()
+            .map(|node| node.path.clone())
+            .unwrap_or_else(|| NodePath::root(selection.tree))
     }
 }
 
-fn normalize_qname(qname: &str) -> String {
-    let trimmed = qname.trim_end_matches('.');
-    if trimmed.is_empty() {
-        ".".into()
-    } else {
-        format!("{}.", trimmed.to_ascii_lowercase())
+pub fn build_explore_tree(trace: &TraceTree) -> ExploreTree {
+    build_explore_tree_with_qname(trace, 0, None)
+}
+
+pub fn build_explore_tree_with_qname(
+    trace: &TraceTree,
+    tree_index: usize,
+    display_qname: Option<&str>,
+) -> ExploreTree {
+    ExploreTree {
+        qname: display_qname.unwrap_or_else(|| trace.qname()).to_string(),
+        qtype: trace.qtype().to_string(),
+        tree_index,
+        tree: trace.clone(),
+    }
+}
+
+fn parent_path(path: &[usize]) -> Vec<usize> {
+    let mut parent = path.to_vec();
+    parent.pop();
+    parent
+}
+
+fn collect_expandable_paths(
+    node: &TraceNode,
+    tree_index: usize,
+    path: &[usize],
+    paths: &mut Vec<NodePath>,
+) {
+    if node.children.is_empty() {
+        return;
+    }
+    paths.push(NodePath {
+        tree: tree_index,
+        path: path.to_vec(),
+    });
+    for (index, child) in node.children.iter().enumerate() {
+        let mut child_path = path.to_vec();
+        child_path.push(index);
+        collect_expandable_paths(child, tree_index, &child_path, paths);
+    }
+}
+
+fn append_visible(
+    node: &TraceNode,
+    tree_index: usize,
+    path: &[usize],
+    depth: usize,
+    expanded_paths: &[NodePath],
+    visible: &mut Vec<VisibleNode>,
+) {
+    let current = NodePath {
+        tree: tree_index,
+        path: path.to_vec(),
+    };
+    let expandable = !node.children.is_empty();
+    let expanded = expandable && expanded_paths.iter().any(|existing| existing == &current);
+    visible.push(VisibleNode {
+        path: current,
+        depth,
+        expandable,
+        expanded,
+    });
+    if !expanded {
+        return;
+    }
+    for (index, child) in node.children.iter().enumerate() {
+        let mut child_path = path.to_vec();
+        child_path.push(index);
+        append_visible(
+            child,
+            tree_index,
+            &child_path,
+            depth + 1,
+            expanded_paths,
+            visible,
+        );
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dns_resolve::{FinalAnswer, TraceHop};
+    use dns_resolve::{HopOutcome, TraceHop, TraceNode, TraceTreeRequest, build_linear_tree};
 
     fn hop(zone: &str, qname: &str, server: &str) -> TraceHop {
         TraceHop {
@@ -248,33 +275,39 @@ mod tests {
             glue: vec![],
             response: Default::default(),
             from_cache: false,
+            outcome: HopOutcome::Referral,
         }
     }
 
-    fn trace_with_hops(qname: &str, hops: Vec<TraceHop>) -> TraceResult {
-        TraceResult {
-            qname: qname.into(),
-            qtype: "A".into(),
-            started_at: "2026-08-25T00:00:00Z".into(),
+    fn trace_with_hops(qname: &str, hops: Vec<TraceHop>) -> TraceTree {
+        let mut hops = hops;
+        if let Some(last) = hops.last_mut() {
+            last.outcome = HopOutcome::Answered;
+        }
+        build_linear_tree(
             hops,
-            final_response: Some(FinalAnswer {
-                server: "93.184.216.34".into(),
-                server_name: None,
-                rtt_ms: 5,
-                rcode: "NOERROR".into(),
-                records: vec!["example.com. 300 93.184.216.34".into()],
-                nsid: None,
-                qname: String::new(),
-                qtype: String::new(),
-                transport: String::new(),
-                response: Default::default(),
-                from_cache: false,
-            }),
+            TraceTreeRequest {
+                qname: qname.into(),
+                qtype: "A".into(),
+                started_at: "2026-08-25T00:00:00Z".into(),
+            },
+        )
+    }
+
+    fn trace_with_root(root: TraceNode, qname: &str) -> TraceTree {
+        TraceTree {
+            request: TraceTreeRequest {
+                qname: qname.into(),
+                qtype: "A".into(),
+                started_at: "2026-08-25T00:00:00Z".into(),
+            },
+            root,
+            budget_truncated: false,
         }
     }
 
     #[test]
-    fn builds_main_path_without_resolution() {
+    fn visible_nodes_follow_expansion() {
         let tree = build_explore_tree(&trace_with_hops(
             "example.com.",
             vec![
@@ -282,126 +315,145 @@ mod tests {
                 hop("com.", "example.com.", "192.41.162.30"),
             ],
         ));
-
-        assert_eq!(tree.children.len(), 3);
-        assert!(matches!(
-            &tree.children[0],
-            ExploreNode::Delegation {
-                hop_index: 0,
-                children
-            } if children.is_empty()
-        ));
-        assert!(matches!(
-            &tree.children[1],
-            ExploreNode::Delegation {
-                hop_index: 1,
-                children
-            } if children.is_empty()
-        ));
-        assert!(matches!(tree.children[2], ExploreNode::Final));
+        let expanded = vec![NodePath::root(0)];
+        let visible = tree.visible_nodes(&expanded);
+        assert_eq!(visible.len(), 2);
+        assert_eq!(visible[0].path, NodePath::root(0));
+        assert_eq!(visible[1].path.path, vec![0]);
     }
 
     #[test]
-    fn groups_nameserver_resolution_under_delegation_hop() {
+    fn renders_terminal_siblings_from_trace_tree() {
+        let mut terminal = hop("example.com.", "example.com.", "93.184.216.34");
+        terminal.outcome = HopOutcome::Answered;
+        let sibling = hop("example.com.", "example.com.", "93.184.216.35");
+        let tree = build_explore_tree(&trace_with_root(
+            TraceNode {
+                hop: hop(".", "example.com.", "198.41.0.4"),
+                origin: dns_resolve::NodeOrigin::Trace,
+                children: vec![TraceNode {
+                    hop: hop("com.", "example.com.", "192.41.162.30"),
+                    origin: dns_resolve::NodeOrigin::Trace,
+                    children: vec![
+                        TraceNode {
+                            hop: terminal,
+                            origin: dns_resolve::NodeOrigin::Trace,
+                            children: Vec::new(),
+                        },
+                        TraceNode {
+                            hop: sibling,
+                            origin: dns_resolve::NodeOrigin::Trace,
+                            children: Vec::new(),
+                        },
+                    ],
+                }],
+            },
+            "example.com.",
+        ));
+
+        let fork = tree.compare_fork(&NodePath {
+            tree: 0,
+            path: vec![0, 0],
+        });
+        assert!(fork.is_some());
+        assert_eq!(fork.unwrap().at.path, vec![0]);
+        let expanded_fork = vec![
+            NodePath::root(0),
+            NodePath {
+                tree: 0,
+                path: vec![0],
+            },
+        ];
+        let visible = tree.visible_nodes(&expanded_fork);
+        assert_eq!(
+            visible
+                .iter()
+                .filter(|node| node.path.path == vec![0, 0] || node.path.path == vec![0, 1])
+                .count(),
+            2
+        );
+    }
+
+    /// Explore opens on the root, but Compare can still open when a fork exists
+    /// deeper in the tree.
+    #[test]
+    fn compare_openable_when_fork_is_below_root_selection() {
+        let tree = build_explore_tree(&trace_with_root(
+            TraceNode {
+                hop: hop(".", "tuininga.org.", "198.41.0.4"),
+                origin: dns_resolve::NodeOrigin::Trace,
+                children: vec![TraceNode {
+                    hop: hop("org.", "tuininga.org.", "199.249.112.1"),
+                    origin: dns_resolve::NodeOrigin::Trace,
+                    children: vec![
+                        TraceNode {
+                            hop: hop("tuininga.org.", "tuininga.org.", "193.47.99.5"),
+                            origin: dns_resolve::NodeOrigin::Trace,
+                            children: Vec::new(),
+                        },
+                        TraceNode {
+                            hop: hop("tuininga.org.", "tuininga.org.", "88.198.229.192"),
+                            origin: dns_resolve::NodeOrigin::Trace,
+                            children: Vec::new(),
+                        },
+                    ],
+                }],
+            },
+            "tuininga.org.",
+        ));
+
+        let root = NodePath::root(0);
+        assert!(!tree.compare_available(&root));
+        assert!(tree.compare_openable());
+        assert_eq!(
+            tree.nearest_fork(),
+            Some(NodePath {
+                tree: 0,
+                path: vec![0]
+            })
+        );
+    }
+
+    #[test]
+    fn compare_unavailable_reason_states_a_single_path_trace() {
         let tree = build_explore_tree(&trace_with_hops(
             "example.com.",
             vec![
                 hop(".", "example.com.", "198.41.0.4"),
-                hop(".", "ns.example.com.", "198.41.0.4"),
-                hop("com.", "ns.example.com.", "192.41.162.30"),
-                hop("example.com.", "example.com.", "93.184.216.34"),
+                hop("com.", "example.com.", "192.41.162.30"),
             ],
         ));
-
-        let ExploreNode::Delegation {
-            hop_index: 0,
-            children,
-        } = &tree.children[0]
-        else {
-            panic!("expected delegation hop");
-        };
-        assert_eq!(children.len(), 1);
-        let ExploreNode::Resolve { target, children } = &children[0] else {
-            panic!("expected resolve node");
-        };
-        assert_eq!(target, "ns.example.com.");
-        assert_eq!(children.len(), 2);
-        assert!(matches!(children[0], ExploreNode::Hop { hop_index: 1 }));
-        assert!(matches!(children[1], ExploreNode::Hop { hop_index: 2 }));
+        assert_eq!(tree.nearest_fork(), None);
+        let reason = tree.compare_unavailable_reason(&NodePath::root(0));
+        assert!(reason.contains("single path"), "{reason}");
+        assert!(!reason.contains("at-path"), "{reason}");
     }
 
     #[test]
-    fn omits_final_node_when_last_hop_matches_final_answer() {
-        let mut authoritative = hop("example.com.", "example.com.", "93.184.216.34");
-        authoritative.rtt_ms = 5;
-        let trace = TraceResult {
-            qname: "example.com.".into(),
-            qtype: "A".into(),
-            started_at: "2026-08-25T00:00:00Z".into(),
-            hops: vec![
+    fn uses_display_qname_override() {
+        let tree = build_explore_tree_with_qname(
+            &trace_with_hops(
+                "cdn.example.com.",
+                vec![hop(".", "cdn.example.com.", "198.41.0.4")],
+            ),
+            0,
+            Some("www.example.com."),
+        );
+        assert_eq!(tree.qname, "www.example.com.");
+    }
+
+    #[test]
+    fn default_expanded_paths_show_delegation_structure() {
+        let tree = build_explore_tree(&trace_with_hops(
+            "example.com.",
+            vec![
                 hop(".", "example.com.", "198.41.0.4"),
                 hop("com.", "example.com.", "192.41.162.30"),
-                authoritative,
-            ],
-            final_response: Some(FinalAnswer {
-                server: "93.184.216.34".into(),
-                server_name: None,
-                rtt_ms: 5,
-                rcode: "NOERROR".into(),
-                records: vec!["example.com. 300 93.184.216.34".into()],
-                nsid: None,
-                qname: "example.com.".into(),
-                qtype: "A".into(),
-                transport: "udp".into(),
-                response: Default::default(),
-                from_cache: false,
-            }),
-        };
-
-        let tree = build_explore_tree(&trace);
-        assert!(!contains_final_node(&tree.children));
-        assert!(matches!(
-            tree.children.last(),
-            Some(ExploreNode::Delegation { hop_index: 2, .. })
-        ));
-    }
-
-    fn contains_final_node(nodes: &[ExploreNode]) -> bool {
-        nodes.iter().any(|node| match node {
-            ExploreNode::Final => true,
-            ExploreNode::Delegation { children, .. } | ExploreNode::Resolve { children, .. } => {
-                contains_final_node(children)
-            }
-            ExploreNode::Hop { .. } => false,
-        })
-    }
-
-    #[test]
-    fn wraps_each_alias_leg_in_resolve_branch() {
-        let tree = build_explore_tree(&trace_with_hops(
-            "target.example.com.",
-            vec![
-                hop(".", "www.example.com.", "198.41.0.4"),
-                hop("com.", "www.example.com.", "192.41.162.30"),
-                hop(".", "cdn.example.com.", "198.41.0.4"),
-                hop("com.", "cdn.example.com.", "192.41.162.30"),
-                hop(".", "target.example.com.", "198.41.0.4"),
-                hop("com.", "target.example.com.", "192.41.162.30"),
             ],
         ));
-
-        assert_eq!(tree.children.len(), 3);
-        assert!(matches!(
-            &tree.children[0],
-            ExploreNode::Resolve { target, .. } if target == "www.example.com."
-        ));
-        assert!(matches!(
-            &tree.children[1],
-            ExploreNode::Resolve { target, .. } if target == "cdn.example.com."
-        ));
-        let ExploreNode::Resolve { children, .. } = &tree.children[2] else {
-            panic!("expected final resolve branch");
-        };
-        assert!(matches!(children.last(), Some(ExploreNode::Final)));
+        let paths = tree.default_expanded_paths();
+        assert!(paths.contains(&NodePath::root(0)));
+        let visible = tree.visible_nodes(&paths);
+        assert_eq!(visible.len(), 2);
     }
 }
