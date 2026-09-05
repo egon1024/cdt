@@ -2309,6 +2309,8 @@ mod tests {
             created_at: "2026-08-25T00:00:00Z".into(),
             updated_at: "2026-08-25T00:00:00Z".into(),
             pinned: false,
+            capture_context: None,
+            targets: Default::default(),
             trees: vec![crate::session::SessionTree {
                 request: TraceRequest::from_options(&crate::dig_options::TraceOptions {
                     qname: "tuininga.org".into(),

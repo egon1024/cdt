@@ -453,6 +453,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dns-enrichment-cache"
+version = "0.6.0"
+dependencies = [
+ "directories",
+ "dns-resolve",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "time",
+]
+
+[[package]]
 name = "dns-resolve"
 version = "0.6.0"
 dependencies = [

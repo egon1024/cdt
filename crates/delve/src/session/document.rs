@@ -1,10 +1,40 @@
-use dns_resolve::{NodeOrigin, TraceNode, TraceTree};
+use std::collections::{BTreeMap, BTreeSet};
+use std::net::IpAddr;
+
+use dns_resolve::{IcmpSnapshot, NodeOrigin, TraceNode, TraceTree};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 use crate::trace_request::TraceRequest;
 
 pub const SESSION_FORMAT_VERSION: u32 = 2;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct CaptureContext {
+    #[serde(default)]
+    pub local_source_ips: Vec<IpAddr>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct TargetEnrichments {
+    #[serde(default)]
+    pub names: BTreeSet<String>,
+    #[serde(default)]
+    pub icmp: Option<IcmpSnapshot>,
+}
+
+/// Normalize a hostname for target metadata: trim trailing dot, ASCII lowercase.
+pub fn normalize_target_hostname(name: &str) -> String {
+    name.trim_end_matches('.').to_ascii_lowercase()
+}
+
+/// Merge a hop hostname into a target's name set using normalization rules.
+pub fn merge_target_hostname(names: &mut BTreeSet<String>, hostname: &str) {
+    let normalized = normalize_target_hostname(hostname);
+    if !normalized.is_empty() {
+        names.insert(normalized);
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExploreViewState {
@@ -40,6 +70,10 @@ pub struct SessionDocument {
     pub updated_at: String,
     #[serde(default)]
     pub pinned: bool,
+    #[serde(default)]
+    pub capture_context: Option<CaptureContext>,
+    #[serde(default)]
+    pub targets: BTreeMap<IpAddr, TargetEnrichments>,
     pub trees: Vec<SessionTree>,
     #[serde(default)]
     pub view_state: Option<ExploreViewState>,
@@ -54,6 +88,8 @@ impl SessionDocument {
             created_at: timestamp.clone(),
             updated_at: timestamp,
             pinned: false,
+            capture_context: None,
+            targets: BTreeMap::new(),
             trees: vec![SessionTree {
                 request,
                 tree: result,
@@ -211,6 +247,68 @@ mod tests {
         assert_eq!(document, decoded);
         assert_eq!(document.version, 2);
         assert_eq!(document.trees.len(), 1);
+    }
+
+    #[test]
+    fn legacy_v2_document_without_targets_deserializes() {
+        let document = SessionDocument::new(
+            "01LEGACY".into(),
+            sample_request(),
+            sample_tree("2026-08-25T00:00:00Z"),
+        );
+        let mut value = serde_json::to_value(&document).expect("value");
+        let object = value.as_object_mut().expect("object");
+        object.remove("targets");
+        object.remove("capture_context");
+        let body = serde_json::to_string(&value).expect("json");
+        let decoded = parse_session_document("01LEGACY", &body).expect("deserialize");
+        assert!(decoded.targets.is_empty());
+        assert!(decoded.capture_context.is_none());
+    }
+
+    #[test]
+    fn normalize_target_hostname_trims_dot_and_lowercases() {
+        assert_eq!(
+            normalize_target_hostname("NS.EXAMPLE.COM."),
+            "ns.example.com"
+        );
+    }
+
+    #[test]
+    fn merge_target_hostname_deduplicates_normalized_names() {
+        let mut names = BTreeSet::new();
+        merge_target_hostname(&mut names, "NS1.Example.COM.");
+        merge_target_hostname(&mut names, "ns1.example.com");
+        assert_eq!(names.len(), 1);
+        assert!(names.contains("ns1.example.com"));
+    }
+
+    #[test]
+    fn icmp_snapshot_round_trips_in_session_document() {
+        use dns_resolve::{IcmpMethod, IcmpSnapshot};
+
+        let mut document = SessionDocument::new(
+            "01ICMP".into(),
+            sample_request(),
+            sample_tree("2026-08-25T00:00:00Z"),
+        );
+        document.targets.insert(
+            "1.1.1.1".parse().expect("ip"),
+            TargetEnrichments {
+                names: BTreeSet::from(["ns.example.com".into()]),
+                icmp: Some(IcmpSnapshot {
+                    method: IcmpMethod::Ping,
+                    samples: 3,
+                    min_ms: 10,
+                    avg_ms: 12,
+                    max_ms: 15,
+                    probed_at: "2026-09-05T00:00:00Z".into(),
+                }),
+            },
+        );
+        let json = serde_json::to_string(&document).expect("serialize");
+        let decoded: SessionDocument = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(document.targets, decoded.targets);
     }
 
     #[test]

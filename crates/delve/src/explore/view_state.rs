@@ -325,6 +325,8 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
             pinned: false,
+            capture_context: None,
+            targets: Default::default(),
             trees: vec![crate::session::SessionTree {
                 request: TraceRequest::from_options(&crate::dig_options::TraceOptions {
                     qname: "example.com".into(),
@@ -388,6 +390,8 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
             pinned: false,
+            capture_context: None,
+            targets: Default::default(),
             trees: vec![crate::session::SessionTree {
                 request: TraceRequest::from_options(&crate::dig_options::TraceOptions {
                     qname: "example.com".into(),

@@ -6,6 +6,7 @@ pub struct DelvePaths {
     pub data_dir: PathBuf,
     pub sessions_dir: PathBuf,
     pub cache_db: PathBuf,
+    pub enrichment_db: PathBuf,
     pub sessions_db: PathBuf,
     pub config_file: PathBuf,
 }
@@ -36,12 +37,14 @@ impl DelvePaths {
     fn from_dirs(cache_dir: PathBuf, data_dir: PathBuf, config_file: PathBuf) -> Self {
         let sessions_dir = data_dir.join("sessions");
         let cache_db = cache_dir.join("cache.sqlite");
+        let enrichment_db = data_dir.join("enrichment.sqlite");
         let sessions_db = data_dir.join("sessions.sqlite");
         Self {
             cache_dir,
             data_dir,
             sessions_dir,
             cache_db,
+            enrichment_db,
             sessions_db,
             config_file,
         }
@@ -71,6 +74,7 @@ mod tests {
         let root = PathBuf::from("/tmp/delve-test-root");
         let paths = DelvePaths::from_root(&root);
         assert_eq!(paths.cache_db, root.join("cache/cache.sqlite"));
+        assert_eq!(paths.enrichment_db, root.join("data/enrichment.sqlite"));
         assert_eq!(paths.sessions_dir, root.join("data/sessions"));
         assert_eq!(paths.sessions_db, root.join("data/sessions.sqlite"));
     }
