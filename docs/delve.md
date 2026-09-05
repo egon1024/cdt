@@ -41,10 +41,35 @@ Installed packages also ship `man delve` (CLI synopsis) and this guide at `/usr/
 ## At a glance
 
 - **Trace** — live delegation walk from root hints (or `@server`) to an answer; progress on stderr, optional NDJSON on stdout. Address family defaults to **auto** (IPv6 reachability probe, then v4-only or dual-stack).
-- **Session** — saved snapshot of one or more trace trees; inspect offline, reuse when parameters match, or extend with branching.
-- **Expansion** — `+expand=last|all|none` controls how many nameservers are queried at each zone cut during a live trace.
-- **Branching** — `delve session branch` or **`b`** in explore adds sibling paths from a delegation hop without re-tracing from the root.
+- **Session (v2)** — saved snapshot of one or more trace trees with `created_at`, **`updated_at`** (bumped by branch/pin mutations, not by read-only inspect), optional **view state**, and reuse metadata. See [storage](delve/storage.md).
+- **Expansion** — `+expand=last|all|none` controls how many nameservers are queried at each zone cut during a live trace. Default **`last`** expands only the terminal cut. See [concepts — expansion](delve/concepts.md#expansion-at-trace-time).
+- **Branching** — `delve session branch --at-hop=N|--at-path=P [--expand|--server @ADDR] [--dry-run]` or **`b`** in explore adds sibling paths from a delegation hop without re-tracing from the root.
+- **Explore** — Browse and Compare screens; `Tab` / `1` / `2` switch views. Compare analytics and fork tables also via `session outline|events --compare-at-hop|--compare-at-path`. See [explore](delve/explore.md).
+- **Default session** — omit `[id]` on session commands, or set **`DELVE_SESSION`** to pin a session in your shell. See [concepts — default session](delve/concepts.md#default-session).
+- **Alias queries** — `-t CNAME +follow` stops at the CNAME owner; other types follow aliases only when `+follow` is set. See [concepts](delve/concepts.md).
+- **Config** — `session.retention`, `trace.max_parallel_queries`, `trace.max_queries_per_action`, `explore.persist_view_state`, `explore.rtt_bar.*`. Run `delve config dump`. See [configuration](delve/configuration.md).
 - **Cache** — TTL-aware response cache speeds live queries; independent from stored sessions.
+
+## Integration workflow
+
+Typical multipath investigation:
+
+```bash
+delve trace tuininga.org +expand=last +save
+export DELVE_SESSION=$(delve session current)
+delve session branch --at-hop=0 --expand --dry-run
+delve session explore          # Browse → Compare (Tab), branch (b), quit
+delve session outline --compare-at-hop=0
+delve session events --compare-at-hop=0
+```
+
+Verify docs against the CLI:
+
+```bash
+delve --help
+delve trace --help
+delve session branch --help
+```
 
 ## See also
 
