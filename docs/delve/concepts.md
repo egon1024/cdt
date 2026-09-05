@@ -51,8 +51,8 @@ Each `delve trace` that saves creates a **new** session id. Re-running a trace d
 The **default session** is resolved in order:
 
 1. An explicit id on the command line
-2. `DELVE_SESSION` when set (non-empty after trimming) and the session still exists
-3. The most recently modified stored session (`updated_at`)
+2. The `DELVE_SESSION` environment variable, when set (non-empty after trimming) and the session still exists
+3. The most recently modified stored session (as determined by `updated_at`)
 
 Commands that accept an optional `[id]` (`show`, `outline`, `events`, `explore`, `branch`) use the default when you omit the id. `delve session current` prints that resolved id; `delve session list` marks it with `@` in the first column (`*` means pinned).
 
