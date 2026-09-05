@@ -5,7 +5,10 @@ use ratatui::text::{Line, Span};
 
 use crate::config::RttBarConfig;
 
-use super::path_summary::{ForkComparison, PathSummary, comparison_for_explore};
+use super::path_summary::{
+    ForkComparison, PathSummary, comparison_for_explore, format_referral_delta_column,
+    referral_header_line,
+};
 use super::rtt_bar::rtt_bar_spans;
 use super::theme::Theme;
 use super::tree::ExploreTree;
@@ -82,11 +85,14 @@ pub fn sticky_header_lines(comparison: &ForkComparison, theme: &Theme) -> Vec<Li
             comparison.fork_zone, comparison.fork_qname
         )),
     ])];
-    if comparison.all_agree {
+    if comparison.answers.agree {
         lines.push(Line::from(Span::styled(
-            "All paths agree (same response code and answer records)",
+            "Answers agree (same response code and answer records)",
             theme.accent_bold(),
         )));
+    }
+    if let Some(line) = referral_header_line(&comparison.referral) {
+        lines.push(Line::from(Span::styled(line, theme.meta())));
     }
     lines.push(Line::from(vec![
         Span::styled(format!("{:<22}", "server"), theme.label()),
@@ -97,7 +103,7 @@ pub fn sticky_header_lines(comparison: &ForkComparison, theme: &Theme) -> Vec<Li
         Span::raw("  "),
         Span::styled("latency", theme.label()),
         Span::styled("  outcome", theme.label()),
-        Span::styled("  referral", theme.label()),
+        Span::styled("  referral Δ", theme.label()),
     ]));
     lines
 }
@@ -116,6 +122,7 @@ pub fn path_scale_ms(comparison: &ForkComparison) -> u32 {
 pub fn summary_row_line(
     summary: &PathSummary,
     selected: bool,
+    referral_agree: bool,
     scale_max_rtt_ms: u32,
     rtt_config: RttBarConfig,
     theme: &Theme,
@@ -164,26 +171,12 @@ pub fn summary_row_line(
         format!(
             "  {:<16} {}{}",
             truncate(&summary.outcome, 16),
-            format_referral(
-                &summary.referral_diff.only_here,
-                &summary.referral_diff.missing
-            ),
+            format_referral_delta_column(&summary.referral_diff, referral_agree),
             cache_mark
         ),
         field_style,
     ));
     Line::from(spans)
-}
-
-fn format_referral(only_here: &[String], missing: &[String]) -> String {
-    let mut parts = Vec::new();
-    for name in only_here {
-        parts.push(format!("+{name}"));
-    }
-    for name in missing {
-        parts.push(format!("-{name}"));
-    }
-    parts.join(" ")
 }
 
 fn truncate(value: &str, max: usize) -> String {
@@ -335,18 +328,32 @@ mod tests {
         let theme = Theme::from_env();
         let config = RttBarConfig::default();
         let scale = path_scale_ms(&model.comparison);
-        let line = summary_row_line(&model.rows()[0], false, scale, config, &theme);
+        let line = summary_row_line(
+            &model.rows()[0],
+            false,
+            model.comparison.referral.agree,
+            scale,
+            config,
+            &theme,
+        );
         let text: String = line
             .spans
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
         assert!(text.contains("cache"));
-        let other: String = summary_row_line(&model.rows()[1], false, scale, config, &theme)
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
+        let other: String = summary_row_line(
+            &model.rows()[1],
+            false,
+            model.comparison.referral.agree,
+            scale,
+            config,
+            &theme,
+        )
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
         assert!(!other.contains("cache"));
     }
 
@@ -362,11 +369,32 @@ mod tests {
 
         let filled = |line: &Line<'_>| line.spans.iter().filter(|span| span.content == "█").count();
         for summary in model.rows() {
-            let line = summary_row_line(summary, false, scale, config, &theme);
+            let line = summary_row_line(
+                summary,
+                false,
+                model.comparison.referral.agree,
+                scale,
+                config,
+                &theme,
+            );
             assert!(filled(&line) > 0, "expected bar on every summary row");
         }
-        let slow = summary_row_line(&model.rows()[1], false, scale, config, &theme);
-        let fast = summary_row_line(&model.rows()[0], false, scale, config, &theme);
+        let slow = summary_row_line(
+            &model.rows()[1],
+            false,
+            model.comparison.referral.agree,
+            scale,
+            config,
+            &theme,
+        );
+        let fast = summary_row_line(
+            &model.rows()[0],
+            false,
+            model.comparison.referral.agree,
+            scale,
+            config,
+            &theme,
+        );
         assert!(filled(&slow) > filled(&fast));
     }
 }

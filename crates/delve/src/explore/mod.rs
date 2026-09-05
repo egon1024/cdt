@@ -447,6 +447,8 @@ mod tests {
         assert!(text.contains("n/a"));
         assert!(text.contains("+b.gtld-servers.net."));
         assert!(text.contains("+c.gtld-servers.net."));
+        assert!(text.contains("referral NS (differ):"));
+        assert!(text.contains("referral Δ"));
     }
 
     #[test]
@@ -456,6 +458,15 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
         assert_eq!(value["event"], "path_comparison");
         assert_eq!(value["session"], "01COMPARE");
+        assert_eq!(value["answers"]["agree"], true);
+        assert_eq!(value["referral"]["agree"], false);
+        assert!(
+            value["referral"]["union"]
+                .as_array()
+                .expect("union")
+                .iter()
+                .any(|name| name == "b.gtld-servers.net.")
+        );
         let paths = value["paths"].as_array().expect("paths");
         assert_eq!(paths.len(), 2);
         assert_eq!(paths[0]["hop_count"], 2);
@@ -538,7 +549,14 @@ mod tests {
             assert_eq!(path.outcome, model.rows()[index].outcome);
             assert!(text.contains(&path.label));
             assert!(text.contains(&format!("{}ms", path.dns_rtt_total_ms)));
-            let row = summary_row_line(path, false, path_scale, rtt_config, &theme);
+            let row = summary_row_line(
+                path,
+                false,
+                model.comparison.referral.agree,
+                path_scale,
+                rtt_config,
+                &theme,
+            );
             let row_text: String = row.spans.iter().map(|span| span.content.as_ref()).collect();
             assert!(row_text.contains(&path.hop_count.to_string()));
             assert!(row_text.contains(&path.outcome));

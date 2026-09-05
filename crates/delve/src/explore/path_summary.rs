@@ -23,6 +23,21 @@ pub struct ReferralDiff {
     pub missing: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AnswerSummary {
+    pub agree: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReferralSummary {
+    pub agree: bool,
+    pub comparable_count: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub shared: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub union: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PathSummary {
     pub path: NodePath,
@@ -44,7 +59,8 @@ pub struct ForkComparison {
     pub fork: NodePath,
     pub fork_zone: String,
     pub fork_qname: String,
-    pub all_agree: bool,
+    pub answers: AnswerSummary,
+    pub referral: ReferralSummary,
     pub paths: Vec<PathSummary>,
 }
 
@@ -101,12 +117,16 @@ pub fn summarize_fork(tree: &TraceTree, fork: &NodePath) -> Option<ForkCompariso
     }
 
     apply_referral_diffs(&mut paths);
+    let referral = compute_referral_summary(&paths);
 
     Some(ForkComparison {
         fork: fork.clone(),
         fork_zone: fork_node.hop.zone.clone(),
         fork_qname: fork_node.hop.qname.clone(),
-        all_agree: paths_agree(&fork_node.children),
+        answers: AnswerSummary {
+            agree: paths_agree(&fork_node.children),
+        },
+        referral,
         paths,
     })
 }
@@ -158,12 +178,15 @@ pub fn render_comparison_text(comparison: &ForkComparison) -> String {
         comparison.fork_qname,
         format_node_path(&comparison.fork)
     ));
-    if comparison.all_agree {
-        lines.push("All paths agree (same response code and answer records)".to_string());
+    if comparison.answers.agree {
+        lines.push("Answers agree (same response code and answer records)".to_string());
+    }
+    if let Some(line) = referral_header_line(&comparison.referral) {
+        lines.push(line);
     }
     lines.push(format!(
         "{:<22} {:>4} {:>8} {:>6} {:>6}  {:<16} {}",
-        "server", "hops", "dns", "Δ", "icmp", "outcome", "referral"
+        "server", "hops", "dns", "Δ", "icmp", "outcome", "referral Δ"
     ));
     for path in &comparison.paths {
         let delta = match path.dns_rtt_delta_ms {
@@ -183,7 +206,7 @@ pub fn render_comparison_text(comparison: &ForkComparison) -> String {
             delta,
             icmp,
             truncate(&path.outcome, 16),
-            format_referral_diff(&path.referral_diff)
+            format_referral_delta_column(&path.referral_diff, comparison.referral.agree)
         ));
         if !path.dns_rtt_per_hop.is_empty() {
             let hops = path
@@ -199,16 +222,52 @@ pub fn render_comparison_text(comparison: &ForkComparison) -> String {
 }
 
 pub fn render_comparison_json(session_id: &str, comparison: &ForkComparison) -> String {
-    let payload = serde_json::json!({
-        "event": "path_comparison",
-        "session": session_id,
-        "fork": comparison.fork,
-        "fork_zone": comparison.fork_zone,
-        "fork_qname": comparison.fork_qname,
-        "all_agree": comparison.all_agree,
-        "paths": comparison.paths,
-    });
-    serde_json::to_string(&payload).expect("json")
+    #[derive(Serialize)]
+    struct PathComparisonEvent<'a> {
+        event: &'static str,
+        session: &'a str,
+        #[serde(flatten)]
+        comparison: &'a ForkComparison,
+    }
+    serde_json::to_string(&PathComparisonEvent {
+        event: "path_comparison",
+        session: session_id,
+        comparison,
+    })
+    .expect("json")
+}
+
+/// Header line listing shared or divergent referral NS at the fork.
+pub fn referral_header_line(referral: &ReferralSummary) -> Option<String> {
+    if referral.comparable_count == 0 {
+        return None;
+    }
+    if referral.agree {
+        return Some(format!(
+            "referral NS (all paths): {}",
+            referral.shared.join(", ")
+        ));
+    }
+    if referral.union.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "referral NS (differ): {}",
+        referral.union.join(", ")
+    ))
+}
+
+/// Per-row referral column: em dash when paths agree or this row has no diff.
+pub fn format_referral_delta_column(diff: &ReferralDiff, referral_agree: bool) -> String {
+    if referral_agree {
+        return "—".to_string();
+    }
+    let formatted = format_referral_diff(diff);
+    if formatted.is_empty() {
+        "—".to_string()
+    } else {
+        formatted
+    }
 }
 
 fn summarize_child(tree_index: usize, path: Vec<usize>, child: &TraceNode) -> PathSummary {
@@ -282,14 +341,68 @@ fn outcome_text(hop: &TraceHop) -> String {
     }
 }
 
-fn apply_referral_diffs(paths: &mut [PathSummary]) {
-    let sets: Vec<BTreeSet<String>> = paths
+fn referral_sets(paths: &[PathSummary]) -> Vec<BTreeSet<String>> {
+    paths
         .iter()
         .map(|path| path.referral_ns.iter().cloned().collect())
-        .collect();
+        .collect()
+}
+
+fn comparable_referral_sets(sets: &[BTreeSet<String>]) -> Vec<&BTreeSet<String>> {
     // A path that returned no referral set (failed, or answered at the fork) has
     // nothing to differ from, and must not drag the baseline for the paths that did.
-    let comparable: Vec<&BTreeSet<String>> = sets.iter().filter(|set| !set.is_empty()).collect();
+    sets.iter().filter(|set| !set.is_empty()).collect()
+}
+
+fn compute_referral_summary(paths: &[PathSummary]) -> ReferralSummary {
+    let sets = referral_sets(paths);
+    let comparable = comparable_referral_sets(&sets);
+    let comparable_count = comparable.len();
+    if comparable_count == 0 {
+        return ReferralSummary {
+            agree: false,
+            comparable_count: 0,
+            shared: Vec::new(),
+            union: Vec::new(),
+        };
+    }
+    if comparable_count == 1 {
+        return ReferralSummary {
+            agree: true,
+            comparable_count,
+            shared: sorted_names(comparable[0]),
+            union: Vec::new(),
+        };
+    }
+    let union: BTreeSet<String> = comparable
+        .iter()
+        .flat_map(|set| set.iter().cloned())
+        .collect();
+    let agree = comparable.windows(2).all(|pair| pair[0] == pair[1]);
+    if agree {
+        ReferralSummary {
+            agree: true,
+            comparable_count,
+            shared: sorted_names(comparable[0]),
+            union: Vec::new(),
+        }
+    } else {
+        ReferralSummary {
+            agree: false,
+            comparable_count,
+            shared: Vec::new(),
+            union: sorted_names(&union),
+        }
+    }
+}
+
+fn sorted_names(set: &BTreeSet<String>) -> Vec<String> {
+    set.iter().cloned().collect()
+}
+
+fn apply_referral_diffs(paths: &mut [PathSummary]) {
+    let sets = referral_sets(paths);
+    let comparable = comparable_referral_sets(&sets);
     let (union, intersection) = if comparable.len() < 2 {
         (BTreeSet::new(), BTreeSet::new())
     } else {
@@ -657,6 +770,21 @@ mod tests {
     fn referral_differences_are_surfaced() {
         let tree = differing_length_tree();
         let comparison = summarize_fork(&tree, &NodePath::root(0)).expect("fork");
+        assert!(!comparison.referral.agree);
+        assert!(
+            comparison
+                .referral
+                .union
+                .iter()
+                .any(|name| name == "b.gtld-servers.net.")
+        );
+        assert!(
+            comparison
+                .referral
+                .union
+                .iter()
+                .any(|name| name == "c.gtld-servers.net.")
+        );
         assert!(
             comparison.paths[0]
                 .referral_diff
@@ -678,6 +806,9 @@ mod tests {
                 .iter()
                 .any(|name| name == "c.gtld-servers.net.")
         );
+        let text = render_comparison_text(&comparison);
+        assert!(text.contains("referral NS (differ):"));
+        assert!(text.contains("+b.gtld-servers.net."));
     }
 
     #[test]
@@ -687,22 +818,37 @@ mod tests {
         // sibling still has none of its own.
         tree.root.children[1].hop.referral_ns = tree.root.children[0].hop.referral_ns.clone();
         let comparison = summarize_fork(&tree, &NodePath::root(0)).expect("fork");
+        assert!(comparison.referral.agree);
+        assert_eq!(
+            comparison.referral.shared,
+            vec![
+                "a.gtld-servers.net.".to_string(),
+                "b.gtld-servers.net.".to_string(),
+            ]
+        );
         for path in &comparison.paths {
             assert!(path.referral_diff.only_here.is_empty());
             assert!(path.referral_diff.missing.is_empty());
         }
         let text = render_comparison_text(&comparison);
+        assert!(text.contains("referral NS (all paths):"));
+        assert!(text.contains("a.gtld-servers.net., b.gtld-servers.net."));
+        assert!(text.contains("referral Δ"));
+        assert!(text.contains("—"));
         assert!(!text.contains("+a.gtld-servers.net."));
         assert!(!text.contains("-a.gtld-servers.net."));
     }
 
     #[test]
-    fn all_agree_case_is_flagged() {
+    fn answers_agree_case_is_flagged() {
         let tree = agreeing_tree();
         let comparison = summarize_fork(&tree, &NodePath::root(0)).expect("fork");
-        assert!(comparison.all_agree);
+        assert!(comparison.answers.agree);
         assert_eq!(comparison.paths[0].outcome, "NOERROR");
         assert_eq!(comparison.paths[1].outcome, "NOERROR");
+        let text = render_comparison_text(&comparison);
+        assert!(text.contains("Answers agree"));
+        assert!(!text.contains("All paths agree"));
     }
 
     #[test]
@@ -821,8 +967,11 @@ mod tests {
         assert!(json.contains("\"event\":\"path_comparison\""));
         assert!(json.contains("\"session\":\"01JSESSION\""));
         assert!(json.contains("\"fork_zone\":\"org.\""));
+        assert!(json.contains("\"answers\":{\"agree\":true}"));
+        assert!(json.contains("\"referral\""));
         assert!(json.contains("\"hop_count\""));
         assert!(json.contains("\"dns_rtt_total_ms\""));
+        assert!(!json.contains("\"all_agree\""));
     }
 
     #[test]

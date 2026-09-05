@@ -51,9 +51,11 @@ Full trace tree with aligned columns: zone, server, name, rcode, RTT, and a late
 
 Whole-tree fastest, slowest, and average RTTs appear in a summary strip at the top. Stats include **answered** leaf paths only (failed or referral-only terminals are excluded). When the trace was budget-truncated, the strip notes that path statistics may be incomplete.
 
-Fork-scoped sibling comparison (DNS/ICMP metrics, referral diffs) is available from the CLI:
+Fork-scoped sibling comparison (DNS/ICMP metrics, answer agreement, referral summary and deltas) is available from the CLI:
 
 `session outline --compare-at-hop=N` and `session events --compare-at-hop=N` print the same fork table as text and JSON (no DNS queries).
+
+When every sibling returns the same referral NS set, the comparison header lists those names once (`referral NS (all paths): …`) and the per-row **referral Δ** column shows `—`. When sets differ, the header lists the union (`referral NS (differ): …`) and each row shows `+`/`-` deltas. Answer agreement is reported separately (`Answers agree …`) via `answers.agree` in JSON.
 
 ### Compare analytics keys
 
