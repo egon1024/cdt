@@ -1,8 +1,6 @@
 use std::io::{self, Write};
-use std::net::IpAddr;
 
-use dns_core::{DomainName, Transport, ip_to_ptr_name, parse_record_type, parse_reverse_target};
-use dns_resolve::{ExpansionPolicy, TraceConfig, run_trace};
+use dns_resolve::{ExpansionPolicy, run_trace};
 use thiserror::Error;
 
 use crate::args::{
@@ -19,12 +17,14 @@ use crate::expand_confirm::{ExpandConfirmOutcome, confirm_expand_all, expand_all
 use crate::explore::{
     ExploreError, run_events_with_compare, run_explore, run_outline_with_compare,
 };
+use crate::family_notice::format_family_notice;
 use crate::hop_display::{HopDisplayState, print_hop_human};
 use crate::progress::StderrProgress;
 use crate::replay::{print_final_answer, print_reused_session_notice, replay_session};
 use crate::retention::format_timestamp_for_list;
 use crate::runtime::{Runtime, SessionReuseLookup};
 use crate::session::SessionDocument;
+use crate::trace_config::{TraceConfigError, trace_config_from_request};
 use crate::trace_request::TraceRequest;
 
 #[derive(Debug, Error)]
@@ -55,6 +55,9 @@ pub enum CliError {
 
     #[error("full expansion requires confirmation; use +expand=all+force in non-interactive mode")]
     ExpandAllNeedsForce,
+
+    #[error(transparent)]
+    TraceConfig(#[from] TraceConfigError),
 
     #[error(transparent)]
     Explore(#[from] ExploreError),
@@ -88,7 +91,7 @@ fn run_trace_command(args: TraceArgs) -> Result<(), CliError> {
 }
 
 fn run_parsed_trace(options: TraceOptions, runtime: &Runtime) -> Result<(), CliError> {
-    let request = TraceRequest::from_options(&options);
+    let mut request = TraceRequest::from_options(&options);
 
     if options.expansion == ExpansionPolicy::All && !options.expand_all_force {
         let server_count = options.server.as_ref().map(|_| 1usize).unwrap_or(13);
@@ -104,6 +107,21 @@ fn run_parsed_trace(options: TraceOptions, runtime: &Runtime) -> Result<(), CliE
         }
     }
 
+    let mut config = trace_config_from_request(
+        &request,
+        runtime.cache.clone(),
+        runtime.config.trace_max_queries_per_action,
+        runtime.config.trace_max_parallel_queries,
+    )?;
+    config.expansion_policy = options.expansion;
+    config.ensure_family_resolved();
+    let resolved = config.effective_family();
+    request = request.with_resolved_family(resolved);
+    eprintln!(
+        "{}",
+        format_family_notice(options.family_source, options.family_request, resolved)
+    );
+
     if options.save_session && !options.fresh {
         match runtime.find_matching_session(&request)? {
             SessionReuseLookup::Reuse(document) => {
@@ -116,49 +134,6 @@ fn run_parsed_trace(options: TraceOptions, runtime: &Runtime) -> Result<(), CliE
             }
             SessionReuseLookup::NoMatch => {}
         }
-    }
-
-    let qname = if options.reverse_lookup {
-        let ip = parse_reverse_target(&options.qname)?;
-        ip_to_ptr_name(ip)?
-    } else {
-        DomainName::parse(&options.qname)?
-    };
-    let qtype = parse_record_type(&options.qtype)
-        .map_err(|_| CliError::QueryType(options.qtype.clone()))?;
-    let mut config = TraceConfig::new(qname, qtype);
-    config.follow_aliases = options.follow_aliases;
-    config.transport = if options.use_tcp {
-        Transport::Tcp
-    } else {
-        Transport::Udp
-    };
-    config.timeout = options.timeout;
-    config.retries = options.retries;
-    config.dnssec = options.dnssec;
-    config.request_nsid = options.request_nsid;
-    config.family_request = if options.ipv6_only {
-        dns_resolve::AddressFamilyRequest::V6
-    } else if options.ipv4_only {
-        dns_resolve::AddressFamilyRequest::V4
-    } else {
-        dns_resolve::AddressFamilyRequest::Auto
-    };
-    config.use_cache = options.use_cache;
-    config.expansion_policy = options.expansion;
-    config.max_queries_per_action = runtime.config.trace_max_queries_per_action;
-    config.max_parallel_queries = runtime.config.trace_max_parallel_queries;
-    config.set_debug(options.debug);
-    for raw in &options.cache_skip_qnames {
-        config.cache_skip_qnames.insert(DomainName::parse(raw)?);
-    }
-    config.cache = runtime.cache.clone();
-
-    if let Some(server) = options.server.as_deref() {
-        let addr: IpAddr = server
-            .parse()
-            .map_err(|error: std::net::AddrParseError| CliError::Server(error.to_string()))?;
-        config.start_servers = Some(vec![addr]);
     }
 
     let mut progress = StderrProgress::new(options.events, options.debug);

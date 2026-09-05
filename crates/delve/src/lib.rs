@@ -7,6 +7,7 @@ pub mod dig_options;
 pub mod expand_confirm;
 pub mod explore;
 pub mod export;
+pub mod family_notice;
 pub mod hop_display;
 pub mod paths;
 pub mod progress;

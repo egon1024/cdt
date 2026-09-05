@@ -81,7 +81,7 @@ impl SessionDocument {
     }
 
     pub fn matches_trace_request(&self, request: &TraceRequest) -> bool {
-        self.trees.len() == 1 && self.trees[0].request == *request
+        self.trees.len() == 1 && self.trees[0].request.matches_for_reuse(request)
     }
 
     pub fn touch_updated_at(&mut self) {
