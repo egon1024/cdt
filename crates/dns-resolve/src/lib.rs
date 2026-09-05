@@ -53,8 +53,8 @@ pub use job_queue::{
     BranchJobRequest, TerminalSiblingExpansion, run_branch_job, run_expand_cut_branch,
 };
 pub use probe::{
-    ComparisonIcmpProber, DatagramIcmpProber, IcmpProbeCapability, IcmpProbeResult, IcmpProber,
-    comparison_icmp_prober, probe_icmp_rtt,
+    ComparisonIcmpProber, DatagramIcmpProber, IcmpMethod, IcmpProbeCapability, IcmpProbeResult,
+    IcmpProber, IcmpSnapshot, comparison_icmp_prober, probe_icmp_rtt,
 };
 
 #[derive(Debug, Error)]

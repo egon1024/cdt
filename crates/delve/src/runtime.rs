@@ -14,6 +14,7 @@ use crate::session::{
 use crate::trace_request::TraceRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum SessionReuseLookup {
     Reuse(SessionDocument),
     ExtendedMatch { id: String },

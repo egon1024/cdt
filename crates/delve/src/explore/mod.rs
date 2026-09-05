@@ -297,6 +297,8 @@ mod tests {
             created_at: "2026-08-25T12:00:00Z".into(),
             updated_at: "2026-08-25T12:00:00Z".into(),
             pinned: false,
+            capture_context: None,
+            targets: Default::default(),
             trees: vec![],
             view_state: None,
         };

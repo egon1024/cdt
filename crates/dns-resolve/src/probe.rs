@@ -7,9 +7,11 @@ use std::time::Duration;
 pub mod comparison;
 pub mod icmp;
 pub mod ping_command;
+pub mod snapshot;
 
 pub use comparison::{ComparisonIcmpProber, IcmpProbeCapability, comparison_icmp_prober};
 pub use icmp::DatagramIcmpProber;
+pub use snapshot::{IcmpMethod, IcmpSnapshot};
 
 /// Counts datagram ICMP probe attempts. Ordinary traces must leave this at zero.
 pub static ICMP_PROBE_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
