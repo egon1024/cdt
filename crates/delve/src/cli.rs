@@ -1,5 +1,6 @@
 use std::io::{self, Write};
 
+use clap::CommandFactory;
 use dns_resolve::{ExpansionPolicy, run_trace};
 use thiserror::Error;
 
@@ -84,10 +85,22 @@ impl Cli {
 }
 
 fn run_trace_command(args: TraceArgs) -> Result<(), CliError> {
+    if args.args.is_empty() {
+        print_trace_help()?;
+        return Ok(());
+    }
     let options = parse_trace_args(&args.args)?;
     let runtime = Runtime::open_platform();
     runtime.emit_warnings();
     run_parsed_trace(options, &runtime)
+}
+
+fn print_trace_help() -> Result<(), CliError> {
+    let mut cmd = Cli::command();
+    let trace = cmd
+        .find_subcommand_mut("trace")
+        .expect("trace subcommand registered");
+    trace.print_long_help().map_err(CliError::Io)
 }
 
 fn run_parsed_trace(options: TraceOptions, runtime: &Runtime) -> Result<(), CliError> {
