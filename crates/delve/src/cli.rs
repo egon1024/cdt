@@ -137,8 +137,13 @@ fn run_parsed_trace(options: TraceOptions, runtime: &Runtime) -> Result<(), CliE
     config.retries = options.retries;
     config.dnssec = options.dnssec;
     config.request_nsid = options.request_nsid;
-    config.ipv4_only = options.ipv4_only;
-    config.ipv6_only = options.ipv6_only;
+    config.family_request = if options.ipv6_only {
+        dns_resolve::AddressFamilyRequest::V6
+    } else if options.ipv4_only {
+        dns_resolve::AddressFamilyRequest::V4
+    } else {
+        dns_resolve::AddressFamilyRequest::Auto
+    };
     config.use_cache = options.use_cache;
     config.expansion_policy = options.expansion;
     config.max_queries_per_action = runtime.config.trace_max_queries_per_action;
@@ -157,7 +162,7 @@ fn run_parsed_trace(options: TraceOptions, runtime: &Runtime) -> Result<(), CliE
     }
 
     let mut progress = StderrProgress::new(options.events, options.debug);
-    let result = run_trace(&config, &mut progress)?;
+    let result = run_trace(&mut config, &mut progress)?;
 
     if options.save_session {
         let session_id = runtime.save_session(&result, &request)?;

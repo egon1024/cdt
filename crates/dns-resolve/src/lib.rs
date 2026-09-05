@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::OffsetDateTime;
 
+pub mod address_family;
 pub mod job_queue;
 pub mod path_timing;
 pub mod probe;
@@ -45,6 +46,9 @@ pub use tree::{
     build_linear_tree,
 };
 
+pub use address_family::{
+    AddressFamilyRequest, PROBE_V6_TARGET, ResolvedAddressFamily, resolve_address_family,
+};
 pub use job_queue::{
     BranchJobRequest, TerminalSiblingExpansion, run_branch_job, run_expand_cut_branch,
 };
@@ -123,8 +127,8 @@ pub struct TraceConfig {
     pub retries: u8,
     pub dnssec: bool,
     pub request_nsid: bool,
-    pub ipv4_only: bool,
-    pub ipv6_only: bool,
+    pub family_request: AddressFamilyRequest,
+    pub family_resolved: Option<ResolvedAddressFamily>,
     pub max_depth: usize,
     pub max_alias_depth: usize,
     pub follow_aliases: bool,
@@ -162,8 +166,8 @@ impl TraceConfig {
             retries: 2,
             dnssec: false,
             request_nsid: true,
-            ipv4_only: false,
-            ipv6_only: false,
+            family_request: AddressFamilyRequest::Auto,
+            family_resolved: None,
             max_depth: 32,
             max_alias_depth: 16,
             follow_aliases: false,
@@ -191,6 +195,19 @@ impl TraceConfig {
         } else {
             None
         };
+    }
+
+    /// Resolve [`AddressFamilyRequest::Auto`] once and store the effective policy.
+    pub fn ensure_family_resolved(&mut self) {
+        if self.family_resolved.is_none() {
+            self.family_resolved = Some(resolve_address_family(self.family_request));
+        }
+    }
+
+    /// Effective address family for filtering and NS queries.
+    pub fn effective_family(&self) -> ResolvedAddressFamily {
+        self.family_resolved
+            .unwrap_or_else(|| resolve_address_family(self.family_request))
     }
 
     pub fn with_memory_cache(&mut self) -> Arc<dyn ResponseCache> {
@@ -383,7 +400,8 @@ pub(crate) fn drain_query_debug(config: &TraceConfig, progress: &mut dyn TracePr
     }
 }
 
-pub fn run_trace(config: &TraceConfig, progress: &mut dyn TraceProgress) -> Result<TraceTree> {
+pub fn run_trace(config: &mut TraceConfig, progress: &mut dyn TraceProgress) -> Result<TraceTree> {
+    config.ensure_family_resolved();
     trace::run(config, progress)
 }
 
@@ -492,19 +510,63 @@ pub(crate) fn now_rfc3339() -> String {
         .unwrap_or_else(|_| "unknown".into())
 }
 
-pub(crate) fn filter_addresses(
-    addresses: &[IpAddr],
-    ipv4_only: bool,
-    ipv6_only: bool,
-) -> Vec<IpAddr> {
+pub(crate) fn filter_addresses(addresses: &[IpAddr], family: ResolvedAddressFamily) -> Vec<IpAddr> {
     addresses
         .iter()
         .copied()
-        .filter(|addr| match addr {
-            IpAddr::V4(_) => !ipv6_only,
-            IpAddr::V6(_) => !ipv4_only,
-        })
+        .filter(|addr| address_allowed(*addr, family))
         .collect()
+}
+
+pub(crate) fn address_allowed(addr: IpAddr, family: ResolvedAddressFamily) -> bool {
+    !matches!(
+        (addr, family),
+        (IpAddr::V4(_), ResolvedAddressFamily::V6) | (IpAddr::V6(_), ResolvedAddressFamily::V4)
+    )
+}
+
+pub(crate) fn report_family_skips(
+    config: &TraceConfig,
+    progress: &mut dyn TraceProgress,
+    before: &[IpAddr],
+    after: &[IpAddr],
+) {
+    if !config.debug {
+        return;
+    }
+    let family = config.effective_family();
+    let skipped_v4 = before
+        .iter()
+        .filter(|addr| matches!(addr, IpAddr::V4(_)))
+        .count()
+        .saturating_sub(
+            after
+                .iter()
+                .filter(|addr| matches!(addr, IpAddr::V4(_)))
+                .count(),
+        );
+    let skipped_v6 = before
+        .iter()
+        .filter(|addr| matches!(addr, IpAddr::V6(_)))
+        .count()
+        .saturating_sub(
+            after
+                .iter()
+                .filter(|addr| matches!(addr, IpAddr::V6(_)))
+                .count(),
+        );
+    if skipped_v4 > 0 {
+        progress.message(&format!(
+            "skipped {skipped_v4} A address(es) (family={})",
+            family.label()
+        ));
+    }
+    if skipped_v6 > 0 {
+        progress.message(&format!(
+            "skipped {skipped_v6} AAAA address(es) (family={})",
+            family.label()
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -753,7 +815,7 @@ mod cache_tests {
         config.exchange = Arc::new(CountingExchange {
             calls: Arc::new(AtomicUsize::new(0)),
         });
-        let _ = crate::run_trace(&config, &mut NoopProgress);
+        let _ = crate::run_trace(&mut config, &mut NoopProgress);
         assert_eq!(crate::probe::icmp_probe_attempts(), 0);
     }
 }

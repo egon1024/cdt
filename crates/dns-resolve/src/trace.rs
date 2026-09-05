@@ -6,11 +6,12 @@ use dns_core::query::record_type_name;
 use dns_core::response::DnsResponse;
 use hickory_proto::rr::RecordType;
 
-use crate::root_hints::{root_server_names, root_servers};
+use crate::root_hints::root_server_hints;
 use crate::{
     ExpansionPolicy, HopOutcome, QueryBudget, QueryDebugContext, ResolveError, Result,
     ServerTarget, TraceConfig, TraceHop, TraceNode, TraceProgress, TraceTree, TraceTreeRequest,
-    filter_addresses, now_rfc3339, query_server, record_query_debug,
+    address_family::ns_record_types, filter_addresses, now_rfc3339, query_server,
+    record_query_debug, report_family_skips,
 };
 
 #[allow(dead_code)]
@@ -451,7 +452,7 @@ fn error_kind(error: &ResolveError) -> String {
 }
 
 pub(crate) fn start_servers(config: &TraceConfig) -> Vec<ServerTarget> {
-    let mut servers = config
+    let servers = config
         .start_servers
         .clone()
         .map(|addresses| {
@@ -461,35 +462,31 @@ pub(crate) fn start_servers(config: &TraceConfig) -> Vec<ServerTarget> {
                 .collect()
         })
         .unwrap_or_else(default_root_targets);
-    servers = filter_targets(&servers, config.ipv4_only, config.ipv6_only);
-    servers
+    filter_targets(&servers, config.effective_family())
 }
 
 fn default_root_targets() -> Vec<ServerTarget> {
-    root_servers()
+    root_server_hints()
         .into_iter()
-        .zip(root_server_names())
         .map(|(address, name)| ServerTarget::with_name(address, name))
         .collect()
 }
 
-fn filter_targets(targets: &[ServerTarget], ipv4_only: bool, ipv6_only: bool) -> Vec<ServerTarget> {
-    filter_addresses(
-        &targets
-            .iter()
-            .map(|target| target.address)
-            .collect::<Vec<_>>(),
-        ipv4_only,
-        ipv6_only,
-    )
-    .into_iter()
-    .filter_map(|address| {
-        targets
-            .iter()
-            .find(|target| target.address == address)
-            .cloned()
-    })
-    .collect()
+fn filter_targets(
+    targets: &[ServerTarget],
+    family: crate::ResolvedAddressFamily,
+) -> Vec<ServerTarget> {
+    let before: Vec<IpAddr> = targets.iter().map(|target| target.address).collect();
+    let filtered = filter_addresses(&before, family);
+    filtered
+        .into_iter()
+        .filter_map(|address| {
+            targets
+                .iter()
+                .find(|target| target.address == address)
+                .cloned()
+        })
+        .collect()
 }
 
 pub fn expansion_targets_for_cut(
@@ -578,11 +575,9 @@ pub fn resolve_nameserver_target_for_referral(
     offline_only: bool,
 ) -> Result<Option<ServerTarget>> {
     if offline_only {
-        let addresses = filter_addresses(
-            &referral.glue_for(ns_name),
-            config.ipv4_only,
-            config.ipv6_only,
-        );
+        let glue = referral.glue_for(ns_name);
+        let addresses = filter_addresses(&glue, config.effective_family());
+        report_family_skips(config, progress, &glue, &addresses);
         if let Some(address) = addresses.first() {
             return Ok(Some(ServerTarget::with_name(*address, ns_name.to_string())));
         }
@@ -687,11 +682,9 @@ fn resolve_nameserver(
         });
     }
 
-    let mut addresses = filter_addresses(
-        &referral.glue_for(ns_name),
-        config.ipv4_only,
-        config.ipv6_only,
-    );
+    let glue = referral.glue_for(ns_name);
+    let mut addresses = filter_addresses(&glue, config.effective_family());
+    report_family_skips(config, progress, &glue, &addresses);
 
     if !addresses.is_empty() {
         progress.message(&format!("using glue for {}: {:?}", ns_name, addresses));
@@ -712,13 +705,14 @@ fn resolve_nameserver(
     let mut exempt = config.clone();
     exempt.budget_exempt = true;
 
-    for qtype in [RecordType::A, RecordType::AAAA] {
+    let family = config.effective_family();
+    for qtype in ns_record_types(family) {
         if let Ok((result, _)) = query_one(
-            &filter_targets(current_servers, config.ipv4_only, config.ipv6_only),
+            &filter_targets(current_servers, family),
             &exempt,
             budget,
             ns_name,
-            qtype,
+            *qtype,
         ) {
             addresses.extend(
                 result
@@ -731,7 +725,9 @@ fn resolve_nameserver(
         }
     }
 
-    addresses = filter_addresses(&addresses, config.ipv4_only, config.ipv6_only);
+    let before = addresses.clone();
+    addresses = filter_addresses(&addresses, family);
+    report_family_skips(config, progress, &before, &addresses);
     if !addresses.is_empty() {
         let targets: Vec<ServerTarget> = addresses
             .into_iter()
@@ -757,7 +753,9 @@ fn resolve_nameserver(
             .filter(|record| record.rtype == "A" || record.rtype == "AAAA")
             .filter_map(|record| record.rdata.parse().ok())
             .collect::<Vec<_>>();
-        addresses = filter_addresses(&parsed, config.ipv4_only, config.ipv6_only);
+        let before = parsed.clone();
+        addresses = filter_addresses(&parsed, family);
+        report_family_skips(config, progress, &before, &addresses);
         if !addresses.is_empty() {
             let targets: Vec<ServerTarget> = addresses
                 .into_iter()
@@ -844,6 +842,10 @@ pub(crate) fn is_authoritative_answer(
 mod tests {
     use super::*;
     use crate::NodePath;
+    use crate::address_family::{
+        AddressFamilyRequest, ResolvedAddressFamily, reset_address_family_cache_for_tests,
+        set_test_probe_result_for_tests,
+    };
     use std::net::{IpAddr, Ipv4Addr};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -985,6 +987,229 @@ mod tests {
                 "ns1.example.com."
             )]
         );
+    }
+
+    #[test]
+    fn v6_only_start_servers_use_aaaa_roots() {
+        let mut config = TraceConfig::new(
+            DomainName::parse("example.com.").expect("qname"),
+            RecordType::A,
+        );
+        config.family_request = AddressFamilyRequest::V6;
+        config.family_resolved = Some(ResolvedAddressFamily::V6);
+
+        let servers = start_servers(&config);
+        assert_eq!(servers.len(), 13);
+        assert!(
+            servers
+                .iter()
+                .all(|server| matches!(server.address, IpAddr::V6(_)))
+        );
+    }
+
+    #[test]
+    fn v4_only_filters_aaaa_glue_with_debug_notice() {
+        let referral = DnsResponse {
+            id: 1,
+            rcode: 0,
+            rcode_text: "NOERROR".into(),
+            authoritative: false,
+            truncated: false,
+            recursion_desired: false,
+            recursion_available: false,
+            authentic_data: false,
+            checking_disabled: false,
+            answers: vec![],
+            authorities: vec![DnsRecord {
+                name: DomainName::parse("example.com.").expect("zone"),
+                rtype: "NS".into(),
+                rclass: "IN".into(),
+                ttl: 3600,
+                rdata: "ns1.example.com.".into(),
+            }],
+            additionals: vec![
+                DnsRecord {
+                    name: DomainName::parse("ns1.example.com.").expect("ns"),
+                    rtype: "A".into(),
+                    rclass: "IN".into(),
+                    ttl: 300,
+                    rdata: "1.0.0.1".into(),
+                },
+                DnsRecord {
+                    name: DomainName::parse("ns1.example.com.").expect("ns"),
+                    rtype: "AAAA".into(),
+                    rclass: "IN".into(),
+                    ttl: 300,
+                    rdata: "2001:db8::1".into(),
+                },
+            ],
+            edns: EdnsMeta::default(),
+        };
+        let parent_zone = DomainName::parse("com.").expect("zone");
+        let ns_name = DomainName::parse("ns1.example.com.").expect("ns");
+        let mut config = TraceConfig::new(
+            DomainName::parse("example.com.").expect("qname"),
+            RecordType::A,
+        );
+        config.family_request = AddressFamilyRequest::V4;
+        config.family_resolved = Some(ResolvedAddressFamily::V4);
+        config.set_debug(true);
+        let mut budget = QueryBudget::new(64);
+        let mut messages = FamilyRecordingProgress::default();
+
+        let targets = resolve_nameserver(
+            &ns_name,
+            &referral,
+            &[ServerTarget::from_address(IpAddr::V4(Ipv4Addr::new(
+                1, 1, 1, 1,
+            )))],
+            &config,
+            &mut budget,
+            &parent_zone,
+            &mut messages,
+        )
+        .expect("targets");
+
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].address, IpAddr::V4(Ipv4Addr::new(1, 0, 0, 1)));
+        assert!(
+            messages
+                .messages
+                .iter()
+                .any(|message| message.contains("skipped 1 AAAA"))
+        );
+    }
+
+    #[test]
+    fn auto_resolves_before_start_servers() {
+        reset_address_family_cache_for_tests();
+        set_test_probe_result_for_tests(Some(false));
+
+        let mut config = TraceConfig::new(
+            DomainName::parse("example.com.").expect("qname"),
+            RecordType::A,
+        );
+        config.ensure_family_resolved();
+        assert_eq!(config.effective_family(), ResolvedAddressFamily::V4);
+
+        let servers = start_servers(&config);
+        assert!(
+            servers
+                .iter()
+                .all(|server| matches!(server.address, IpAddr::V4(_)))
+        );
+    }
+
+    #[derive(Default)]
+    struct FamilyRecordingProgress {
+        messages: Vec<String>,
+    }
+
+    impl crate::TraceProgress for FamilyRecordingProgress {
+        fn hop(&mut self, _hop: &crate::TraceHop, _path: &NodePath) {}
+        fn message(&mut self, message: &str) {
+            self.messages.push(message.to_string());
+        }
+    }
+
+    struct QtypeRecordingExchange {
+        qtypes: Arc<std::sync::Mutex<Vec<RecordType>>>,
+    }
+
+    impl crate::DnsExchange for QtypeRecordingExchange {
+        fn exchange(
+            &self,
+            _server: IpAddr,
+            _port: u16,
+            options: &dns_core::query::QueryOptions,
+        ) -> dns_core::Result<dns_core::QueryResult> {
+            self.qtypes.lock().expect("lock").push(options.qtype);
+            Ok(dns_core::QueryResult {
+                server: IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+                transport: options.transport,
+                qname: options.qname.clone(),
+                qtype: options.qtype.to_string(),
+                rtt: Duration::from_millis(1),
+                response: DnsResponse {
+                    id: 1,
+                    rcode: 0,
+                    rcode_text: "NOERROR".into(),
+                    authoritative: true,
+                    truncated: false,
+                    recursion_desired: false,
+                    recursion_available: false,
+                    authentic_data: false,
+                    checking_disabled: false,
+                    answers: vec![DnsRecord {
+                        name: options.qname.clone(),
+                        rtype: "A".into(),
+                        rclass: "IN".into(),
+                        ttl: 300,
+                        rdata: "1.0.0.1".into(),
+                    }],
+                    authorities: vec![],
+                    additionals: vec![],
+                    edns: EdnsMeta::default(),
+                },
+                from_cache: false,
+            })
+        }
+    }
+
+    #[test]
+    fn v4_only_skips_aaaa_ns_queries() {
+        let qtypes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let exchange = Arc::new(QtypeRecordingExchange {
+            qtypes: qtypes.clone(),
+        });
+        let referral = DnsResponse {
+            id: 1,
+            rcode: 0,
+            rcode_text: "NOERROR".into(),
+            authoritative: false,
+            truncated: false,
+            recursion_desired: false,
+            recursion_available: false,
+            authentic_data: false,
+            checking_disabled: false,
+            answers: vec![],
+            authorities: vec![DnsRecord {
+                name: DomainName::parse("example.com.").expect("zone"),
+                rtype: "NS".into(),
+                rclass: "IN".into(),
+                ttl: 3600,
+                rdata: "ns1.outside.example.".into(),
+            }],
+            additionals: vec![],
+            edns: EdnsMeta::default(),
+        };
+        let parent_zone = DomainName::parse("com.").expect("zone");
+        let ns_name = DomainName::parse("ns1.outside.example.").expect("ns");
+        let mut config = TraceConfig::new(
+            DomainName::parse("example.com.").expect("qname"),
+            RecordType::A,
+        );
+        config.family_request = AddressFamilyRequest::V4;
+        config.family_resolved = Some(ResolvedAddressFamily::V4);
+        config.exchange = exchange;
+        let mut budget = QueryBudget::new(64);
+
+        resolve_nameserver(
+            &ns_name,
+            &referral,
+            &[ServerTarget::from_address(IpAddr::V4(Ipv4Addr::new(
+                1, 1, 1, 1,
+            )))],
+            &config,
+            &mut budget,
+            &parent_zone,
+            &mut SilentProgress,
+        )
+        .expect("targets");
+
+        let recorded = qtypes.lock().expect("lock");
+        assert!(recorded.iter().all(|qtype| *qtype == RecordType::A));
+        assert!(!recorded.contains(&RecordType::AAAA));
     }
 
     #[test]
