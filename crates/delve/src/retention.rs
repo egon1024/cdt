@@ -7,25 +7,37 @@ pub struct PurgeReport {
     pub skipped_unparseable: usize,
 }
 
-/// Parse session `created_at` (RFC 3339). Returns None if unparseable.
-pub fn parse_created_at(value: &str) -> Option<OffsetDateTime> {
+/// Parse session timestamps (RFC 3339). Returns None if unparseable.
+pub fn parse_session_timestamp(value: &str) -> Option<OffsetDateTime> {
     OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).ok()
+}
+
+/// Format an RFC 3339 timestamp for session list display (second precision).
+pub fn format_timestamp_for_list(value: &str) -> String {
+    let Some(timestamp) = parse_session_timestamp(value) else {
+        return value.to_string();
+    };
+    const FORMAT: &[time::format_description::FormatItem<'static>] =
+        time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
+    timestamp
+        .format(FORMAT)
+        .unwrap_or_else(|_| value.to_string())
 }
 
 /// Whether a session should be removed under retention policy.
 pub fn is_expired(
-    created_at: &str,
+    updated_at: &str,
     retention: SessionRetention,
     now: OffsetDateTime,
 ) -> Option<bool> {
     let cutoff = retention.cutoff(now)?;
-    let created = parse_created_at(created_at)?;
-    Some(created < cutoff)
+    let updated = parse_session_timestamp(updated_at)?;
+    Some(updated < cutoff)
 }
 
 pub fn retention_label(retention: SessionRetention) -> String {
     match retention {
-        SessionRetention::Never => "never".into(),
+        SessionRetention::Never => "unlimited".into(),
         SessionRetention::Days(days) => format!("{days}d"),
         SessionRetention::Months(months) => format!("{months}mo"),
     }
@@ -98,6 +110,44 @@ mod tests {
         assert_eq!(
             is_expired("2020-01-01T00:00:00Z", SessionRetention::Never, now),
             None
+        );
+    }
+
+    #[test]
+    fn recently_updated_session_survives_retention() {
+        let now = datetime!(2026-08-25 12:00:00 UTC);
+        assert_eq!(
+            is_expired("2026-08-24T00:00:00Z", SessionRetention::Days(30), now),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn untouched_old_session_is_purged() {
+        let now = datetime!(2026-08-25 12:00:00 UTC);
+        assert_eq!(
+            is_expired("2020-01-01T00:00:00Z", SessionRetention::Days(30), now),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn format_timestamp_for_list_truncates_subsecond_precision() {
+        assert_eq!(
+            format_timestamp_for_list("2026-08-25T12:34:56.789012345Z"),
+            "2026-08-25T12:34:56Z"
+        );
+        assert_eq!(
+            format_timestamp_for_list("2026-08-25T12:34:56Z"),
+            "2026-08-25T12:34:56Z"
+        );
+    }
+
+    #[test]
+    fn format_timestamp_for_list_preserves_unparseable_values() {
+        assert_eq!(
+            format_timestamp_for_list("not-a-timestamp"),
+            "not-a-timestamp"
         );
     }
 }

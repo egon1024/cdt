@@ -1,8 +1,11 @@
 use ratatui::style::{Color, Modifier, Style};
 
+use super::terminal::{self, ColorCapability};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Theme {
     pub color_enabled: bool,
+    pub color_capability: ColorCapability,
     pub symbols: super::terminal::UiSymbols,
 }
 
@@ -10,12 +13,25 @@ impl Theme {
     pub fn from_env() -> Self {
         Self {
             color_enabled: std::env::var("NO_COLOR").is_err(),
+            color_capability: terminal::detect_color_capability(),
             symbols: super::terminal::ui_symbols(),
         }
     }
 
     pub fn toggle_color(&mut self) {
         self.color_enabled = !self.color_enabled;
+    }
+
+    pub fn color_status_hint(&self) -> &'static str {
+        if !self.color_enabled {
+            "off"
+        } else {
+            match self.color_capability {
+                ColorCapability::Basic => "on",
+                ColorCapability::Indexed => "256",
+                ColorCapability::Truecolor => "rgb",
+            }
+        }
     }
 
     pub fn accent(&self) -> Style {
@@ -156,5 +172,45 @@ impl Theme {
 
     pub fn help_key(&self) -> Style {
         self.label().add_modifier(Modifier::BOLD)
+    }
+
+    pub fn failure(&self) -> Style {
+        if self.color_enabled {
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().add_modifier(Modifier::BOLD)
+        }
+    }
+
+    pub fn rtt_green(&self) -> Style {
+        if self.color_enabled {
+            Style::default().fg(Color::Green)
+        } else {
+            Style::default()
+        }
+    }
+
+    pub fn rtt_yellow(&self) -> Style {
+        if self.color_enabled {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default()
+        }
+    }
+
+    pub fn rtt_orange(&self) -> Style {
+        if self.color_enabled {
+            Style::default().fg(Color::Rgb(255, 165, 0))
+        } else {
+            Style::default()
+        }
+    }
+
+    pub fn rtt_red(&self) -> Style {
+        if self.color_enabled {
+            Style::default().fg(Color::Red)
+        } else {
+            Style::default()
+        }
     }
 }

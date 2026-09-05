@@ -1,7 +1,16 @@
-use std::collections::HashSet;
+//! DNS resolution engine for `delve trace` and session branch operations.
+//!
+//! Traces run through the job-queue coordinator in [`job_queue`]. Session branch
+//! queries (`delve-trace-tree` phase 4) use [`run_branch_job`] for an
+//! alternate-server hop or [`run_expand_cut_branch`] to query every nameserver
+//! at a zone cut. Each branch continues single-path through delegation below
+//! the cut (divergent referrals fan out as separate subtrees). The first hop
+//! carries [`NodeOrigin::Branch`] with the supplied [`BranchIntent`].
+
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use dns_cache::{CacheKey, CachedEntry, ResponseCache, now_unix, shared_cache, ttl_from_result};
@@ -14,8 +23,36 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::OffsetDateTime;
 
+pub mod address_family;
+pub mod job_queue;
+pub mod path_timing;
+pub mod probe;
 pub mod root_hints;
+pub mod rtt_refresh;
 pub mod trace;
+pub mod tree;
+
+mod budget;
+
+pub use budget::QueryBudget;
+
+pub use path_timing::{
+    ForkSiblingHopRtt, PathTimingEntry, PathTimingSummary, answered_leaf_paths,
+    fork_path_timing_summary, fork_sibling_hop_rtts, path_rtt_total, path_timing_summary,
+};
+pub use rtt_refresh::{RefreshHopResult, RefreshProgress, RefreshTreeReport, refresh_tree_rtts};
+pub use tree::{
+    BranchIntent, HopOutcome, NodeOrigin, NodePath, TraceNode, TraceTree, TraceTreeRequest,
+    build_linear_tree,
+};
+
+pub use address_family::{
+    AddressFamilyRequest, PROBE_V6_TARGET, ResolvedAddressFamily, resolve_address_family,
+};
+pub use job_queue::{
+    BranchJobRequest, TerminalSiblingExpansion, run_branch_job, run_expand_cut_branch,
+};
+pub use probe::{DatagramIcmpProber, IcmpProbeResult, IcmpProber, probe_icmp_rtt};
 
 #[derive(Debug, Error)]
 pub enum ResolveError {
@@ -42,6 +79,19 @@ pub enum ResolveError {
 }
 
 pub type Result<T> = std::result::Result<T, ResolveError>;
+
+/// Controls how many nameservers are queried at each zone cut during a trace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpansionPolicy {
+    /// Single-path: one server per cut (`+expand=none`).
+    None,
+    /// Expand only the terminal answer cut (`+expand=last`, default).
+    #[default]
+    Last,
+    /// Query every nameserver at every cut (`+expand=all`).
+    All,
+}
 
 /// Exchange hook for tests and cache integration.
 pub trait DnsExchange: Send + Sync {
@@ -77,8 +127,8 @@ pub struct TraceConfig {
     pub retries: u8,
     pub dnssec: bool,
     pub request_nsid: bool,
-    pub ipv4_only: bool,
-    pub ipv6_only: bool,
+    pub family_request: AddressFamilyRequest,
+    pub family_resolved: Option<ResolvedAddressFamily>,
     pub max_depth: usize,
     pub max_alias_depth: usize,
     pub follow_aliases: bool,
@@ -90,6 +140,19 @@ pub struct TraceConfig {
     pub exchange_counter: Arc<AtomicUsize>,
     /// Nameserver hostnames currently being resolved (detects cyclic NS lookups).
     pub ns_resolution_active: HashSet<String>,
+    pub expansion_policy: ExpansionPolicy,
+    pub max_queries_per_action: usize,
+    /// Maximum concurrent trace queries (1 = serial coordinator loop).
+    pub max_parallel_queries: usize,
+    /// When true, coordinator jobs and `query_one`/`query_all` do not consume
+    /// `trace.max_queries_per_action` (glueless NS resolution sub-traces).
+    pub budget_exempt: bool,
+    /// Resolved nameserver targets reused for the lifetime of this trace action.
+    /// Checked after glue from the current referral; see `resolve_nameserver`.
+    pub(crate) ns_target_cache: Arc<Mutex<HashMap<String, Vec<ServerTarget>>>>,
+    /// Emit per-query concurrency diagnostics (`+debug`).
+    pub debug: bool,
+    pub(crate) query_debug_buffer: Option<Arc<Mutex<Vec<TraceQueryEvent>>>>,
 }
 
 impl TraceConfig {
@@ -103,8 +166,8 @@ impl TraceConfig {
             retries: 2,
             dnssec: false,
             request_nsid: true,
-            ipv4_only: false,
-            ipv6_only: false,
+            family_request: AddressFamilyRequest::Auto,
+            family_resolved: None,
             max_depth: 32,
             max_alias_depth: 16,
             follow_aliases: false,
@@ -115,7 +178,36 @@ impl TraceConfig {
             exchange: Arc::new(DefaultExchange),
             exchange_counter: Arc::new(AtomicUsize::new(0)),
             ns_resolution_active: HashSet::new(),
+            expansion_policy: ExpansionPolicy::Last,
+            max_queries_per_action: 64,
+            max_parallel_queries: 8,
+            budget_exempt: false,
+            ns_target_cache: Arc::new(Mutex::new(HashMap::new())),
+            debug: false,
+            query_debug_buffer: None,
         }
+    }
+
+    pub fn set_debug(&mut self, enabled: bool) {
+        self.debug = enabled;
+        self.query_debug_buffer = if enabled {
+            Some(Arc::new(Mutex::new(Vec::new())))
+        } else {
+            None
+        };
+    }
+
+    /// Resolve [`AddressFamilyRequest::Auto`] once and store the effective policy.
+    pub fn ensure_family_resolved(&mut self) {
+        if self.family_resolved.is_none() {
+            self.family_resolved = Some(resolve_address_family(self.family_request));
+        }
+    }
+
+    /// Effective address family for filtering and NS queries.
+    pub fn effective_family(&self) -> ResolvedAddressFamily {
+        self.family_resolved
+            .unwrap_or_else(|| resolve_address_family(self.family_request))
     }
 
     pub fn with_memory_cache(&mut self) -> Arc<dyn ResponseCache> {
@@ -174,7 +266,7 @@ impl StoredDnsMessage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ServerTarget {
+pub struct ServerTarget {
     pub address: IpAddr,
     pub name: Option<String>,
 }
@@ -216,45 +308,100 @@ pub struct TraceHop {
     /// True when this hop was served from the response cache.
     #[serde(default)]
     pub from_cache: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TraceResult {
-    pub qname: String,
-    pub qtype: String,
-    pub started_at: String,
-    pub hops: Vec<TraceHop>,
-    pub final_response: Option<FinalAnswer>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct FinalAnswer {
-    pub server: String,
     #[serde(default)]
-    pub server_name: Option<String>,
-    pub rtt_ms: u64,
-    pub rcode: String,
-    pub records: Vec<String>,
-    pub nsid: Option<String>,
-    #[serde(default)]
-    pub qname: String,
-    #[serde(default)]
-    pub qtype: String,
-    #[serde(default)]
-    pub transport: String,
-    #[serde(default)]
-    pub response: StoredDnsMessage,
-    /// True when the final answer was served from the response cache.
-    #[serde(default)]
-    pub from_cache: bool,
+    pub outcome: HopOutcome,
 }
 
 pub trait TraceProgress: Send {
-    fn hop(&mut self, hop: &TraceHop);
+    fn hop(&mut self, hop: &TraceHop, path: &NodePath);
     fn message(&mut self, message: &str);
+    fn budget_truncated(&mut self, _cap: usize) {}
+    fn query_debug(&mut self, _event: &TraceQueryEvent) {}
 }
 
-pub fn run_trace(config: &TraceConfig, progress: &mut dyn TraceProgress) -> Result<TraceResult> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraceQueryEvent {
+    pub job_id: Option<u64>,
+    pub path: Vec<usize>,
+    pub thread_id: String,
+    pub server: String,
+    pub qname: String,
+    pub qtype: String,
+    pub context: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct QueryDebugContext {
+    pub job_id: Option<u64>,
+    pub path: Vec<usize>,
+    pub context: &'static str,
+}
+
+impl QueryDebugContext {
+    pub(crate) fn trace_job(job_id: u64, path: Vec<usize>) -> Self {
+        Self {
+            job_id: Some(job_id),
+            path,
+            context: "trace",
+        }
+    }
+
+    pub(crate) fn ns_resolve() -> Self {
+        Self {
+            job_id: None,
+            path: Vec::new(),
+            context: "ns-resolve",
+        }
+    }
+}
+
+pub(crate) fn record_query_debug(
+    config: &TraceConfig,
+    server: IpAddr,
+    qname: &DomainName,
+    qtype: RecordType,
+    ctx: QueryDebugContext,
+) {
+    if !config.debug {
+        return;
+    }
+    let Some(buffer) = &config.query_debug_buffer else {
+        return;
+    };
+    let event = TraceQueryEvent {
+        job_id: ctx.job_id,
+        path: ctx.path,
+        thread_id: format!("{:?}", std::thread::current().id()),
+        server: server.to_string(),
+        qname: qname.to_string(),
+        qtype: qtype.to_string(),
+        context: ctx.context.to_string(),
+    };
+    if let Ok(mut guard) = buffer.lock() {
+        guard.push(event);
+    }
+}
+
+pub(crate) fn drain_query_debug(config: &TraceConfig, progress: &mut dyn TraceProgress) {
+    if !config.debug {
+        return;
+    }
+    let Some(buffer) = &config.query_debug_buffer else {
+        return;
+    };
+    let events = {
+        let Ok(mut guard) = buffer.lock() else {
+            return;
+        };
+        guard.drain(..).collect::<Vec<_>>()
+    };
+    for event in events {
+        progress.query_debug(&event);
+    }
+}
+
+pub fn run_trace(config: &mut TraceConfig, progress: &mut dyn TraceProgress) -> Result<TraceTree> {
+    config.ensure_family_resolved();
     trace::run(config, progress)
 }
 
@@ -331,6 +478,7 @@ pub(crate) fn hop_from_query(
     server_name: Option<String>,
     referral_ns: Vec<String>,
     glue: Vec<String>,
+    outcome: HopOutcome,
 ) -> TraceHop {
     TraceHop {
         zone: zone.to_string(),
@@ -352,6 +500,7 @@ pub(crate) fn hop_from_query(
         glue,
         response: StoredDnsMessage::from_response(&query.response),
         from_cache: query.from_cache,
+        outcome,
     }
 }
 
@@ -361,19 +510,63 @@ pub(crate) fn now_rfc3339() -> String {
         .unwrap_or_else(|_| "unknown".into())
 }
 
-pub(crate) fn filter_addresses(
-    addresses: &[IpAddr],
-    ipv4_only: bool,
-    ipv6_only: bool,
-) -> Vec<IpAddr> {
+pub(crate) fn filter_addresses(addresses: &[IpAddr], family: ResolvedAddressFamily) -> Vec<IpAddr> {
     addresses
         .iter()
         .copied()
-        .filter(|addr| match addr {
-            IpAddr::V4(_) => !ipv6_only,
-            IpAddr::V6(_) => !ipv4_only,
-        })
+        .filter(|addr| address_allowed(*addr, family))
         .collect()
+}
+
+pub(crate) fn address_allowed(addr: IpAddr, family: ResolvedAddressFamily) -> bool {
+    !matches!(
+        (addr, family),
+        (IpAddr::V4(_), ResolvedAddressFamily::V6) | (IpAddr::V6(_), ResolvedAddressFamily::V4)
+    )
+}
+
+pub(crate) fn report_family_skips(
+    config: &TraceConfig,
+    progress: &mut dyn TraceProgress,
+    before: &[IpAddr],
+    after: &[IpAddr],
+) {
+    if !config.debug {
+        return;
+    }
+    let family = config.effective_family();
+    let skipped_v4 = before
+        .iter()
+        .filter(|addr| matches!(addr, IpAddr::V4(_)))
+        .count()
+        .saturating_sub(
+            after
+                .iter()
+                .filter(|addr| matches!(addr, IpAddr::V4(_)))
+                .count(),
+        );
+    let skipped_v6 = before
+        .iter()
+        .filter(|addr| matches!(addr, IpAddr::V6(_)))
+        .count()
+        .saturating_sub(
+            after
+                .iter()
+                .filter(|addr| matches!(addr, IpAddr::V6(_)))
+                .count(),
+        );
+    if skipped_v4 > 0 {
+        progress.message(&format!(
+            "skipped {skipped_v4} A address(es) (family={})",
+            family.label()
+        ));
+    }
+    if skipped_v6 > 0 {
+        progress.message(&format!(
+            "skipped {skipped_v6} AAAA address(es) (family={})",
+            family.label()
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -559,5 +752,70 @@ mod cache_tests {
                 from_cache: false,
             })
         }
+    }
+
+    struct RecordingQueryDebug {
+        events: Arc<Mutex<Vec<TraceQueryEvent>>>,
+    }
+
+    impl TraceProgress for RecordingQueryDebug {
+        fn hop(&mut self, _hop: &TraceHop, _path: &NodePath) {}
+        fn message(&mut self, _message: &str) {}
+        fn query_debug(&mut self, event: &TraceQueryEvent) {
+            self.events.lock().expect("lock").push(event.clone());
+        }
+    }
+
+    #[test]
+    fn debug_records_and_drains_query_events() {
+        let qname = DomainName::parse("example.com.").expect("qname");
+        let mut config = TraceConfig::new(qname, RecordType::A);
+        config.set_debug(true);
+        config.exchange = Arc::new(CountingExchange {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut progress = RecordingQueryDebug {
+            events: events.clone(),
+        };
+
+        record_query_debug(
+            &config,
+            IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)),
+            &config.qname,
+            RecordType::A,
+            QueryDebugContext::trace_job(7, vec![0, 1]),
+        );
+        drain_query_debug(&config, &mut progress);
+
+        let recorded = events.lock().expect("lock");
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].job_id, Some(7));
+        assert_eq!(recorded[0].path, vec![0, 1]);
+        assert_eq!(recorded[0].server, "1.2.3.4");
+        assert_eq!(recorded[0].context, "trace");
+        assert!(recorded[0].thread_id.starts_with("ThreadId("));
+    }
+
+    struct NoopProgress;
+
+    impl TraceProgress for NoopProgress {
+        fn hop(&mut self, _hop: &TraceHop, _path: &NodePath) {}
+        fn message(&mut self, _message: &str) {}
+    }
+
+    #[test]
+    fn ordinary_trace_does_not_attempt_icmp() {
+        crate::probe::reset_icmp_probe_attempts();
+        let qname = DomainName::parse("example.com.").expect("qname");
+        let mut config = TraceConfig::new(qname, RecordType::A);
+        config.start_servers = Some(vec![IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))]);
+        config.use_cache = false;
+        config.exchange = Arc::new(CountingExchange {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let _ = crate::run_trace(&mut config, &mut NoopProgress);
+        assert_eq!(crate::probe::icmp_probe_attempts(), 0);
     }
 }
