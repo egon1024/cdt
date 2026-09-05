@@ -1,9 +1,19 @@
 use std::time::Duration;
 
 use dns_core::parse_record_type;
-use dns_resolve::ExpansionPolicy;
+use dns_resolve::{AddressFamilyRequest, ExpansionPolicy};
 
 pub use crate::trace_options_help::TRACE_OPTIONS_HELP;
+
+/// How the operator selected address family (for stderr notice wording).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FamilySource {
+    #[default]
+    Default,
+    Minus4,
+    Minus6,
+    PlusFamily(AddressFamilyRequest),
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TraceOptions {
@@ -12,8 +22,8 @@ pub struct TraceOptions {
     pub qtype: String,
     pub reverse_lookup: bool,
     pub follow_aliases: bool,
-    pub ipv4_only: bool,
-    pub ipv6_only: bool,
+    pub family_request: AddressFamilyRequest,
+    pub family_source: FamilySource,
     pub use_tcp: bool,
     pub timeout: Duration,
     pub retries: u8,
@@ -37,8 +47,8 @@ impl Default for TraceOptions {
             qtype: "A".into(),
             reverse_lookup: false,
             follow_aliases: false,
-            ipv4_only: false,
-            ipv6_only: false,
+            family_request: AddressFamilyRequest::Auto,
+            family_source: FamilySource::Default,
             use_tcp: false,
             timeout: Duration::from_secs(5),
             retries: 2,
@@ -83,13 +93,29 @@ pub enum ParseError {
 pub fn parse_trace_args(args: &[String]) -> Result<TraceOptions, ParseError> {
     let mut options = TraceOptions::default();
     let mut qname: Option<String> = None;
+    let mut saw_v4_flag = false;
+    let mut saw_v6_flag = false;
 
     let mut index = 0;
     while index < args.len() {
         let arg = &args[index];
         match arg.as_str() {
-            "-4" => options.ipv4_only = true,
-            "-6" => options.ipv6_only = true,
+            "-4" => {
+                if saw_v6_flag {
+                    return Err(ParseError::AddressFamily);
+                }
+                saw_v4_flag = true;
+                options.family_request = AddressFamilyRequest::V4;
+                options.family_source = FamilySource::Minus4;
+            }
+            "-6" => {
+                if saw_v4_flag {
+                    return Err(ParseError::AddressFamily);
+                }
+                saw_v6_flag = true;
+                options.family_request = AddressFamilyRequest::V6;
+                options.family_source = FamilySource::Minus6;
+            }
             "-x" => {
                 options.reverse_lookup = true;
                 options.qtype = "PTR".into();
@@ -100,7 +126,9 @@ pub fn parse_trace_args(args: &[String]) -> Result<TraceOptions, ParseError> {
             _ if arg.starts_with('@') => {
                 options.server = Some(arg.trim_start_matches('@').to_string());
             }
-            _ if arg.starts_with('+') => apply_query_option(&mut options, arg)?,
+            _ if arg.starts_with('+') => {
+                apply_query_option(&mut options, arg, &mut saw_v4_flag, &mut saw_v6_flag)?
+            }
             _ if arg.starts_with('-') && arg.len() > 1 => {
                 let type_name = &arg[1..];
                 parse_record_type(type_name)
@@ -121,7 +149,7 @@ pub fn parse_trace_args(args: &[String]) -> Result<TraceOptions, ParseError> {
         return Err(ParseError::MissingQname);
     };
 
-    if options.ipv4_only && options.ipv6_only {
+    if saw_v4_flag && saw_v6_flag {
         return Err(ParseError::AddressFamily);
     }
 
@@ -145,7 +173,12 @@ fn next_value(args: &[String], index: &mut usize, option: &str) -> Result<String
     Ok(value)
 }
 
-fn apply_query_option(options: &mut TraceOptions, arg: &str) -> Result<(), ParseError> {
+fn apply_query_option(
+    options: &mut TraceOptions,
+    arg: &str,
+    saw_v4_flag: &mut bool,
+    saw_v6_flag: &mut bool,
+) -> Result<(), ParseError> {
     let body = arg.trim_start_matches('+');
     let (keyword, value, negate) = split_query_option(body);
 
@@ -186,6 +219,22 @@ fn apply_query_option(options: &mut TraceOptions, arg: &str) -> Result<(), Parse
         "save" => options.save_session = !negate,
         "fresh" => options.fresh = !negate,
         "follow" => options.follow_aliases = !negate,
+        "family" => {
+            let Some(raw) = value else {
+                return Err(ParseError::MissingValue {
+                    option: "+family".into(),
+                });
+            };
+            let family = parse_family_value(raw)?;
+            if matches!(family, AddressFamilyRequest::V4) && *saw_v6_flag {
+                return Err(ParseError::AddressFamily);
+            }
+            if matches!(family, AddressFamilyRequest::V6) && *saw_v4_flag {
+                return Err(ParseError::AddressFamily);
+            }
+            options.family_request = family;
+            options.family_source = FamilySource::PlusFamily(family);
+        }
         "expand" => {
             let Some(raw) = value else {
                 return Err(ParseError::MissingValue {
@@ -233,6 +282,19 @@ fn parse_tries(raw: &str) -> Result<u8, ParseError> {
         value: raw.into(),
     })?;
     Ok((parsed.max(1)) as u8)
+}
+
+fn parse_family_value(raw: &str) -> Result<AddressFamilyRequest, ParseError> {
+    match raw {
+        "auto" => Ok(AddressFamilyRequest::Auto),
+        "v4" => Ok(AddressFamilyRequest::V4),
+        "v6" => Ok(AddressFamilyRequest::V6),
+        "both" => Ok(AddressFamilyRequest::Both),
+        other => Err(ParseError::InvalidValue {
+            option: "+family".into(),
+            value: other.into(),
+        }),
+    }
 }
 
 fn parse_expand_value(raw: &str) -> Result<(ExpansionPolicy, bool), ParseError> {
@@ -405,5 +467,47 @@ mod tests {
     fn plain_expand_all_is_not_forced() {
         let options = parse_trace_args(&args(&["example.com", "+expand=all"])).expect("parse");
         assert!(!options.expand_all_force);
+    }
+
+    #[test]
+    fn default_family_is_auto() {
+        let options = parse_trace_args(&args(&["example.com"])).expect("parse");
+        assert_eq!(options.family_request, AddressFamilyRequest::Auto);
+        assert_eq!(options.family_source, FamilySource::Default);
+    }
+
+    #[test]
+    fn parses_plus_family_values() {
+        let v6 = parse_trace_args(&args(&["example.com", "+family=v6"])).expect("parse");
+        assert_eq!(v6.family_request, AddressFamilyRequest::V6);
+        assert_eq!(
+            v6.family_source,
+            FamilySource::PlusFamily(AddressFamilyRequest::V6)
+        );
+
+        let both = parse_trace_args(&args(&["example.com", "+family=both"])).expect("parse");
+        assert_eq!(both.family_request, AddressFamilyRequest::Both);
+    }
+
+    #[test]
+    fn rejects_conflicting_family_flags() {
+        let error = parse_trace_args(&args(&["example.com", "-4", "-6"])).expect_err("conflict");
+        assert!(matches!(error, ParseError::AddressFamily));
+    }
+
+    #[test]
+    fn rejects_invalid_family_value() {
+        let error = parse_trace_args(&args(&["example.com", "+family=dual"])).expect_err("invalid");
+        assert!(matches!(
+            error,
+            ParseError::InvalidValue { option, .. } if option == "+family"
+        ));
+    }
+
+    #[test]
+    fn trace_options_help_documents_family_flags() {
+        assert!(TRACE_OPTIONS_HELP.contains("+family=auto|v4|v6|both"));
+        assert!(TRACE_OPTIONS_HELP.contains("-4"));
+        assert!(TRACE_OPTIONS_HELP.contains("-6"));
     }
 }

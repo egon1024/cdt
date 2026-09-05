@@ -62,7 +62,13 @@ Session ids accept a full ULID or a unique short prefix (like git).
 
 ### Session reuse
 
-When `+save` is enabled, `delve trace` first looks for an existing stored session whose **trace parameters** match the current request: qname, qtype, `@server`, transport, timeout, tries, DNSSEC/NSID flags, address family, cache options, expansion policy, and related flags. If a match exists, delve **replays that stored snapshot** instead of issuing new DNS queries. The snapshot stays available until retention purge removes it — there is no time-based expiry for reuse.
+When `+save` is enabled, `delve trace` first looks for an existing stored session whose **trace parameters** match the current request: qname, qtype, `@server`, transport, timeout, tries, DNSSEC/NSID flags, **resolved address family** (`v4`, `v6`, or `both`), cache options, expansion policy, and related flags. If a match exists, delve **replays that stored snapshot** instead of issuing new DNS queries. The snapshot stays available until retention purge removes it — there is no time-based expiry for reuse.
+
+The matcher compares the **resolved** family recorded when the session was saved,
+not the CLI spelling you used (`+family=auto` and `-4` both match when the stored
+session resolved to v4-only). Sessions saved before this field existed are treated
+as dual-stack for matching. Changing family (for example from v4-only to
+`+family=both`) forces a fresh trace even when other parameters match.
 
 Sessions that have been **branched** (extended after the initial trace) do not match for reuse — only unmodified single-tree snapshots qualify.
 

@@ -50,10 +50,44 @@ Options follow **dig** conventions (not GNU long flags):
 | `+follow` / `+nofollow` | off | Follow CNAME and DNAME aliases, restarting delegation from the new name |
 | `+expand=last\|all\|none` | `last` | Zone-cut expansion policy; see [concepts](concepts.md#expansion-at-trace-time) |
 | `+expand=all+force` | — | Skip full-expansion confirmation prompt |
+| `+family=auto\|v4\|v6\|both` | `auto` | Address-family policy; see [Address family](#address-family) below |
 | `-t TYPE` or `-TYPE` | `A` | Query type |
 | `-x` | off | Reverse lookup: positional argument is an IP address; queries `PTR` at the corresponding `in-addr.arpa` / `ip6.arpa` name |
-| `-4` / `-6` | both | Address family; mutually exclusive |
+| `-4` / `-6` | — | Aliases for `+family=v4` / `+family=v6`; mutually exclusive |
 | `@server` | root hints | Starting server (**IP literal** only today) |
+
+### Address family
+
+By default, delve uses **`+family=auto`**: before the first hop it probes whether
+IPv6 UDP traffic can leave the host (toward the AAAA for `a.root-servers.net`).
+If the kernel reports the route is unreachable, the trace runs **v4-only**; otherwise
+it uses **dual-stack** (v4 and v6 root hints and glue, with v4 roots listed first).
+
+Each live trace prints the resolved mode on stderr, for example:
+
+```text
+address family: dual-stack (ipv6 probe ok)
+address family: v4-only (ipv6 unreachable)
+address family: v4-only (-4)
+address family: dual-stack (+family=both)
+```
+
+Explicit overrides skip the probe:
+
+| Spelling | Effective policy |
+|----------|------------------|
+| (default) / `+family=auto` | Probe once per process, then v4-only or dual-stack |
+| `-4` / `+family=v4` | IPv4 only |
+| `-6` / `+family=v6` | IPv6 only |
+| `+family=both` | Dual-stack (v4 and v6) |
+
+In v4-only mode, nameserver resolution queries **A** records only; in v6-only mode,
+**AAAA** only; in dual-stack mode, both. Family filtering also applies to glue and
+referral target addresses. With `+debug`, skipped addresses may be logged.
+
+Session reuse matches on the **resolved** family stored in session metadata
+(`v4`, `v6`, or `both`), not on whether you used `-4` or `+family=auto` on the CLI.
+See [concepts — session reuse](concepts.md#session-reuse).
 
 Supported query types:
 

@@ -115,7 +115,11 @@ impl Runtime {
                 continue;
             };
             let document = self.get_session(&summary.id)?;
-            if !document.trees.iter().any(|entry| entry.request == *request) {
+            if !document
+                .trees
+                .iter()
+                .any(|entry| request.matches_for_reuse(&entry.request))
+            {
                 continue;
             }
             if document.trees.len() > 1 || document.has_branches() {
@@ -234,6 +238,8 @@ mod degradation_tests {
         )
     }
 
+    use dns_resolve::ResolvedAddressFamily;
+
     fn sample_request() -> TraceRequest {
         TraceRequest::from_options(&crate::dig_options::TraceOptions {
             qname: "example.com".into(),
@@ -338,7 +344,7 @@ mod degradation_tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let paths = DelvePaths::from_root(dir.path());
         let runtime = Runtime::open(paths);
-        let request = sample_request();
+        let request = sample_request().with_resolved_family(ResolvedAddressFamily::Both);
         runtime
             .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request)
             .expect("save");
@@ -346,6 +352,36 @@ mod degradation_tests {
         none_request.expansion = dns_resolve::ExpansionPolicy::None;
         let lookup = runtime.find_matching_session(&none_request).expect("find");
         assert_eq!(lookup, SessionReuseLookup::NoMatch);
+    }
+
+    #[test]
+    fn find_matching_session_refuses_different_resolved_family() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = DelvePaths::from_root(dir.path());
+        let runtime = Runtime::open(paths);
+        let request = sample_request().with_resolved_family(ResolvedAddressFamily::V4);
+        runtime
+            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request)
+            .expect("save");
+        let both_request = sample_request().with_resolved_family(ResolvedAddressFamily::Both);
+        let lookup = runtime.find_matching_session(&both_request).expect("find");
+        assert_eq!(lookup, SessionReuseLookup::NoMatch);
+    }
+
+    #[test]
+    fn find_matching_session_reuses_same_resolved_family() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = DelvePaths::from_root(dir.path());
+        let runtime = Runtime::open(paths);
+        let request = sample_request().with_resolved_family(ResolvedAddressFamily::V4);
+        let id = runtime
+            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request)
+            .expect("save");
+        let lookup = runtime.find_matching_session(&request).expect("find");
+        match lookup {
+            SessionReuseLookup::Reuse(document) => assert_eq!(document.id, id),
+            other => panic!("expected reuse, got {other:?}"),
+        }
     }
 
     #[test]

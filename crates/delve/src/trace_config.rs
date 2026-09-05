@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use dns_cache::ResponseCache;
 use dns_core::{DomainName, Transport, ip_to_ptr_name, parse_record_type, parse_reverse_target};
-use dns_resolve::{ExpansionPolicy, TraceConfig};
+use dns_resolve::TraceConfig;
 
 use crate::trace_request::TraceRequest;
 
@@ -45,10 +45,10 @@ pub fn trace_config_from_request(
     config.retries = request.retries;
     config.dnssec = request.dnssec;
     config.request_nsid = request.request_nsid;
-    config.ipv4_only = request.ipv4_only;
-    config.ipv6_only = request.ipv6_only;
+    config.family_request = request.family_request;
+    config.family_resolved = request.resolved_address_family;
     config.use_cache = request.use_cache;
-    config.expansion_policy = ExpansionPolicy::None;
+    config.expansion_policy = request.expansion;
     config.max_queries_per_action = max_queries;
     config.max_parallel_queries = max_parallel;
     config.set_debug(request.debug);

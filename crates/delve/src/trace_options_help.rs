@@ -11,8 +11,10 @@ Query type:
   -x                     Reverse lookup: argument is an IP; queries PTR
 
 Address family:
-  -4                     IPv4 only
-  -6                     IPv6 only
+  +family=auto|v4|v6|both
+                        Address family policy (default: auto)
+  -4                     IPv4 only (alias for +family=v4)
+  -6                     IPv6 only (alias for +family=v6)
 
 Transport and timing:
   +tcp / +notcp          Use TCP or UDP (default: UDP)

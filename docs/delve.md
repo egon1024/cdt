@@ -10,10 +10,16 @@ Use delve when you want to see **how** a name resolves hop by hop, keep that inv
 delve trace example.com
 delve trace example.com +events          # NDJSON on stdout
 delve trace example.com +tcp -4 +timeout=3 -t NS @1.1.1.1
+delve trace example.com +family=both     # dual-stack (skip auto probe)
 delve session explore                    # TUI for the last session
 ```
 
-After a trace with saving enabled (the default), stderr includes:
+Each live trace prints the resolved address-family policy on stderr before the
+first hop (for example `address family: dual-stack (ipv6 probe ok)`). The default
+is **auto**: delve probes IPv6 reachability once per process and chooses v4-only
+or dual-stack accordingly.
+
+After a trace with saving enabled (the default), stderr also includes:
 
 ```text
 session: 01JXXXXXXXXXXXXXXXXXXXXXXXXXX
@@ -34,7 +40,7 @@ Installed packages also ship `man delve` (CLI synopsis) and this guide at `/usr/
 
 ## At a glance
 
-- **Trace** — live delegation walk from root hints (or `@server`) to an answer; progress on stderr, optional NDJSON on stdout.
+- **Trace** — live delegation walk from root hints (or `@server`) to an answer; progress on stderr, optional NDJSON on stdout. Address family defaults to **auto** (IPv6 reachability probe, then v4-only or dual-stack).
 - **Session** — saved snapshot of one or more trace trees; inspect offline, reuse when parameters match, or extend with branching.
 - **Expansion** — `+expand=last|all|none` controls how many nameservers are queried at each zone cut during a live trace.
 - **Branching** — `delve session branch` or **`b`** in explore adds sibling paths from a delegation hop without re-tracing from the root.
