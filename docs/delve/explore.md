@@ -57,6 +57,8 @@ Fork-scoped sibling comparison (DNS/ICMP metrics, answer agreement, referral sum
 
 When every sibling returns the same referral NS set, the comparison header lists those names once (`referral NS (all paths): …`) and the per-row **referral Δ** column shows `—`. When sets differ, the header lists the union (`referral NS (differ): …`) and each row shows `+`/`-` deltas. Answer agreement is reported separately (`Answers agree …`) via `answers.agree` in JSON.
 
+ICMP network RTT uses unprivileged datagram sockets when the host allows them. On Linux hosts where `net.ipv4.ping_group_range` excludes your group, delve falls back to `/bin/ping` and prints a one-line hint on stderr (including the optional `sysctl` fix). If every probe still fails, the **icmp** column reads `n/a`.
+
 ### Compare analytics keys
 
 Timing is derived from stored hop data (no network I/O for stats):

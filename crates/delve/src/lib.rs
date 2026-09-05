@@ -9,6 +9,7 @@ pub mod explore;
 pub mod export;
 pub mod family_notice;
 pub mod hop_display;
+pub mod icmp_notice;
 pub mod paths;
 pub mod progress;
 pub mod replay;

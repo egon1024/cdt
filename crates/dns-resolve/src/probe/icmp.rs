@@ -28,6 +28,27 @@ impl Default for DatagramIcmpProber {
     }
 }
 
+pub fn datagram_icmp_socket_available() -> bool {
+    open_datagram_icmp_socket(Domain::IPV4).is_ok()
+        || open_datagram_icmp_socket(Domain::IPV6).is_ok()
+}
+
+fn open_datagram_icmp_socket(domain: Domain) -> io::Result<()> {
+    let protocol = match domain {
+        Domain::IPV4 => Protocol::from(IPPROTO_ICMP),
+        Domain::IPV6 => Protocol::from(IPPROTO_ICMPV6),
+        _ => {
+            return Err(io::Error::new(
+                ErrorKind::Unsupported,
+                "unsupported address family for ICMP",
+            ));
+        }
+    };
+    let socket = Socket::new(domain, Type::DGRAM, Some(protocol))?;
+    drop(socket);
+    Ok(())
+}
+
 impl IcmpProber for DatagramIcmpProber {
     fn probe(&self, addr: IpAddr, timeout: Duration) -> IcmpProbeResult {
         ICMP_PROBE_ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);

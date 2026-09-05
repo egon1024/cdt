@@ -266,22 +266,38 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
         SessionSubcommand::Outline(args) => {
             let (session_id, _) = resolve_session_target(args.id, Vec::new(), &runtime)?;
             let document = runtime.get_session(&session_id)?;
+            let prober = dns_resolve::comparison_icmp_prober();
+            if args.compare_at_hop.is_some() || args.compare_at_path.is_some() {
+                if let Some(notice) =
+                    crate::icmp_notice::format_comparison_icmp_notice(prober.capability())
+                {
+                    eprintln!("{notice}");
+                }
+            }
             run_outline_with_compare(
                 &document,
                 args.compare_at_hop,
                 args.compare_at_path.as_deref(),
-                &dns_resolve::DatagramIcmpProber::default(),
+                prober,
             )?;
             Ok(())
         }
         SessionSubcommand::Events(args) => {
             let (session_id, _) = resolve_session_target(args.id, Vec::new(), &runtime)?;
             let document = runtime.get_session(&session_id)?;
+            let prober = dns_resolve::comparison_icmp_prober();
+            if args.compare_at_hop.is_some() || args.compare_at_path.is_some() {
+                if let Some(notice) =
+                    crate::icmp_notice::format_comparison_icmp_notice(prober.capability())
+                {
+                    eprintln!("{notice}");
+                }
+            }
             run_events_with_compare(
                 &document,
                 args.compare_at_hop,
                 args.compare_at_path.as_deref(),
-                &dns_resolve::DatagramIcmpProber::default(),
+                prober,
             )?;
             Ok(())
         }

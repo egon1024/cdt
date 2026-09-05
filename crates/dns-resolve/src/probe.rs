@@ -4,8 +4,11 @@ use std::net::IpAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+pub mod comparison;
 pub mod icmp;
+pub mod ping_command;
 
+pub use comparison::{ComparisonIcmpProber, IcmpProbeCapability, comparison_icmp_prober};
 pub use icmp::DatagramIcmpProber;
 
 /// Counts datagram ICMP probe attempts. Ordinary traces must leave this at zero.
