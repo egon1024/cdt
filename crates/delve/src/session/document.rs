@@ -136,7 +136,7 @@ pub fn now_rfc3339() -> String {
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SessionSummary {
     pub id: String,
     pub qname: String,
@@ -164,7 +164,8 @@ impl SessionSummary {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SessionListItem {
     Session(SessionSummary),
     Unreadable { id: String, message: String },
@@ -309,6 +310,23 @@ mod tests {
         let json = serde_json::to_string(&document).expect("serialize");
         let decoded: SessionDocument = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(document.targets, decoded.targets);
+    }
+
+    #[test]
+    fn session_list_item_serializes_for_json_list() {
+        let item = SessionListItem::Session(SessionSummary {
+            id: "01TEST".into(),
+            qname: "example.com.".into(),
+            qtype: "A".into(),
+            created_at: "2026-09-06T00:00:00Z".into(),
+            updated_at: "2026-09-06T00:00:00Z".into(),
+            node_count: 3,
+            pinned: false,
+        });
+        let json = serde_json::to_string(&vec![item]).expect("serialize");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert_eq!(value[0]["kind"], "session");
+        assert_eq!(value[0]["id"], "01TEST");
     }
 
     #[test]

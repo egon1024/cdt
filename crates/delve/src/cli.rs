@@ -189,9 +189,19 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
     let runtime = Runtime::open_platform();
     runtime.emit_warnings();
     match command.command {
-        SessionSubcommand::List => {
+        SessionSubcommand::List(args) => {
+            let items = runtime.list_sessions()?;
+            if args.json {
+                println!(
+                    "{}",
+                    serde_json::to_string(&items).map_err(|error| {
+                        CliError::Parse(ParseError::Unexpected(error.to_string()))
+                    })?
+                );
+                return Ok(());
+            }
             let default_id = runtime.default_session_id().ok();
-            for item in runtime.list_sessions()? {
+            for item in items {
                 match item {
                     crate::session::SessionListItem::Session(summary) => {
                         let pin = if summary.pinned { '*' } else { ' ' };

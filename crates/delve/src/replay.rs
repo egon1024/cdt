@@ -50,7 +50,7 @@ pub fn print_final_answer(result: &TraceTree) {
 
 pub fn print_reused_session_notice(document: &SessionDocument) {
     eprintln!(
-        "session: {} (reused snapshot from {})",
+        "session: {} (reused snapshot from {}; use +fresh to re-trace and refresh targets)",
         document.id, document.created_at
     );
 }
