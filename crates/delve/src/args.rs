@@ -54,7 +54,7 @@ pub struct SessionCommand {
 #[derive(Debug, Subcommand)]
 pub enum SessionSubcommand {
     /// List stored sessions.
-    List,
+    List(SessionListArgs),
     /// Print the current default session id.
     Current,
     /// Show a stored session by id or prefix.
@@ -160,6 +160,13 @@ pub struct SessionEventsArgs {
 pub struct SessionExploreArgs {
     /// Session id or prefix. When omitted, uses the default session.
     pub id: Option<String>,
+}
+
+#[derive(Debug, Parser)]
+pub struct SessionListArgs {
+    /// Emit sessions as a JSON array.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Parser)]
