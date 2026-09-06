@@ -178,10 +178,10 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Mutex;
 
-    use crate::session::TargetEnrichments;
     use crate::dig_options::TraceOptions;
     use crate::paths::DelvePaths;
     use crate::runtime::Runtime;
+    use crate::session::TargetEnrichments;
     use crate::trace_request::TraceRequest;
 
     struct MockProber {
