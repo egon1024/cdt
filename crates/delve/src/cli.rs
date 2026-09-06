@@ -474,6 +474,8 @@ fn print_session(document: &SessionDocument, json: bool) {
                 "created_at": document.created_at,
                 "updated_at": document.updated_at,
                 "pinned": document.pinned,
+                "capture_context": document.capture_context,
+                "targets": document.targets,
                 "trees": document.trees,
                 "view_state": document.view_state,
             }))
