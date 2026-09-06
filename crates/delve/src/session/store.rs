@@ -39,6 +39,7 @@ pub enum SessionError {
 
 pub trait SessionStore: Send {
     fn save(&mut self, result: &TraceTree, request: &TraceRequest) -> Result<String>;
+    fn save_document(&mut self, document: SessionDocument) -> Result<String>;
     fn update(&mut self, document: &SessionDocument) -> Result<()>;
     fn get(&self, id: &str) -> Result<SessionDocument>;
     fn list(&self) -> Result<Vec<SessionListItem>>;
@@ -61,6 +62,10 @@ pub struct OpenSessionStore {
 impl SessionStore for OpenSessionStore {
     fn save(&mut self, result: &TraceTree, request: &TraceRequest) -> Result<String> {
         self.inner.save(result, request)
+    }
+
+    fn save_document(&mut self, document: SessionDocument) -> Result<String> {
+        self.inner.save_document(document)
     }
 
     fn update(&mut self, document: &SessionDocument) -> Result<()> {

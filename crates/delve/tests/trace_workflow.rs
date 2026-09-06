@@ -259,7 +259,9 @@ fn trace_branch_compare_and_reopen_round_trip() {
     let request = trace_request();
     let created_at = tree.started_at().to_string();
 
-    let id = runtime.save_session(&tree, &request).expect("save session");
+    let id = runtime
+        .save_session(&tree, &request, false)
+        .expect("save session");
     let mut document = runtime.get_session(&id).expect("load session");
     assert_eq!(document.version, 2);
     assert_eq!(document.created_at, created_at);

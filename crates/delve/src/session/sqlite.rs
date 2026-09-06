@@ -105,6 +105,11 @@ impl SessionStore for SqliteSessionStore {
     fn save(&mut self, result: &TraceTree, request: &TraceRequest) -> Result<String> {
         let id = new_session_id();
         let document = SessionDocument::new(id.clone(), request.clone(), result.clone());
+        self.save_document(document)
+    }
+
+    fn save_document(&mut self, document: SessionDocument) -> Result<String> {
+        let id = document.id.clone();
         let body = serde_json::to_string(&document)
             .map_err(|error| SessionError::Serialization(error.to_string()))?;
         let summary = SessionSummary::from_document(&document);

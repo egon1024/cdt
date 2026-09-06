@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use super::icmp::{DatagramIcmpProber, datagram_icmp_socket_available};
 use super::ping_command::PingCommandProber;
-use super::{IcmpProbeResult, IcmpProber};
+use super::snapshot::{IcmpMethod, IcmpSnapshot};
+use super::{IcmpProbeResult, IcmpProber, probe_icmp_rtt};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IcmpProbeCapability {
@@ -49,6 +50,34 @@ impl ComparisonIcmpProber {
 
     pub fn capability(&self) -> IcmpProbeCapability {
         self.capability
+    }
+
+    pub fn probe_enrichment_snapshot(
+        &self,
+        addr: std::net::IpAddr,
+        timeout_ms: u64,
+        ping_samples: u8,
+        probed_at: impl Into<String>,
+    ) -> Option<IcmpSnapshot> {
+        let timeout = Duration::from_millis(timeout_ms.max(1));
+        let probed_at = probed_at.into();
+        match self.capability {
+            IcmpProbeCapability::Datagram => probe_icmp_rtt(self, addr)
+                .map(|rtt| IcmpSnapshot::from_single_rtt(IcmpMethod::Datagram, rtt, probed_at)),
+            IcmpProbeCapability::PingCommand => {
+                let ping = self.ping.as_ref()?;
+                let stats = ping.probe_samples(addr, timeout, ping_samples).ok()?;
+                Some(IcmpSnapshot {
+                    method: IcmpMethod::Ping,
+                    samples: stats.samples.max(1),
+                    min_ms: stats.min_ms.round() as u64,
+                    avg_ms: stats.avg_ms.round() as u64,
+                    max_ms: stats.max_ms.round() as u64,
+                    probed_at,
+                })
+            }
+            IcmpProbeCapability::None => None,
+        }
     }
 }
 

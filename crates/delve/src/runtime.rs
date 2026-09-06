@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use dns_cache::{ResponseCache, SqliteCache};
+use dns_enrichment_cache::SqliteEnrichmentCache;
 use dns_resolve::TraceTree;
 
 use crate::config::DelveConfig;
@@ -25,6 +26,7 @@ pub struct Runtime {
     pub paths: DelvePaths,
     pub config: DelveConfig,
     pub cache: Option<Arc<dyn ResponseCache>>,
+    pub enrichment_cache: Option<Arc<SqliteEnrichmentCache>>,
     sessions: Mutex<OpenSessionStore>,
     pub warnings: Vec<String>,
 }
@@ -77,10 +79,36 @@ impl Runtime {
             }
         };
 
+        let enrichment_cache = match paths.ensure_data_dirs() {
+            Ok(()) => match SqliteEnrichmentCache::open_with_ttl(
+                &paths.enrichment_db,
+                config.enrichment_cache_icmp_ttl_seconds,
+            ) {
+                Ok(cache) => Some(Arc::new(cache)),
+                Err(error) => {
+                    warnings.push(format!(
+                        "warning: enrichment cache unavailable at {}: {}",
+                        paths.enrichment_db.display(),
+                        error
+                    ));
+                    None
+                }
+            },
+            Err(error) => {
+                warnings.push(format!(
+                    "warning: enrichment cache unavailable at {}: {}",
+                    paths.enrichment_db.display(),
+                    error
+                ));
+                None
+            }
+        };
+
         Self {
             paths,
             config,
             cache,
+            enrichment_cache,
             sessions: Mutex::new(session_report.store),
             warnings,
         }
@@ -96,11 +124,15 @@ impl Runtime {
         &self,
         result: &TraceTree,
         request: &TraceRequest,
+        fresh: bool,
     ) -> Result<String, SessionError> {
+        let id = crate::session::id::new_session_id();
+        let mut document = SessionDocument::new(id.clone(), request.clone(), result.clone());
+        crate::enrichment::populate_after_trace(&mut document, result, self, fresh);
         self.sessions
             .lock()
             .expect("session lock")
-            .save(result, request)
+            .save_document(document)
     }
 
     pub fn update_session(&self, document: &SessionDocument) -> Result<(), SessionError> {
@@ -288,10 +320,10 @@ mod degradation_tests {
         let runtime = Runtime::open(paths);
         let request = sample_request();
         let first = runtime
-            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request)
+            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request, false)
             .expect("first");
         let second = runtime
-            .save_session(&empty_tree("2026-08-25T01:00:00Z"), &request)
+            .save_session(&empty_tree("2026-08-25T01:00:00Z"), &request, false)
             .expect("second");
         let matched = match runtime.find_matching_session(&request).expect("find") {
             SessionReuseLookup::Reuse(document) => document,
@@ -308,7 +340,7 @@ mod degradation_tests {
         let runtime = Runtime::open(paths);
         let request = sample_request();
         let id = runtime
-            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request)
+            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request, false)
             .expect("save");
         let mut document = runtime.get_session(&id).expect("get");
         document.trees[0].tree.root.origin = NodeOrigin::Branch {
@@ -328,7 +360,7 @@ mod degradation_tests {
         let runtime = Runtime::open(paths);
         let request = sample_request();
         let id = runtime
-            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request)
+            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request, false)
             .expect("save");
         let mut document = runtime.get_session(&id).expect("get");
         document.trees.push(crate::session::SessionTree {
@@ -347,7 +379,7 @@ mod degradation_tests {
         let runtime = Runtime::open(paths);
         let request = sample_request().with_resolved_family(ResolvedAddressFamily::Both);
         runtime
-            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request)
+            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request, false)
             .expect("save");
         let mut none_request = request.clone();
         none_request.expansion = dns_resolve::ExpansionPolicy::None;
@@ -362,7 +394,7 @@ mod degradation_tests {
         let runtime = Runtime::open(paths);
         let request = sample_request().with_resolved_family(ResolvedAddressFamily::V4);
         runtime
-            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request)
+            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request, false)
             .expect("save");
         let both_request = sample_request().with_resolved_family(ResolvedAddressFamily::Both);
         let lookup = runtime.find_matching_session(&both_request).expect("find");
@@ -376,7 +408,7 @@ mod degradation_tests {
         let runtime = Runtime::open(paths);
         let request = sample_request().with_resolved_family(ResolvedAddressFamily::V4);
         let id = runtime
-            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request)
+            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request, false)
             .expect("save");
         let lookup = runtime.find_matching_session(&request).expect("find");
         match lookup {
@@ -392,10 +424,10 @@ mod degradation_tests {
         let runtime = Runtime::open(paths);
         let request = sample_request();
         let older = runtime
-            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request)
+            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request, false)
             .expect("older");
         let newer = runtime
-            .save_session(&empty_tree("2026-08-25T01:00:00Z"), &request)
+            .save_session(&empty_tree("2026-08-25T01:00:00Z"), &request, false)
             .expect("newer");
         assert_eq!(runtime.default_session_id().expect("default"), newer);
         assert_ne!(runtime.default_session_id().expect("default"), older);
@@ -408,10 +440,10 @@ mod degradation_tests {
         let runtime = Runtime::open(paths);
         let request = sample_request();
         let older = runtime
-            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request)
+            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request, false)
             .expect("older");
         let newer = runtime
-            .save_session(&empty_tree("2026-08-25T01:00:00Z"), &request)
+            .save_session(&empty_tree("2026-08-25T01:00:00Z"), &request, false)
             .expect("newer");
 
         unsafe {
@@ -433,7 +465,7 @@ mod degradation_tests {
         let runtime = Runtime::open(paths);
         let request = sample_request();
         let id = runtime
-            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request)
+            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request, false)
             .expect("save");
 
         unsafe {
@@ -480,10 +512,10 @@ mod degradation_tests {
         let runtime = Runtime::open(paths);
         let request = sample_request();
         let older = runtime
-            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request)
+            .save_session(&empty_tree("2026-08-25T00:00:00Z"), &request, false)
             .expect("older");
         let newer = runtime
-            .save_session(&empty_tree("2026-08-25T01:00:00Z"), &request)
+            .save_session(&empty_tree("2026-08-25T01:00:00Z"), &request, false)
             .expect("newer");
         let mut document = runtime.get_session(&older).expect("get older");
         document.touch_updated_at();

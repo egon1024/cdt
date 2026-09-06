@@ -214,7 +214,7 @@ mod integration_tests {
                 started_at: "2026-01-01T00:00:00Z".into(),
             },
         );
-        runtime.save_session(&tree, &request).expect("save")
+        runtime.save_session(&tree, &request, false).expect("save")
     }
 
     #[test]

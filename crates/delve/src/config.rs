@@ -10,6 +10,11 @@ const DEFAULT_RTT_YELLOW_MS: u32 = 125;
 const DEFAULT_RTT_ORANGE_MS: u32 = 250;
 const DEFAULT_RTT_INSANE_MS: u32 = 1000;
 const DEFAULT_RTT_BAR_WIDTH: u16 = 20;
+const DEFAULT_ENRICHMENT_ICMP_ENABLED: bool = true;
+const DEFAULT_ENRICHMENT_ICMP_ON_TRACE: bool = true;
+const DEFAULT_ENRICHMENT_ICMP_TTL_MINUTES: u32 = 15;
+const DEFAULT_ENRICHMENT_ICMP_TIMEOUT_MS: u64 = 200;
+const DEFAULT_ENRICHMENT_ICMP_PING_SAMPLES: u8 = 3;
 
 /// Fixed RTT scale for absolute-length bars (Browse detail, SVG export cards).
 /// Matches the default `orange_ms` color threshold.
@@ -69,6 +74,11 @@ pub struct DelveConfig {
     #[allow(dead_code)]
     pub explore_persist_view_state: bool,
     pub explore_rtt_bar: RttBarConfig,
+    pub enrichment_icmp_enabled: bool,
+    pub enrichment_icmp_on_trace: bool,
+    pub enrichment_cache_icmp_ttl_seconds: u32,
+    pub enrichment_icmp_timeout_ms: u64,
+    pub enrichment_icmp_ping_samples: u8,
 }
 
 impl Default for DelveConfig {
@@ -79,6 +89,11 @@ impl Default for DelveConfig {
             trace_max_parallel_queries: DEFAULT_MAX_PARALLEL_QUERIES,
             explore_persist_view_state: true,
             explore_rtt_bar: RttBarConfig::default(),
+            enrichment_icmp_enabled: DEFAULT_ENRICHMENT_ICMP_ENABLED,
+            enrichment_icmp_on_trace: DEFAULT_ENRICHMENT_ICMP_ON_TRACE,
+            enrichment_cache_icmp_ttl_seconds: DEFAULT_ENRICHMENT_ICMP_TTL_MINUTES * 60,
+            enrichment_icmp_timeout_ms: DEFAULT_ENRICHMENT_ICMP_TIMEOUT_MS,
+            enrichment_icmp_ping_samples: DEFAULT_ENRICHMENT_ICMP_PING_SAMPLES,
         }
     }
 }
@@ -91,6 +106,8 @@ struct DelveConfigFile {
     trace: TraceSection,
     #[serde(default)]
     explore: ExploreSection,
+    #[serde(default)]
+    enrichment: EnrichmentSection,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -117,6 +134,25 @@ struct RttBarSection {
     orange_ms: Option<u32>,
     insane_ms: Option<u32>,
     max_width: Option<u16>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct EnrichmentSection {
+    icmp: Option<IcmpEnrichmentSection>,
+    cache: Option<EnrichmentCacheSection>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct IcmpEnrichmentSection {
+    enabled: Option<bool>,
+    on_trace: Option<bool>,
+    timeout_ms: Option<u64>,
+    ping_samples: Option<u8>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct EnrichmentCacheSection {
+    icmp_ttl_minutes: Option<u32>,
 }
 
 impl DelveConfig {
@@ -162,6 +198,25 @@ impl DelveConfig {
 
         let explore_persist_view_state = parsed.explore.persist_view_state.unwrap_or(true);
         let explore_rtt_bar = parse_rtt_bar_config(parsed.explore.rtt_bar, &mut warnings);
+        let enrichment_icmp = parsed.enrichment.icmp.unwrap_or_default();
+        let enrichment_cache = parsed.enrichment.cache.unwrap_or_default();
+        let enrichment_icmp_enabled = enrichment_icmp
+            .enabled
+            .unwrap_or(DEFAULT_ENRICHMENT_ICMP_ENABLED);
+        let enrichment_icmp_on_trace = enrichment_icmp
+            .on_trace
+            .unwrap_or(DEFAULT_ENRICHMENT_ICMP_ON_TRACE);
+        let enrichment_icmp_timeout_ms = enrichment_icmp
+            .timeout_ms
+            .unwrap_or(DEFAULT_ENRICHMENT_ICMP_TIMEOUT_MS);
+        let enrichment_icmp_ping_samples = enrichment_icmp
+            .ping_samples
+            .unwrap_or(DEFAULT_ENRICHMENT_ICMP_PING_SAMPLES)
+            .max(1);
+        let enrichment_cache_icmp_ttl_seconds = enrichment_cache
+            .icmp_ttl_minutes
+            .unwrap_or(DEFAULT_ENRICHMENT_ICMP_TTL_MINUTES)
+            .saturating_mul(60);
 
         (
             Self {
@@ -170,6 +225,11 @@ impl DelveConfig {
                 trace_max_parallel_queries,
                 explore_persist_view_state,
                 explore_rtt_bar,
+                enrichment_icmp_enabled,
+                enrichment_icmp_on_trace,
+                enrichment_cache_icmp_ttl_seconds,
+                enrichment_icmp_timeout_ms,
+                enrichment_icmp_ping_samples,
             },
             warnings,
         )
@@ -202,6 +262,7 @@ impl DelveConfig {
         write_session_dump_section(&mut out, &parsed);
         write_trace_dump_section(&mut out, &parsed, &defaults);
         write_explore_dump_section(&mut out, &parsed, &defaults, default_rtt);
+        write_enrichment_dump_section(&mut out, &parsed, &defaults);
 
         (out, warnings)
     }
@@ -289,6 +350,61 @@ fn write_explore_dump_section(
         write_rtt_bar_dump_section(&mut body, parsed.explore.rtt_bar.as_ref(), default_rtt);
     let active = parsed.explore.persist_view_state.is_some() || rtt_bar_active;
     write_dump_section(out, "explore", active, &body);
+}
+
+fn write_enrichment_dump_section(
+    out: &mut String,
+    parsed: &DelveConfigFile,
+    defaults: &DelveConfig,
+) {
+    let icmp = parsed.enrichment.icmp.as_ref();
+    let cache = parsed.enrichment.cache.as_ref();
+    let mut body = String::new();
+    body.push_str("  icmp:\n");
+    let enabled_active = write_yaml_key(
+        &mut body,
+        2,
+        "enabled",
+        icmp.and_then(|section| section.enabled),
+        defaults.enrichment_icmp_enabled,
+    );
+    let on_trace_active = write_yaml_key(
+        &mut body,
+        2,
+        "on_trace",
+        icmp.and_then(|section| section.on_trace),
+        defaults.enrichment_icmp_on_trace,
+    );
+    let timeout_active = write_yaml_key(
+        &mut body,
+        2,
+        "timeout_ms",
+        icmp.and_then(|section| section.timeout_ms),
+        defaults.enrichment_icmp_timeout_ms,
+    );
+    let samples_active = write_yaml_key(
+        &mut body,
+        2,
+        "ping_samples",
+        icmp.and_then(|section| section.ping_samples),
+        defaults.enrichment_icmp_ping_samples,
+    );
+    body.push_str("  cache:\n");
+    let ttl_active = write_yaml_key(
+        &mut body,
+        2,
+        "icmp_ttl_minutes",
+        cache.and_then(|section| section.icmp_ttl_minutes),
+        defaults.enrichment_cache_icmp_ttl_seconds / 60,
+    );
+    let active = enabled_active
+        || on_trace_active
+        || timeout_active
+        || samples_active
+        || ttl_active
+        || parsed.enrichment.icmp.is_some()
+        || parsed.enrichment.cache.is_some();
+    write_dump_section(out, "enrichment", active, &body);
 }
 
 fn write_rtt_bar_dump_section(
@@ -543,5 +659,32 @@ mod tests {
         assert!(yaml.contains("#  persist_view_state: true"));
         assert!(yaml.contains("  rtt_bar:\n    green_ms: 75"));
         assert!(yaml.contains("#    yellow_ms: 125"));
+    }
+
+    #[test]
+    fn default_enrichment_icmp_settings_match_design() {
+        let config = DelveConfig::default();
+        assert!(config.enrichment_icmp_enabled);
+        assert!(config.enrichment_icmp_on_trace);
+        assert_eq!(config.enrichment_cache_icmp_ttl_seconds, 15 * 60);
+        assert_eq!(config.enrichment_icmp_timeout_ms, 200);
+        assert_eq!(config.enrichment_icmp_ping_samples, 3);
+    }
+
+    #[test]
+    fn parses_enrichment_config_overrides() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = DelvePaths::from_root(dir.path());
+        std::fs::create_dir_all(paths.config_file().parent().expect("parent")).expect("mkdir");
+        std::fs::write(
+            paths.config_file(),
+            "enrichment:\n  icmp:\n    enabled: false\n    on_trace: false\n  cache:\n    icmp_ttl_minutes: 30\n",
+        )
+        .expect("write config");
+        let (config, warnings) = DelveConfig::load(&paths);
+        assert!(warnings.is_empty());
+        assert!(!config.enrichment_icmp_enabled);
+        assert!(!config.enrichment_icmp_on_trace);
+        assert_eq!(config.enrichment_cache_icmp_ttl_seconds, 30 * 60);
     }
 }

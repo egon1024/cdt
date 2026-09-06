@@ -24,6 +24,7 @@ use thiserror::Error;
 use time::OffsetDateTime;
 
 pub mod address_family;
+pub mod enrichment;
 pub mod job_queue;
 pub mod path_timing;
 pub mod probe;
@@ -49,6 +50,7 @@ pub use tree::{
 pub use address_family::{
     AddressFamilyRequest, PROBE_V6_TARGET, ResolvedAddressFamily, resolve_address_family,
 };
+pub use enrichment::collect_unique_server_targets;
 pub use job_queue::{
     BranchJobRequest, TerminalSiblingExpansion, run_branch_job, run_expand_cut_branch,
 };
