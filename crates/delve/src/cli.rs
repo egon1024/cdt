@@ -153,7 +153,7 @@ fn run_parsed_trace(options: TraceOptions, runtime: &Runtime) -> Result<(), CliE
     let result = run_trace(&mut config, &mut progress)?;
 
     if options.save_session {
-        let session_id = runtime.save_session(&result, &request)?;
+        let session_id = runtime.save_session(&result, &request, options.fresh)?;
         eprintln!("session: {session_id}");
     }
 

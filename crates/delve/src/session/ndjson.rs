@@ -48,11 +48,16 @@ impl NdjsonSessionStore {
 
 impl SessionStore for NdjsonSessionStore {
     fn save(&mut self, result: &TraceTree, request: &TraceRequest) -> Result<String> {
+        let id = new_session_id();
+        let document = SessionDocument::new(id.clone(), request.clone(), result.clone());
+        self.save_document(document)
+    }
+
+    fn save_document(&mut self, document: SessionDocument) -> Result<String> {
         if let Some(reason) = &self.disabled_reason {
             return Err(SessionError::Store(reason.clone()));
         }
-        let id = new_session_id();
-        let document = SessionDocument::new(id.clone(), request.clone(), result.clone());
+        let id = document.id.clone();
         let body = serde_json::to_string_pretty(&document)
             .map_err(|error| SessionError::Serialization(error.to_string()))?;
         let path = self.session_path(&id);

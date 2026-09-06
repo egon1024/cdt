@@ -20,6 +20,7 @@ crossterm = "0.28"
 directories.workspace = true
 dns-cache = { path = "../dns-cache" }
 dns-core = { path = "../dns-core" }
+dns-enrichment-cache = { path = "../dns-enrichment-cache" }
 dns-resolve = { path = "../dns-resolve" }
 ratatui = "0.29"
 unicode-width = "0.2"

@@ -4,6 +4,7 @@ pub mod cli;
 pub mod config;
 pub mod default_session;
 pub mod dig_options;
+pub mod enrichment;
 pub mod expand_confirm;
 pub mod explore;
 pub mod export;

@@ -374,6 +374,7 @@ dependencies = [
  "directories",
  "dns-cache",
  "dns-core",
+ "dns-enrichment-cache",
  "dns-resolve",
  "ratatui",
  "resvg",

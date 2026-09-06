@@ -161,8 +161,10 @@ pub fn branch_session(
     progress: &mut dyn TraceProgress,
 ) -> Result<BranchReport, BranchError> {
     let mut document = runtime.get_session(session_id)?;
+    let tree_index = at.tree;
     let report = execute_branch(&mut document, at, intent, dry_run, runtime, progress, None)?;
     if !dry_run && report.nodes_added > 0 {
+        crate::enrichment::populate_after_branch(&mut document, tree_index, runtime, false);
         runtime.update_session(&document)?;
     }
     Ok(report)
@@ -2434,7 +2436,7 @@ mod tests {
         });
         let dir = tempfile::tempdir().expect("tempdir");
         let runtime = Runtime::open(crate::paths::DelvePaths::from_root(dir.path()));
-        let id = runtime.save_session(&tree, &request).expect("save");
+        let id = runtime.save_session(&tree, &request, false).expect("save");
         let mut document = runtime.get_session(&id).expect("get");
         let report = execute_branch(
             &mut document,
@@ -2473,7 +2475,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let paths = crate::paths::DelvePaths::from_root(dir.path());
         let runtime = Runtime::open(paths.clone());
-        let id = runtime.save_session(&tree, &request).expect("save");
+        let id = runtime.save_session(&tree, &request, false).expect("save");
         let before = runtime.get_session(&id).expect("before");
         let before_children = before
             .primary_tree()
