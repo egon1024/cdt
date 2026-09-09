@@ -1,12 +1,17 @@
 //! Compare-screen helpers: fork scoping, row selection, sticky-header scrolling.
 
+use std::collections::BTreeMap;
+use std::net::IpAddr;
+
 use dns_resolve::NodePath;
+use dns_resolve::probe::IcmpProber;
 use ratatui::text::{Line, Span};
 
 use crate::config::RttBarConfig;
+use crate::session::TargetEnrichments;
 
 use super::path_summary::{
-    ForkComparison, PathSummary, comparison_for_explore, format_referral_delta_column,
+    ForkComparison, PathSummary, comparison_for_explore, enrich_icmp, format_referral_delta_column,
     referral_header_line,
 };
 use super::rtt_bar::rtt_bar_spans;
@@ -27,7 +32,17 @@ pub struct CompareScreenModel {
 
 impl CompareScreenModel {
     pub fn from_tree(tree: &ExploreTree, selection: &NodePath) -> Option<Self> {
+        Self::from_tree_with_targets(tree, selection, &BTreeMap::new(), &SilentProber)
+    }
+
+    pub fn from_tree_with_targets(
+        tree: &ExploreTree,
+        selection: &NodePath,
+        targets: &BTreeMap<IpAddr, TargetEnrichments>,
+        prober: &dyn IcmpProber,
+    ) -> Option<Self> {
         let comparison = comparison_for_explore(tree, selection)?;
+        let comparison = enrich_icmp(comparison, tree.trace(), targets, prober);
         let row = comparison
             .paths
             .iter()
@@ -189,6 +204,14 @@ fn truncate(value: &str, max: usize) -> String {
     }
     out.push('…');
     out
+}
+
+struct SilentProber;
+
+impl IcmpProber for SilentProber {
+    fn probe(&self, _addr: IpAddr, _timeout: std::time::Duration) -> dns_resolve::IcmpProbeResult {
+        dns_resolve::IcmpProbeResult::Unavailable
+    }
 }
 
 #[cfg(test)]

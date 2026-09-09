@@ -8,7 +8,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use dns_resolve::{HopOutcome, NodePath, RefreshProgress, TraceHop, TraceProgress};
+use dns_resolve::{HopOutcome, NodePath, TraceHop, TraceProgress};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
@@ -34,7 +34,7 @@ use super::path_timing::{
     build_compare_timing, fork_full_path_lines, fork_sibling_lines, path_on_highlight,
     whole_tree_summary_lines,
 };
-use super::refresh::refresh_document_tree;
+use super::refresh::{RefreshScope, UnifiedRefreshReport, refresh_document};
 use super::rtt_bar::max_rtt_ms_for_visible;
 use super::terminal::{ColorCapability, cache_source_legend, cache_source_symbol};
 use super::theme::Theme;
@@ -68,18 +68,20 @@ enum BranchWorkerMessage {
     Done(Result<BranchReport, BranchError>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RefreshPhase {
+    Dns,
+    Icmp,
+}
+
 #[derive(Debug)]
 enum RefreshWorkerMessage {
     Progress {
+        phase: RefreshPhase,
         current: usize,
         total: usize,
     },
-    Done(
-        Result<
-            (Box<SessionDocument>, dns_resolve::RefreshTreeReport),
-            super::refresh::RefreshError,
-        >,
-    ),
+    Done(Result<(Box<SessionDocument>, UnifiedRefreshReport), super::refresh::RefreshError>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,10 +145,10 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
     let mut branch_rx: Option<mpsc::Receiver<BranchWorkerMessage>> = None;
     let mut branch_progress: Option<String> = None;
     let mut refresh_rx: Option<mpsc::Receiver<RefreshWorkerMessage>> = None;
-    let mut refresh_progress: Option<(usize, usize)> = None;
+    let mut refresh_progress: Option<(RefreshPhase, usize, usize)> = None;
     let mut refresh_origin_screen: Option<ActiveScreen> = None;
     let mut refresh_overlay = RefreshOverlay::None;
-    let mut unsaved_rtt_refresh = false;
+    let mut unsaved_refresh = false;
     let mut persist_warning_shown = false;
 
     loop {
@@ -182,7 +184,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                         &mut persist_warning_shown,
                                         true,
                                         &session_id,
-                                        unsaved_rtt_refresh,
+                                        unsaved_refresh,
                                     );
                                 }
                                 set_screen_notice(
@@ -211,8 +213,12 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
         if let Some(rx) = &refresh_rx {
             while let Ok(message) = rx.try_recv() {
                 match message {
-                    RefreshWorkerMessage::Progress { current, total } => {
-                        refresh_progress = Some((current, total));
+                    RefreshWorkerMessage::Progress {
+                        phase,
+                        current,
+                        total,
+                    } => {
+                        refresh_progress = Some((phase, current, total));
                     }
                     RefreshWorkerMessage::Done(report) => {
                         refresh_finished = true;
@@ -221,10 +227,10 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                             Ok((updated, report)) => {
                                 *document = *updated;
                                 tree = explore_tree_from_document(document)?;
-                                if report.hops_updated > 0 {
-                                    unsaved_rtt_refresh = true;
+                                if report.has_unsaved_changes() {
+                                    unsaved_refresh = true;
                                 }
-                                if report.hops_failed > 0 {
+                                if refresh_had_failures(&report) {
                                     set_screen_notice(
                                         &mut screen_notice,
                                         refresh_origin_screen
@@ -262,7 +268,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                 &mut persist_warning_shown,
                 false,
                 &session_id,
-                unsaved_rtt_refresh,
+                unsaved_refresh,
             );
         }
 
@@ -346,8 +352,8 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                     branch_progress.as_deref(),
                 );
             }
-            if let Some((current, total)) = refresh_progress {
-                render_refresh_progress_overlay(frame, &theme, current, total);
+            if let Some((phase, current, total)) = refresh_progress {
+                render_refresh_progress_overlay(frame, &theme, phase, current, total);
             }
             if refresh_overlay == RefreshOverlay::ConfirmExitSave {
                 render_refresh_confirm_overlay(frame, &theme);
@@ -377,7 +383,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                             &mut screen_notice,
                             view.active_screen,
                             if refresh_rx.is_some() {
-                                "RTT refresh in progress; wait for completion".to_string()
+                                "Refresh in progress; wait for completion".to_string()
                             } else {
                                 "branch in progress; wait for completion".to_string()
                             },
@@ -395,15 +401,15 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                 set_screen_notice(
                                     &mut screen_notice,
                                     view.active_screen,
-                                    format!("failed to save refreshed RTTs: {error}"),
+                                    format!("failed to save refreshed measurements: {error}"),
                                 );
                             } else {
-                                unsaved_rtt_refresh = false;
+                                unsaved_refresh = false;
                                 break;
                             }
                         }
                         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                            unsaved_rtt_refresh = false;
+                            unsaved_refresh = false;
                             break;
                         }
                         _ => {}
@@ -415,13 +421,13 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                     match key.code {
                         KeyCode::Char('?') | KeyCode::Esc => show_help = false,
                         KeyCode::Char('q')
-                            if request_quit(unsaved_rtt_refresh, &mut refresh_overlay) =>
+                            if request_quit(unsaved_refresh, &mut refresh_overlay) =>
                         {
                             break;
                         }
                         KeyCode::Char('c')
                             if key.modifiers.contains(KeyModifiers::CONTROL)
-                                && request_quit(unsaved_rtt_refresh, &mut refresh_overlay) =>
+                                && request_quit(unsaved_refresh, &mut refresh_overlay) =>
                         {
                             break;
                         }
@@ -462,7 +468,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                     &mut persist_warning_shown,
                                     true,
                                     &session_id,
-                                    unsaved_rtt_refresh,
+                                    unsaved_refresh,
                                 );
                             }
                         }
@@ -495,7 +501,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                 &mut persist_warning_shown,
                                 true,
                                 &session_id,
-                                unsaved_rtt_refresh,
+                                unsaved_refresh,
                             );
                         }
                         KeyCode::Char('a') => {
@@ -516,7 +522,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                             screen_notice = None;
                         }
                         KeyCode::Char('q')
-                            if request_quit(unsaved_rtt_refresh, &mut refresh_overlay) =>
+                            if request_quit(unsaved_refresh, &mut refresh_overlay) =>
                         {
                             break;
                         }
@@ -529,15 +535,13 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                 }
 
                 match key.code {
-                    KeyCode::Char('q')
-                        if request_quit(unsaved_rtt_refresh, &mut refresh_overlay) =>
-                    {
+                    KeyCode::Char('q') if request_quit(unsaved_refresh, &mut refresh_overlay) => {
                         break;
                     }
                     KeyCode::Char('?') => show_help = true,
                     KeyCode::Char('c')
                         if key.modifiers.contains(KeyModifiers::CONTROL)
-                            && request_quit(unsaved_rtt_refresh, &mut refresh_overlay) =>
+                            && request_quit(unsaved_refresh, &mut refresh_overlay) =>
                     {
                         break;
                     }
@@ -671,7 +675,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
         &mut persist_warning_shown,
         true,
         &session_id,
-        unsaved_rtt_refresh,
+        unsaved_refresh,
     );
 
     terminal.show_cursor()?;
@@ -730,7 +734,7 @@ fn persist_view_state_now(
     persist_warning_shown: &mut bool,
     force: bool,
     session_id: &str,
-    unsaved_rtt_refresh: bool,
+    unsaved_refresh: bool,
 ) {
     if !persist_view_state {
         return;
@@ -739,9 +743,10 @@ fn persist_view_state_now(
         return;
     }
     let mut to_save = document.clone();
-    if unsaved_rtt_refresh {
+    if unsaved_refresh {
         if let Ok(saved) = runtime.get_session(session_id) {
             to_save.trees = saved.trees;
+            to_save.targets = saved.targets;
         }
     }
     apply_view_state(&mut to_save, view);
@@ -755,8 +760,8 @@ fn persist_view_state_now(
     }
 }
 
-fn request_quit(unsaved_rtt_refresh: bool, refresh_overlay: &mut RefreshOverlay) -> bool {
-    if unsaved_rtt_refresh {
+fn request_quit(unsaved_refresh: bool, refresh_overlay: &mut RefreshOverlay) -> bool {
+    if unsaved_refresh {
         *refresh_overlay = RefreshOverlay::ConfirmExitSave;
         false
     } else {
@@ -810,7 +815,7 @@ fn start_refresh(
         let runtime = Runtime::open(paths);
         let mut progress = RefreshChannelProgress::new(tx.clone());
         let mut working = working;
-        let result = refresh_document_tree(&mut working, &runtime, &mut progress)
+        let result = refresh_document(&mut working, &runtime, RefreshScope::All, &mut progress)
             .map(|report| (Box::new(working), report));
         let _ = tx.send(RefreshWorkerMessage::Done(result));
     });
@@ -826,11 +831,21 @@ impl RefreshChannelProgress {
     }
 }
 
-impl RefreshProgress for RefreshChannelProgress {
-    fn hop_started(&mut self, current: usize, total: usize) {
-        let _ = self
-            .tx
-            .send(RefreshWorkerMessage::Progress { current, total });
+impl super::refresh::UnifiedRefreshProgress for RefreshChannelProgress {
+    fn dns_hop_started(&mut self, current: usize, total: usize) {
+        let _ = self.tx.send(RefreshWorkerMessage::Progress {
+            phase: RefreshPhase::Dns,
+            current,
+            total,
+        });
+    }
+
+    fn icmp_target_started(&mut self, current: usize, total: usize) {
+        let _ = self.tx.send(RefreshWorkerMessage::Progress {
+            phase: RefreshPhase::Icmp,
+            current,
+            total,
+        });
     }
 }
 
@@ -1545,14 +1560,25 @@ fn render_compare_notice(frame: &mut ratatui::Frame<'_>, theme: &Theme, message:
 fn render_refresh_progress_overlay(
     frame: &mut ratatui::Frame<'_>,
     theme: &Theme,
+    phase: RefreshPhase,
     current: usize,
     total: usize,
 ) {
     let area = centered_rect(50, 20, frame.area());
     frame.render_widget(Clear, area);
-    let widget = Paragraph::new(format!("Refreshing hop RTTs… {current}/{total}")).block(
+    let (title, message) = match phase {
+        RefreshPhase::Dns => (
+            "Refresh — DNS RTT",
+            format!("Refreshing DNS RTTs… {current}/{total}"),
+        ),
+        RefreshPhase::Icmp => (
+            "Refresh — ICMP",
+            format!("Refreshing ICMP targets… {current}/{total}"),
+        ),
+    };
+    let widget = Paragraph::new(message).block(
         Block::default()
-            .title("RTT refresh")
+            .title(title)
             .borders(Borders::ALL)
             .border_style(theme.border_focused()),
     );
@@ -1563,14 +1589,14 @@ fn render_refresh_confirm_overlay(frame: &mut ratatui::Frame<'_>, theme: &Theme)
     let area = centered_rect(55, 25, frame.area());
     frame.render_widget(Clear, area);
     let widget = Paragraph::new(vec![
-        Line::from("Save refreshed RTTs before quitting?"),
+        Line::from("Save refreshed measurements before quitting?"),
         Line::from(""),
         Line::from("y/Enter  save and quit"),
         Line::from("n/Esc     quit without saving"),
     ])
     .block(
         Block::default()
-            .title("Unsaved RTT refresh")
+            .title("Unsaved refresh")
             .borders(Borders::ALL)
             .border_style(theme.border_focused()),
     );
@@ -1732,17 +1758,46 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
-fn format_refresh_failure(report: &dns_resolve::RefreshTreeReport) -> String {
-    if report.hops_updated == 0 {
-        format!(
-            "refresh failed for all {} hops; RTTs unchanged",
-            report.hops_total
-        )
+fn refresh_had_failures(report: &UnifiedRefreshReport) -> bool {
+    report.dns.as_ref().is_some_and(|dns| dns.hops_failed > 0)
+        || report
+            .icmp
+            .as_ref()
+            .is_some_and(|icmp| icmp.targets_failed > 0)
+}
+
+fn format_refresh_failure(report: &UnifiedRefreshReport) -> String {
+    let mut parts = Vec::new();
+    if let Some(dns) = &report.dns {
+        if dns.hops_updated == 0 && dns.hops_failed > 0 {
+            parts.push(format!(
+                "DNS refresh failed for all {} hops; RTTs unchanged",
+                dns.hops_total
+            ));
+        } else if dns.hops_failed > 0 {
+            parts.push(format!(
+                "DNS refreshed {}/{} hops ({} failed)",
+                dns.hops_updated, dns.hops_total, dns.hops_failed
+            ));
+        }
+    }
+    if let Some(icmp) = &report.icmp {
+        if icmp.targets_updated == 0 && icmp.targets_failed > 0 {
+            parts.push(format!(
+                "ICMP refresh failed for all {} targets",
+                icmp.targets_total
+            ));
+        } else if icmp.targets_failed > 0 {
+            parts.push(format!(
+                "ICMP refreshed {}/{} targets ({} failed)",
+                icmp.targets_updated, icmp.targets_total, icmp.targets_failed
+            ));
+        }
+    }
+    if parts.is_empty() {
+        "refresh completed with partial failures".to_string()
     } else {
-        format!(
-            "refreshed {}/{} hops ({} failed)",
-            report.hops_updated, report.hops_total, report.hops_failed
-        )
+        parts.join("; ")
     }
 }
 
@@ -1750,13 +1805,13 @@ fn help_lines(view: &ViewStateController, theme: &Theme) -> Vec<Line<'static>> {
     let mut lines = vec![
         help_section("Global", theme),
         help_binding("?", "Show this help", theme),
-        help_binding("q", "Quit (prompts to save refreshed RTTs)", theme),
+        help_binding("q", "Quit (prompts to save refreshed measurements)", theme),
         help_binding("Ctrl+C", "Quit", theme),
         help_binding("c", "Toggle colors", theme),
         help_binding("Tab / Shift-Tab", "Cycle screens", theme),
         help_binding("1 / 2", "Select Browse / Compare", theme),
         help_binding("m", "Jump to Compare", theme),
-        help_binding("r", "Refresh hop RTTs in memory", theme),
+        help_binding("r", "Refresh DNS RTTs and ICMP in memory", theme),
         help_binding("E / C", "Expand all / collapse all", theme),
         Line::from(""),
     ];
@@ -2021,7 +2076,7 @@ mod tests {
             .join("\n");
         assert!(text.contains("Cycle screens"));
         assert!(text.contains("Expand all / collapse all"));
-        assert!(text.contains("Refresh hop RTTs"));
+        assert!(text.contains("Refresh DNS RTTs and ICMP"));
         assert!(text.contains("Branch from selected node"));
     }
 
