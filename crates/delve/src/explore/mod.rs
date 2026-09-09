@@ -136,7 +136,7 @@ fn load_comparison(
     let Some(comparison) = comparison_at(tree, &target) else {
         return Err(ExploreError::NothingToCompare { target: named });
     };
-    Ok(enrich_icmp(comparison, tree, prober))
+    Ok(enrich_icmp(comparison, tree, &document.targets, prober))
 }
 
 pub fn run_explore(runtime: &Runtime, document: &mut SessionDocument) -> Result<(), ExploreError> {
@@ -433,6 +433,65 @@ mod tests {
         ) -> dns_resolve::IcmpProbeResult {
             dns_resolve::IcmpProbeResult::Unavailable
         }
+    }
+
+    #[test]
+    fn outline_comparison_uses_session_icmp_without_probing() {
+        use dns_resolve::{IcmpMethod, IcmpSnapshot};
+        use std::net::IpAddr;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+
+        use crate::session::TargetEnrichments;
+
+        struct CountingProber {
+            calls: AtomicUsize,
+        }
+
+        impl dns_resolve::IcmpProber for CountingProber {
+            fn probe(&self, _addr: IpAddr, _timeout: Duration) -> dns_resolve::IcmpProbeResult {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                dns_resolve::IcmpProbeResult::Unavailable
+            }
+        }
+
+        let mut document = fork_document();
+        document.targets.insert(
+            "192.5.6.30".parse().expect("ip"),
+            TargetEnrichments {
+                icmp: Some(IcmpSnapshot {
+                    method: IcmpMethod::Datagram,
+                    samples: 1,
+                    min_ms: 11,
+                    avg_ms: 12,
+                    max_ms: 13,
+                    probed_at: "2026-09-06T00:00:00Z".into(),
+                }),
+                ..Default::default()
+            },
+        );
+        document.targets.insert(
+            "192.12.94.30".parse().expect("ip"),
+            TargetEnrichments {
+                icmp: Some(IcmpSnapshot {
+                    method: IcmpMethod::Datagram,
+                    samples: 1,
+                    min_ms: 21,
+                    avg_ms: 22,
+                    max_ms: 23,
+                    probed_at: "2026-09-06T00:00:00Z".into(),
+                }),
+                ..Default::default()
+            },
+        );
+        let prober = CountingProber {
+            calls: AtomicUsize::new(0),
+        };
+        let text = render_outline_comparison(&document, Some(0), None, &prober).expect("compare");
+        assert_eq!(prober.calls.load(Ordering::SeqCst), 0);
+        assert!(text.contains("12ms"));
+        assert!(text.contains("22ms"));
+        assert!(!text.contains("n/a"));
     }
 
     #[test]

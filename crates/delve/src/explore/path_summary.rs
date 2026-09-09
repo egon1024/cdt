@@ -1,12 +1,14 @@
 //! Fork-scoped path comparison projection shared by Compare, outline, and events.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::str::FromStr;
 
 use dns_resolve::probe::{IcmpProber, probe_icmp_rtt};
 use dns_resolve::{HopOutcome, NodePath, TraceHop, TraceNode, TraceTree};
 use serde::Serialize;
+
+use crate::session::TargetEnrichments;
 
 use super::tree::ExploreTree;
 
@@ -140,19 +142,33 @@ pub fn comparison_for_explore(tree: &ExploreTree, selection: &NodePath) -> Optio
     comparison_at(tree.trace(), selection)
 }
 
+/// Read ICMP display RTT from session targets when a snapshot exists for `server`.
+pub fn icmp_rtt_from_targets(
+    targets: &BTreeMap<IpAddr, TargetEnrichments>,
+    server: &str,
+) -> Option<u64> {
+    let addr = IpAddr::from_str(server).ok()?;
+    targets
+        .get(&addr)
+        .and_then(|entry| entry.icmp.as_ref())
+        .map(|snapshot| snapshot.avg_ms)
+}
+
 pub fn enrich_icmp(
     mut comparison: ForkComparison,
     tree: &TraceTree,
+    targets: &BTreeMap<IpAddr, TargetEnrichments>,
     prober: &dyn IcmpProber,
 ) -> ForkComparison {
     let mut cache = std::collections::HashMap::new();
-    enrich_icmp_cached(&mut comparison, tree, &mut cache, prober);
+    enrich_icmp_cached(&mut comparison, tree, targets, &mut cache, prober);
     comparison
 }
 
 pub fn enrich_icmp_cached(
     comparison: &mut ForkComparison,
     tree: &TraceTree,
+    targets: &BTreeMap<IpAddr, TargetEnrichments>,
     cache: &mut std::collections::HashMap<String, Option<u64>>,
     prober: &dyn IcmpProber,
 ) {
@@ -161,6 +177,10 @@ pub fn enrich_icmp_cached(
             continue;
         };
         let server = node.hop.server.clone();
+        if let Some(rtt) = icmp_rtt_from_targets(targets, &server) {
+            path.icmp_rtt_ms = Some(rtt);
+            continue;
+        }
         let rtt = *cache.entry(server.clone()).or_insert_with(|| {
             IpAddr::from_str(&server)
                 .ok()
@@ -520,7 +540,9 @@ mod tests {
     use dns_core::name::DomainName;
     use dns_core::response::DnsRecord;
     use dns_resolve::probe::{IcmpProbeResult, IcmpProber};
-    use dns_resolve::{NodeOrigin, StoredDnsMessage, TraceTreeRequest};
+    use dns_resolve::{IcmpMethod, IcmpSnapshot, NodeOrigin, StoredDnsMessage, TraceTreeRequest};
+
+    use crate::session::TargetEnrichments;
 
     struct ScriptedProber {
         result: IcmpProbeResult,
@@ -880,7 +902,7 @@ mod tests {
             result: IcmpProbeResult::Rtt(Duration::from_millis(7)),
             calls: AtomicUsize::new(0),
         };
-        let enriched = enrich_icmp(comparison.clone(), &tree, &success);
+        let enriched = enrich_icmp(comparison.clone(), &tree, &BTreeMap::new(), &success);
         assert_eq!(success.calls.load(Ordering::SeqCst), 2);
         assert_eq!(enriched.paths[0].icmp_rtt_ms, Some(7));
 
@@ -888,7 +910,7 @@ mod tests {
             result: IcmpProbeResult::Unavailable,
             calls: AtomicUsize::new(0),
         };
-        let blank = enrich_icmp(comparison, &tree, &unavailable);
+        let blank = enrich_icmp(comparison, &tree, &BTreeMap::new(), &unavailable);
         assert!(blank.paths.iter().all(|path| path.icmp_rtt_ms.is_none()));
         let text = render_comparison_text(&blank);
         assert!(text.contains("n/a"));
@@ -975,6 +997,69 @@ mod tests {
     }
 
     #[test]
+    fn enrich_icmp_reads_session_targets_without_probing() {
+        let tree = agreeing_tree();
+        let comparison = summarize_fork(&tree, &NodePath::root(0)).expect("fork");
+        let ip10: IpAddr = "192.0.2.10".parse().expect("ip");
+        let ip11: IpAddr = "192.0.2.11".parse().expect("ip");
+        let mut targets = BTreeMap::new();
+        targets.insert(
+            ip10,
+            TargetEnrichments {
+                icmp: Some(IcmpSnapshot {
+                    method: IcmpMethod::Datagram,
+                    samples: 1,
+                    min_ms: 5,
+                    avg_ms: 6,
+                    max_ms: 7,
+                    probed_at: "2026-01-01T00:00:00Z".into(),
+                }),
+                ..Default::default()
+            },
+        );
+        targets.insert(
+            ip11,
+            TargetEnrichments {
+                icmp: Some(IcmpSnapshot {
+                    method: IcmpMethod::Datagram,
+                    samples: 1,
+                    min_ms: 9,
+                    avg_ms: 10,
+                    max_ms: 11,
+                    probed_at: "2026-01-01T00:00:00Z".into(),
+                }),
+                ..Default::default()
+            },
+        );
+        let prober = ScriptedProber {
+            result: IcmpProbeResult::Rtt(Duration::from_millis(99)),
+            calls: AtomicUsize::new(0),
+        };
+        let enriched = enrich_icmp(comparison, &tree, &targets, &prober);
+        assert_eq!(prober.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(enriched.paths[0].icmp_rtt_ms, Some(6));
+        assert_eq!(enriched.paths[1].icmp_rtt_ms, Some(10));
+    }
+
+    #[test]
+    fn enrich_icmp_falls_back_to_probe_when_target_missing() {
+        let tree = agreeing_tree();
+        let comparison = summarize_fork(&tree, &NodePath::root(0)).expect("fork");
+        let prober = ScriptedProber {
+            result: IcmpProbeResult::Rtt(Duration::from_millis(4)),
+            calls: AtomicUsize::new(0),
+        };
+        let enriched = enrich_icmp(comparison, &tree, &BTreeMap::new(), &prober);
+        assert_eq!(prober.calls.load(Ordering::SeqCst), 2);
+        assert!(
+            enriched
+                .paths
+                .iter()
+                .all(|path| path.icmp_rtt_ms == Some(4))
+        );
+    }
+
+    #[test]
     fn icmp_probe_uses_child_server_address() {
         let tree = agreeing_tree();
         let comparison = summarize_fork(&tree, &NodePath::root(0)).expect("fork");
@@ -989,7 +1074,7 @@ mod tests {
             }
         }
         let prober = RecordingProber { seen };
-        let _ = enrich_icmp(comparison, &tree, &prober);
+        let _ = enrich_icmp(comparison, &tree, &BTreeMap::new(), &prober);
         let addrs = prober.seen.lock().expect("lock");
         assert_eq!(
             *addrs,

@@ -152,10 +152,78 @@ fn resolve_icmp_snapshot(
     Some(snapshot)
 }
 
-fn probe_profile(runtime: &Runtime) -> ProbeProfile {
+pub fn probe_profile(runtime: &Runtime) -> ProbeProfile {
     ProbeProfile {
         timeout_ms: runtime.config.enrichment_icmp_timeout_ms,
         ping_samples: runtime.config.enrichment_icmp_ping_samples,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IcmpRefreshReport {
+    pub targets_total: usize,
+    pub targets_updated: usize,
+    pub targets_failed: usize,
+}
+
+pub fn refresh_icmp_targets_with_prober(
+    document: &mut SessionDocument,
+    runtime: &Runtime,
+    prober: &dyn TraceEnrichmentProber,
+    mut on_progress: impl FnMut(usize, usize),
+) -> IcmpRefreshReport {
+    let Some(tree) = document.primary_tree().cloned() else {
+        return IcmpRefreshReport {
+            targets_total: 0,
+            targets_updated: 0,
+            targets_failed: 0,
+        };
+    };
+    if !runtime.config.enrichment_icmp_enabled {
+        merge_tree_names(document, &tree);
+        return IcmpRefreshReport {
+            targets_total: 0,
+            targets_updated: 0,
+            targets_failed: 0,
+        };
+    }
+    maybe_emit_icmp_notice();
+    merge_tree_names(document, &tree);
+    let ips: Vec<IpAddr> = collect_unique_server_targets(&tree).into_keys().collect();
+    let total = ips.len();
+    let profile = probe_profile(runtime);
+    let mut updated = 0usize;
+    let mut failed = 0usize;
+    for (index, ip) in ips.iter().enumerate() {
+        on_progress(index + 1, total);
+        let prior = document
+            .targets
+            .get(ip)
+            .and_then(|entry| entry.icmp.clone());
+        let snapshot = resolve_icmp_snapshot(
+            *ip,
+            runtime.enrichment_cache.as_deref(),
+            &profile,
+            true,
+            prober,
+            runtime.config.enrichment_icmp_timeout_ms,
+            runtime.config.enrichment_icmp_ping_samples,
+        );
+        let entry = document.targets.entry(*ip).or_default();
+        if let Some(snapshot) = snapshot {
+            entry.icmp = Some(snapshot);
+            updated += 1;
+        } else if prior.is_some() {
+            entry.icmp = prior;
+            failed += 1;
+        } else {
+            failed += 1;
+        }
+    }
+    IcmpRefreshReport {
+        targets_total: total,
+        targets_updated: updated,
+        targets_failed: failed,
     }
 }
 
