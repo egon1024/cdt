@@ -4,10 +4,10 @@ use ratatui::text::{Line, Span};
 
 use crate::config::RttBarConfig;
 
-use super::detail::{format_server_endpoint, legacy_hop_detail_lines};
+use super::detail::{cache_source_detail_spans, format_server_endpoint, legacy_hop_detail_lines};
 use super::flags::{format_flags_plain, format_flags_spans};
 use super::rtt_bar::{format_rtt_plain_line, rtt_detail_line};
-use super::terminal::{UiSymbols, cache_source_symbol};
+use super::terminal::{UiSymbols, format_cache_source};
 use super::theme::Theme;
 
 struct DigView<'a> {
@@ -88,7 +88,7 @@ impl<'a> DigView<'a> {
         lines.push(format!("status: {}", self.rcode));
         lines.push(format!(
             "source: {}",
-            cache_source_symbol(self.from_cache, self.symbols)
+            format_cache_source(self.from_cache, self.symbols)
         ));
         if let Some(nsid) = self.nsid {
             lines.push(format!("nsid: {nsid}"));
@@ -115,13 +115,11 @@ impl<'a> DigView<'a> {
                 Span::styled("status: ", theme.label()),
                 Span::styled(self.rcode.to_string(), theme.rcode(self.rcode)),
             ]),
-            Line::from(vec![
-                Span::styled("source: ", theme.label()),
-                Span::styled(
-                    cache_source_symbol(self.from_cache, theme.symbols).to_string(),
-                    theme.cache_source(self.from_cache),
-                ),
-            ]),
+            Line::from({
+                let mut spans = vec![Span::styled("source: ", theme.label())];
+                spans.extend(cache_source_detail_spans(self.from_cache, theme));
+                spans
+            }),
         ];
         if let Some(nsid) = self.nsid {
             lines.push(Line::from(vec![
@@ -265,6 +263,12 @@ fn legacy_hop_lines(hop: &TraceHop, theme: &Theme, rtt_config: RttBarConfig) -> 
     for line in legacy_hop_detail_lines(hop, theme.symbols) {
         if line.starts_with("rtt: ") {
             lines.push(rtt_detail_line(hop.rtt_ms, rtt_config, theme));
+        } else if line.starts_with("source: ") {
+            lines.push(Line::from({
+                let mut spans = vec![Span::styled("source: ", theme.label())];
+                spans.extend(cache_source_detail_spans(hop.from_cache, theme));
+                spans
+            }));
         } else {
             lines.push(styled_plain_line(&line, theme));
         }

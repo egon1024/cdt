@@ -1,9 +1,11 @@
 use std::net::IpAddr;
 
 use dns_resolve::{HopOutcome, TraceHop};
+use ratatui::text::Span;
 
 use super::rtt_bar::format_rtt_plain_line;
-use super::terminal::{UiSymbols, cache_source_symbol};
+use super::terminal::{UiSymbols, cache_source_label, cache_source_symbol, format_cache_source};
+use super::theme::Theme;
 
 pub fn hop_summary_line(hop: &TraceHop, symbols: UiSymbols) -> String {
     let marker = if matches!(hop.outcome, HopOutcome::Failed { .. }) {
@@ -83,7 +85,7 @@ pub(crate) fn legacy_hop_detail_lines(hop: &TraceHop, symbols: UiSymbols) -> Vec
         format_server_line(&hop.server, hop.server_name.as_deref(), &hop.transport),
         format_rtt_plain_line(hop.rtt_ms),
         format!("rcode: {}", hop.rcode),
-        format!("source: {}", cache_source_symbol(hop.from_cache, symbols)),
+        format!("source: {}", format_cache_source(hop.from_cache, symbols)),
     ];
     if let Some(nsid) = &hop.nsid {
         lines.push(format!("nsid: {nsid}"));
@@ -95,6 +97,17 @@ pub(crate) fn legacy_hop_detail_lines(hop: &TraceHop, symbols: UiSymbols) -> Vec
     append_yaml_list_lines(&mut lines, "referral NS", &hop.referral_ns);
     append_yaml_list_lines(&mut lines, "glue", &hop.glue);
     lines
+}
+
+pub fn cache_source_detail_spans(from_cache: bool, theme: &Theme) -> Vec<Span<'static>> {
+    let style = theme.cache_source(from_cache);
+    vec![
+        Span::styled(
+            format!("{} ", cache_source_symbol(from_cache, theme.symbols)),
+            style,
+        ),
+        Span::styled(cache_source_label(from_cache).to_string(), style),
+    ]
 }
 
 fn append_yaml_list_lines(lines: &mut Vec<String>, key: &str, values: &[String]) {
