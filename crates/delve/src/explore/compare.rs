@@ -23,6 +23,7 @@ pub struct CompareColumns {
     pub server_name_width: usize,
     pub rcode_width: usize,
     pub rtt_width: usize,
+    pub rtt_bar_width: usize,
     pub icmp_width: usize,
 }
 
@@ -34,9 +35,14 @@ impl CompareColumns {
     pub const MIN_RCODE_WIDTH: usize = 7;
     pub const INDENT_WIDTH: usize = 2;
 
-    pub fn for_visible(tree: &ExploreTree, visible: &[VisibleNode]) -> Self {
+    pub fn for_visible(
+        tree: &ExploreTree,
+        visible: &[VisibleNode],
+        rtt_config: RttBarConfig,
+    ) -> Self {
         let max_depth = visible.iter().map(|node| node.depth).max().unwrap_or(0);
         let prefix_width = max_depth * Self::INDENT_WIDTH + 2;
+        let rtt_bar_width = rtt_config.normalized().max_width as usize;
 
         let mut zone_width = 4;
         let mut server_width = 6;
@@ -64,6 +70,7 @@ impl CompareColumns {
             server_name_width: server_name_width.min(Self::MAX_SERVER_NAME_WIDTH),
             rcode_width,
             rtt_width: 7,
+            rtt_bar_width,
             icmp_width: 6,
         }
     }
@@ -84,9 +91,12 @@ impl CompareColumns {
             Span::raw("  "),
             Span::styled(pad_left_display("rtt", self.rtt_width), theme.label()),
             Span::raw("  "),
-            Span::styled(pad_left_display("icmp", self.icmp_width), theme.label()),
+            Span::styled(
+                pad_left_display("rtt latency", self.rtt_bar_width),
+                theme.label(),
+            ),
             Span::raw("  "),
-            Span::styled("latency", theme.label()),
+            Span::styled(pad_left_display("icmp", self.icmp_width), theme.label()),
         ])
     }
 }
@@ -170,8 +180,6 @@ pub fn compare_row(
         Span::raw("  "),
         Span::styled(rtt, row_style),
         Span::raw("  "),
-        Span::styled(icmp, row_style),
-        Span::raw("  "),
     ];
     spans.extend(rtt_bar_spans(
         hop.rtt_ms.min(u32::MAX as u64) as u32,
@@ -179,6 +187,8 @@ pub fn compare_row(
         rtt_config,
         theme,
     ));
+    spans.push(Span::raw("  "));
+    spans.push(Span::styled(icmp, row_style));
 
     Some(Line::from(spans))
 }
@@ -292,7 +302,8 @@ mod tests {
         );
         let tree = super::super::tree::build_explore_tree(&trace);
         let visible = tree.visible_nodes(&tree.default_expanded_paths());
-        let columns = CompareColumns::for_visible(&tree, &visible);
+        let rtt_config = RttBarConfig::default();
+        let columns = CompareColumns::for_visible(&tree, &visible, rtt_config);
         let scale_max_rtt_ms = max_rtt_ms_for_visible(&tree, &visible);
         let theme = Theme::from_env();
         let targets = BTreeMap::new();
@@ -335,11 +346,18 @@ mod tests {
         let tree = super::super::tree::build_explore_tree(&trace);
         let expanded = tree.default_expanded_paths();
         let visible = tree.visible_nodes(&expanded);
-        let columns = CompareColumns::for_visible(&tree, &visible);
+        let rtt_config = RttBarConfig::default();
+        let columns = CompareColumns::for_visible(&tree, &visible, rtt_config);
         let scale_max_rtt_ms = max_rtt_ms_for_visible(&tree, &visible);
         let theme = Theme::from_env();
         let targets = BTreeMap::new();
         let header = columns.header(&theme);
+        let header_text: String = header
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(header_text.contains("rtt latency"));
         let shallow = compare_row(
             &visible[0],
             &tree,
@@ -379,8 +397,55 @@ mod tests {
         assert_eq!(header_starts[7], deep_starts[7]);
         assert_eq!(header_starts[9], shallow_starts[9]);
         assert_eq!(header_starts[9], deep_starts[9]);
-        assert_eq!(header_starts[11], shallow_starts[11]);
-        assert_eq!(header_starts[11], deep_starts[11]);
+    }
+
+    #[test]
+    fn rtt_latency_bar_sits_between_rtt_and_icmp_columns() {
+        let trace = build_linear_tree(
+            vec![hop(".", "1.1.1.1", 12)],
+            TraceTreeRequest {
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                started_at: "2026-08-25T00:00:00Z".into(),
+            },
+        );
+        let tree = super::super::tree::build_explore_tree(&trace);
+        let visible = tree.visible_nodes(&[]);
+        let rtt_config = RttBarConfig::default();
+        let columns = CompareColumns::for_visible(&tree, &visible, rtt_config);
+        let mut targets = BTreeMap::new();
+        targets.insert(
+            "1.1.1.1".parse::<IpAddr>().expect("ip"),
+            crate::session::TargetEnrichments {
+                icmp: Some(IcmpSnapshot {
+                    method: IcmpMethod::Datagram,
+                    samples: 1,
+                    min_ms: 4,
+                    avg_ms: 5,
+                    max_ms: 6,
+                    probed_at: "2026-09-06T00:00:00Z".into(),
+                }),
+                ..Default::default()
+            },
+        );
+        let row = compare_row(
+            &visible[0],
+            &tree,
+            false,
+            false,
+            columns,
+            &targets,
+            rtt_config,
+            max_rtt_ms_for_visible(&tree, &visible),
+            &Theme::from_env(),
+        )
+        .expect("row");
+        let joined: String = row.spans.iter().map(|span| span.content.as_ref()).collect();
+        let rtt_pos = joined.find("12ms").expect("dns rtt");
+        let bar_pos = joined.find('█').expect("rtt latency bar");
+        let icmp_pos = joined.find("5ms").expect("icmp rtt");
+        assert!(rtt_pos < bar_pos);
+        assert!(bar_pos < icmp_pos);
     }
 
     #[test]
@@ -395,7 +460,8 @@ mod tests {
         );
         let tree = super::super::tree::build_explore_tree(&trace);
         let visible = tree.visible_nodes(&[]);
-        let columns = CompareColumns::for_visible(&tree, &visible);
+        let rtt_config = RttBarConfig::default();
+        let columns = CompareColumns::for_visible(&tree, &visible, rtt_config);
         let mut targets = BTreeMap::new();
         targets.insert(
             "1.1.1.1".parse::<IpAddr>().expect("ip"),
@@ -443,7 +509,8 @@ mod tests {
         );
         let tree = super::super::tree::build_explore_tree(&trace);
         let visible = tree.visible_nodes(&[]);
-        let columns = CompareColumns::for_visible(&tree, &visible);
+        let rtt_config = RttBarConfig::default();
+        let columns = CompareColumns::for_visible(&tree, &visible, rtt_config);
         let scale_max_rtt_ms = max_rtt_ms_for_visible(&tree, &visible);
         let row = compare_row(
             &visible[0],
@@ -452,7 +519,7 @@ mod tests {
             false,
             columns,
             &BTreeMap::new(),
-            RttBarConfig::default(),
+            rtt_config,
             scale_max_rtt_ms,
             &Theme::from_env(),
         )
