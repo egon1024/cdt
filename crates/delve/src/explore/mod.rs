@@ -4,6 +4,7 @@ mod compare_screen;
 mod detail;
 mod dig_view;
 mod flags;
+mod hop_identity;
 mod json;
 mod outline;
 mod pane_split;

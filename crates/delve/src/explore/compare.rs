@@ -2,14 +2,17 @@ use std::collections::BTreeMap;
 use std::net::IpAddr;
 
 use ratatui::text::{Line, Span};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 use dns_resolve::HopOutcome;
 
 use crate::config::RttBarConfig;
 use crate::session::TargetEnrichments;
 
-use super::detail::effective_server_name;
+use super::hop_identity::{
+    MAX_IDENTITY_COLUMN_WIDTH, MIN_IDENTITY_COLUMN_WIDTH, hop_identity_column_spans,
+    hop_identity_display_width,
+};
 use super::path_summary::icmp_rtt_from_targets;
 use super::rtt_bar::rtt_bar_spans;
 use super::theme::Theme;
@@ -18,9 +21,7 @@ use super::tree::{ExploreTree, VisibleNode};
 #[derive(Debug, Clone, Copy)]
 pub struct CompareColumns {
     pub prefix_width: usize,
-    pub zone_width: usize,
-    pub server_width: usize,
-    pub server_name_width: usize,
+    pub identity_width: usize,
     pub rcode_width: usize,
     pub rtt_width: usize,
     pub rtt_bar_width: usize,
@@ -28,10 +29,6 @@ pub struct CompareColumns {
 }
 
 impl CompareColumns {
-    pub const MAX_ZONE_WIDTH: usize = 20;
-    pub const MAX_SERVER_WIDTH: usize = 28;
-    pub const MAX_SERVER_NAME_WIDTH: usize = 28;
-    pub const MIN_SERVER_NAME_WIDTH: usize = 4;
     pub const MIN_RCODE_WIDTH: usize = 7;
     pub const INDENT_WIDTH: usize = 2;
 
@@ -44,18 +41,14 @@ impl CompareColumns {
         let prefix_width = max_depth * Self::INDENT_WIDTH + 2;
         let rtt_bar_width = rtt_config.normalized().max_width as usize;
 
-        let mut zone_width = 4;
-        let mut server_width = 6;
-        let mut server_name_width = Self::MIN_SERVER_NAME_WIDTH;
+        let mut identity_width = 8;
         let mut rcode_width = Self::MIN_RCODE_WIDTH;
 
         for node in visible {
             let Some(hop) = tree.hop_at(&node.path) else {
                 continue;
             };
-            zone_width = zone_width.max(display_width(hop.zone.as_str()));
-            server_width = server_width.max(display_width(hop.server.as_str()));
-            server_name_width = server_name_width.max(display_width(hop_server_name(hop).as_str()));
+            identity_width = identity_width.max(hop_identity_display_width(hop, None));
             if matches!(hop.outcome, HopOutcome::Failed { .. }) {
                 rcode_width = rcode_width.max(display_width("FAILED"));
             } else {
@@ -65,9 +58,8 @@ impl CompareColumns {
 
         Self {
             prefix_width,
-            zone_width: zone_width.min(Self::MAX_ZONE_WIDTH),
-            server_width: server_width.min(Self::MAX_SERVER_WIDTH),
-            server_name_width: server_name_width.min(Self::MAX_SERVER_NAME_WIDTH),
+            identity_width: identity_width
+                .clamp(MIN_IDENTITY_COLUMN_WIDTH, MAX_IDENTITY_COLUMN_WIDTH),
             rcode_width,
             rtt_width: 7,
             rtt_bar_width,
@@ -78,12 +70,8 @@ impl CompareColumns {
     pub fn header(self, theme: &Theme) -> Line<'static> {
         Line::from(vec![
             Span::raw(format_prefix(0, "", self.prefix_width)),
-            Span::styled(pad_left_display("zone", self.zone_width), theme.label()),
-            Span::raw("  "),
-            Span::styled(pad_left_display("server", self.server_width), theme.label()),
-            Span::raw("  "),
             Span::styled(
-                pad_left_display("name", self.server_name_width),
+                pad_left_display("identity", self.identity_width),
                 theme.label(),
             ),
             Span::raw("  "),
@@ -139,9 +127,6 @@ pub fn compare_row(
         theme.meta()
     };
 
-    let zone = truncate_field(&hop.zone, columns.zone_width);
-    let server = truncate_field(&hop.server, columns.server_width);
-    let server_name = truncate_field(&hop_server_name(hop), columns.server_name_width);
     let rcode = if failed {
         pad_left_display("FAILED", columns.rcode_width)
     } else {
@@ -155,19 +140,17 @@ pub fn compare_row(
         columns.icmp_width,
     );
 
-    let mut spans = vec![
-        Span::styled(
-            format_prefix(node.depth, marker, columns.prefix_width),
-            row_style,
-        ),
-        Span::styled(pad_left_display(zone, columns.zone_width), theme.zone()),
-        Span::raw("  "),
-        Span::styled(pad_left_display(server, columns.server_width), row_style),
-        Span::raw("  "),
-        Span::styled(
-            pad_left_display(server_name, columns.server_name_width),
-            theme.label(),
-        ),
+    let mut spans = vec![Span::styled(
+        format_prefix(node.depth, marker, columns.prefix_width),
+        row_style,
+    )];
+    spans.extend(hop_identity_column_spans(
+        hop,
+        theme,
+        columns.identity_width,
+        row_style,
+    ));
+    spans.extend([
         Span::raw("  "),
         Span::styled(
             rcode,
@@ -180,7 +163,7 @@ pub fn compare_row(
         Span::raw("  "),
         Span::styled(rtt, row_style),
         Span::raw("  "),
-    ];
+    ]);
     spans.extend(rtt_bar_spans(
         hop.rtt_ms.min(u32::MAX as u64) as u32,
         scale_max_rtt_ms,
@@ -191,10 +174,6 @@ pub fn compare_row(
     spans.push(Span::styled(icmp, row_style));
 
     Some(Line::from(spans))
-}
-
-fn hop_server_name(hop: &dns_resolve::TraceHop) -> String {
-    effective_server_name(&hop.server, hop.server_name.as_deref()).unwrap_or_default()
 }
 
 fn children_count(node: &VisibleNode, tree: &ExploreTree) -> usize {
@@ -226,21 +205,12 @@ fn pad_left_display(value: impl std::fmt::Display, width: usize) -> String {
     format!("{}{}", " ".repeat(width - text_width), text)
 }
 
-fn truncate_field(value: &str, max_width: usize) -> String {
-    if display_width(value) <= max_width {
-        return value.to_string();
-    }
-    let mut end = 0;
-    let mut width = 0;
-    for ch in value.chars() {
-        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if width + ch_width > max_width.saturating_sub(1) {
-            break;
-        }
-        width += ch_width;
-        end += ch.len_utf8();
-    }
-    format!("{}…", &value[..end])
+#[cfg(test)]
+fn display_index(text: &str, needle: &str) -> usize {
+    let byte = text
+        .find(needle)
+        .unwrap_or_else(|| panic!("missing {needle}"));
+    display_width(&text[..byte])
 }
 
 #[cfg(test)]
@@ -288,7 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn columns_align_server_and_rcode_fields() {
+    fn columns_align_identity_and_rcode_fields() {
         let trace = build_linear_tree(
             vec![
                 hop(".", "198.41.0.4", 12),
@@ -324,6 +294,7 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect::<String>();
+        assert!(text.contains("[com.]"));
         assert!(text.contains("192.41.162.30"));
         assert!(text.contains("NOERROR"));
         assert!(text.contains("200ms"));
@@ -357,6 +328,7 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
+        assert!(header_text.contains("identity"));
         assert!(header_text.contains("rtt latency"));
         let shallow = compare_row(
             &visible[0],
@@ -389,14 +361,20 @@ mod tests {
 
         assert_eq!(header_starts[1], shallow_starts[1]);
         assert_eq!(header_starts[1], deep_starts[1]);
-        assert_eq!(header_starts[3], shallow_starts[3]);
-        assert_eq!(header_starts[3], deep_starts[3]);
-        assert_eq!(header_starts[5], shallow_starts[5]);
-        assert_eq!(header_starts[5], deep_starts[5]);
-        assert_eq!(header_starts[7], shallow_starts[7]);
-        assert_eq!(header_starts[7], deep_starts[7]);
-        assert_eq!(header_starts[9], shallow_starts[9]);
-        assert_eq!(header_starts[9], deep_starts[9]);
+
+        let shallow_text: String = shallow
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        let deep_text: String = deep
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        let rcode_offset = columns.prefix_width + columns.identity_width + 2;
+        assert_eq!(display_index(&shallow_text, "NOERROR"), rcode_offset);
+        assert_eq!(display_index(&deep_text, "NOERROR"), rcode_offset);
     }
 
     #[test]
@@ -530,5 +508,6 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect::<String>();
         assert!(text.contains("a.root-servers.net"));
+        assert!(text.contains("198.41.0.4"));
     }
 }

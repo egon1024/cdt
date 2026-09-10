@@ -377,10 +377,7 @@ fn primary_chain(node: &TraceNode) -> Vec<&TraceNode> {
 }
 
 fn path_label(hop: &TraceHop) -> String {
-    match hop.server_name.as_deref() {
-        Some(name) if !name.is_empty() => format!("{name} ({})", hop.server),
-        _ => hop.server.clone(),
-    }
+    super::detail::format_server_endpoint(&hop.server, hop.server_name.as_deref())
 }
 
 fn outcome_text(hop: &TraceHop) -> String {

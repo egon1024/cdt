@@ -29,6 +29,7 @@ use crate::session::SessionDocument;
 use super::compare::{CompareColumns, compare_row};
 use super::detail::hop_failure_line;
 use super::dig_view::hop_detail_styled;
+use super::hop_identity::{DEFAULT_IDENTITY_MAX_WIDTH, hop_identity_spans};
 use super::pane_split::{AxisScrollHints, VerticalPaneSplit};
 use super::path_timing::{
     build_compare_timing, fork_full_path_lines, fork_sibling_lines, path_on_highlight,
@@ -1030,7 +1031,7 @@ fn browse_scroll_limits(
         let Some(hop) = tree.hop_at(&node.path) else {
             continue;
         };
-        let line = hop_tree_line(&indent, marker, hop, theme);
+        let line = hop_tree_line(&indent, marker, hop, &tree.qname, theme);
         max_line_width = max_line_width.max(line_display_width(&line));
     }
     let tree_max_scroll_x = max_horizontal_scroll(max_line_width, tree_inner.width);
@@ -1455,7 +1456,7 @@ fn render_browse(
         let Some(hop) = tree.hop_at(&node.path) else {
             continue;
         };
-        let line = hop_tree_line(&indent, marker, hop, theme);
+        let line = hop_tree_line(&indent, marker, hop, &tree.qname, theme);
         max_line_width = max_line_width.max(line_display_width(&line));
         let selected = view.browse_pane == BrowsePane::Tree && index == selected_index;
         raw_tree_lines.push((line, selected));
@@ -1652,7 +1653,13 @@ fn render_refresh_confirm_overlay(frame: &mut ratatui::Frame<'_>, theme: &Theme)
     frame.render_widget(widget, area);
 }
 
-fn hop_tree_line(indent: &str, marker: &str, hop: &TraceHop, theme: &Theme) -> Line<'static> {
+fn hop_tree_line(
+    indent: &str,
+    marker: &str,
+    hop: &TraceHop,
+    trace_root_qname: &str,
+    theme: &Theme,
+) -> Line<'static> {
     let failed = matches!(hop.outcome, HopOutcome::Failed { .. });
     let prefix = if failed {
         Span::styled("✗ ", theme.failure())
@@ -1660,24 +1667,36 @@ fn hop_tree_line(indent: &str, marker: &str, hop: &TraceHop, theme: &Theme) -> L
         Span::raw("")
     };
     let status = if failed { "FAILED" } else { hop.rcode.as_str() };
-    Line::from(vec![
-        Span::raw(format!("{indent}{marker}")),
-        prefix,
-        Span::styled(format!("[{}] ", hop.zone), theme.zone()),
-        Span::raw(format!("{} {}  ", hop.qname, hop.qtype)),
-        Span::styled(
-            status.to_string(),
-            if failed {
-                theme.failure()
-            } else {
-                theme.rcode(&hop.rcode)
-            },
-        ),
-        Span::styled(
-            format!("  {}  ", cache_source_symbol(hop.from_cache, theme.symbols)),
-            theme.cache_source(hop.from_cache),
-        ),
-    ])
+    let body_style = if failed {
+        theme.failure()
+    } else {
+        theme.meta()
+    };
+    let mut spans = vec![Span::raw(format!("{indent}{marker}")), prefix];
+    spans.extend(hop_identity_spans(
+        hop,
+        theme,
+        Some(DEFAULT_IDENTITY_MAX_WIDTH),
+        body_style,
+    ));
+    if hop.qname != trace_root_qname {
+        spans.push(Span::raw(format!(" {} {}  ", hop.qname, hop.qtype)));
+    } else {
+        spans.push(Span::raw("  "));
+    }
+    spans.push(Span::styled(
+        status.to_string(),
+        if failed {
+            theme.failure()
+        } else {
+            theme.rcode(&hop.rcode)
+        },
+    ));
+    spans.push(Span::styled(
+        format!("  {}  ", cache_source_symbol(hop.from_cache, theme.symbols)),
+        theme.cache_source(hop.from_cache),
+    ));
+    Line::from(spans)
 }
 
 fn detail_content(
@@ -2015,7 +2034,7 @@ pub(crate) fn simulate_explore_first_frame(
 
     for node in &visible {
         if let Some(hop) = tree.hop_at(&node.path) {
-            let _ = hop_tree_line("", "  ", hop, &theme);
+            let _ = hop_tree_line("", "  ", hop, &tree.qname, &theme);
         }
         let _ = detail_content(tree, visible.get(selected_index), rtt_config, &theme);
     }
@@ -2296,6 +2315,36 @@ mod tests {
     }
 
     #[test]
+    fn browse_tree_line_uses_unified_hop_identity() {
+        let hop = sample_hop();
+        let theme = Theme::from_env();
+        let line = hop_tree_line("", "▸ ", &hop, "example.com.", &theme);
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(text.contains("[.]"));
+        assert!(text.contains("(1.1.1.1)"));
+        assert!(!text.contains("example.com. A"));
+    }
+
+    #[test]
+    fn browse_shows_qname_when_hop_differs_from_trace_root() {
+        let mut hop = sample_hop();
+        hop.qname = "sub.example.com.".into();
+        hop.zone = "example.com.".into();
+        let theme = Theme::from_env();
+        let line = hop_tree_line("", "▸ ", &hop, "example.com.", &theme);
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(text.contains("sub.example.com. A"));
+    }
+
+    #[test]
     fn compare_per_hop_shows_icmp_from_session_targets() {
         use dns_resolve::{IcmpMethod, IcmpSnapshot};
         use std::net::IpAddr;
@@ -2326,12 +2375,8 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
+        assert!(header_text.contains("identity"));
         assert!(header_text.contains("rtt latency"));
-        let header_text: String = header
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
         assert!(header_text.contains("icmp"));
         let row = compare_row(
             &visible[1],
