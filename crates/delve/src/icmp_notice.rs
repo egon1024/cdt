@@ -18,7 +18,7 @@ pub fn format_comparison_icmp_notice(capability: IcmpProbeCapability) -> Option<
 }
 
 fn disable_icmp_enrichment_hint() -> String {
-    " To silence this notice, set enrichment.icmp.enabled: false in delve.toml.".into()
+    " To silence this notice, set enrichment.icmp.enabled: false in delve.yaml.".into()
 }
 
 fn linux_ping_group_hint() -> String {
@@ -55,6 +55,8 @@ mod tests {
             format_comparison_icmp_notice(IcmpProbeCapability::PingCommand).expect("notice");
         assert!(notice.contains("/bin/ping"));
         assert!(notice.contains("enrichment.icmp.enabled: false"));
+        assert!(notice.contains("delve.yaml"));
+        assert!(!notice.contains("delve.toml"));
     }
 
     #[test]
