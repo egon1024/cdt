@@ -177,16 +177,21 @@ pub fn comparison_for_explore(tree: &ExploreTree, selection: &NodePath) -> Optio
     comparison_at(tree.trace(), selection)
 }
 
+/// Read ICMP snapshot from session targets when enrichment exists for `server`.
+pub fn icmp_snapshot_from_targets<'a>(
+    targets: &'a BTreeMap<IpAddr, TargetEnrichments>,
+    server: &str,
+) -> Option<&'a dns_resolve::IcmpSnapshot> {
+    let addr = IpAddr::from_str(server).ok()?;
+    targets.get(&addr).and_then(|entry| entry.icmp.as_ref())
+}
+
 /// Read ICMP display RTT from session targets when a snapshot exists for `server`.
 pub fn icmp_rtt_from_targets(
     targets: &BTreeMap<IpAddr, TargetEnrichments>,
     server: &str,
 ) -> Option<u64> {
-    let addr = IpAddr::from_str(server).ok()?;
-    targets
-        .get(&addr)
-        .and_then(|entry| entry.icmp.as_ref())
-        .map(|snapshot| snapshot.avg_ms)
+    icmp_snapshot_from_targets(targets, server).map(|snapshot| snapshot.avg_ms)
 }
 
 pub fn enrich_icmp(

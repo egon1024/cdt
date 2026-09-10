@@ -1,7 +1,7 @@
 use std::net::IpAddr;
 
-use dns_resolve::{HopOutcome, TraceHop};
-use ratatui::text::Span;
+use dns_resolve::{HopOutcome, IcmpMethod, IcmpSnapshot, TraceHop};
+use ratatui::text::{Line, Span};
 
 use super::hop_identity::hop_display_zone;
 use super::rtt_bar::format_rtt_plain_line;
@@ -66,12 +66,12 @@ pub fn render_indented_block(lines: &[String], indent: &str) -> String {
 
 pub fn hop_detail_lines(hop: &TraceHop, symbols: UiSymbols) -> Vec<String> {
     let mut lines = if hop.response.is_stored() {
-        super::dig_view::hop_detail_plain(hop, symbols)
+        super::dig_view::hop_detail_plain(hop, symbols, None)
             .lines()
             .map(str::to_owned)
             .collect()
     } else {
-        legacy_hop_detail_lines(hop, symbols)
+        legacy_hop_detail_lines(hop, symbols, None)
     };
     if let Some(failure) = hop_failure_line(hop) {
         lines.push(failure);
@@ -79,15 +79,24 @@ pub fn hop_detail_lines(hop: &TraceHop, symbols: UiSymbols) -> Vec<String> {
     lines
 }
 
-pub(crate) fn legacy_hop_detail_lines(hop: &TraceHop, symbols: UiSymbols) -> Vec<String> {
+pub(crate) fn legacy_hop_detail_lines(
+    hop: &TraceHop,
+    symbols: UiSymbols,
+    icmp: Option<&IcmpSnapshot>,
+) -> Vec<String> {
     let mut lines = vec![
         format!("zone: {}", hop_display_zone(hop)),
         format!("query: {} {}", hop.qname, hop.qtype),
         format_server_line(&hop.server, hop.server_name.as_deref(), &hop.transport),
         format_rtt_plain_line(hop.rtt_ms),
+    ];
+    if let Some(snapshot) = icmp {
+        lines.push(format_icmp_plain_line(snapshot));
+    }
+    lines.extend([
         format!("rcode: {}", hop.rcode),
         format!("source: {}", format_cache_source(hop.from_cache, symbols)),
-    ];
+    ]);
     if let Some(nsid) = &hop.nsid {
         lines.push(format!("nsid: {nsid}"));
     }
@@ -109,6 +118,41 @@ pub fn cache_source_detail_spans(from_cache: bool, theme: &Theme) -> Vec<Span<'s
         ),
         Span::styled(cache_source_label(from_cache).to_string(), style),
     ]
+}
+
+pub fn icmp_method_label(method: IcmpMethod) -> &'static str {
+    match method {
+        IcmpMethod::Datagram => "datagram",
+        IcmpMethod::Ping => "ping",
+    }
+}
+
+pub fn format_icmp_plain_line(snapshot: &IcmpSnapshot) -> String {
+    let method = icmp_method_label(snapshot.method);
+    if snapshot.samples <= 1 {
+        format!("icmp: {} ms ({method})", snapshot.avg_ms)
+    } else {
+        format!(
+            "icmp: {} ms avg, {}–{} ms ({method}, {} samples)",
+            snapshot.avg_ms, snapshot.min_ms, snapshot.max_ms, snapshot.samples
+        )
+    }
+}
+
+pub fn icmp_detail_line(snapshot: &IcmpSnapshot, theme: &Theme) -> Line<'static> {
+    let method = icmp_method_label(snapshot.method);
+    let value = if snapshot.samples <= 1 {
+        format!("{} ms ({method})", snapshot.avg_ms)
+    } else {
+        format!(
+            "{} ms avg, {}–{} ms ({method}, {} samples)",
+            snapshot.avg_ms, snapshot.min_ms, snapshot.max_ms, snapshot.samples
+        )
+    };
+    Line::from(vec![
+        Span::styled("icmp: ", theme.label()),
+        Span::raw(value),
+    ])
 }
 
 fn append_yaml_list_lines(lines: &mut Vec<String>, key: &str, values: &[String]) {
@@ -161,6 +205,33 @@ mod tests {
     #[test]
     fn rtt_plain_line_uses_expected_label() {
         assert_eq!(format_rtt_plain_line(11), "rtt: 11 ms");
+    }
+
+    #[test]
+    fn icmp_plain_line_includes_method_and_samples() {
+        use dns_resolve::{IcmpMethod, IcmpSnapshot};
+
+        let single = IcmpSnapshot {
+            method: IcmpMethod::Ping,
+            samples: 1,
+            min_ms: 10,
+            avg_ms: 10,
+            max_ms: 10,
+            probed_at: "2026-09-06T00:00:00Z".into(),
+        };
+        assert_eq!(format_icmp_plain_line(&single), "icmp: 10 ms (ping)");
+
+        let multi = IcmpSnapshot {
+            samples: 3,
+            min_ms: 8,
+            avg_ms: 10,
+            max_ms: 12,
+            ..single
+        };
+        assert_eq!(
+            format_icmp_plain_line(&multi),
+            "icmp: 10 ms avg, 8–12 ms (ping, 3 samples)"
+        );
     }
 
     #[test]

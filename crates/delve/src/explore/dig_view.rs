@@ -1,10 +1,13 @@
 use dns_core::response::DnsRecord;
-use dns_resolve::{StoredDnsMessage, TraceHop};
+use dns_resolve::{IcmpSnapshot, StoredDnsMessage, TraceHop};
 use ratatui::text::{Line, Span};
 
 use crate::config::RttBarConfig;
 
-use super::detail::{cache_source_detail_spans, format_server_endpoint, legacy_hop_detail_lines};
+use super::detail::{
+    cache_source_detail_spans, format_icmp_plain_line, format_server_endpoint, icmp_detail_line,
+    legacy_hop_detail_lines,
+};
 use super::flags::{format_flags_plain, format_flags_spans};
 use super::hop_identity::hop_display_zone;
 use super::rtt_bar::{format_rtt_plain_line, rtt_detail_line};
@@ -26,10 +29,11 @@ struct DigView<'a> {
     message: &'a StoredDnsMessage,
     from_cache: bool,
     symbols: UiSymbols,
+    icmp: Option<&'a IcmpSnapshot>,
 }
 
 impl<'a> DigView<'a> {
-    fn from_hop(hop: &'a TraceHop, symbols: UiSymbols) -> Self {
+    fn from_hop(hop: &'a TraceHop, symbols: UiSymbols, icmp: Option<&'a IcmpSnapshot>) -> Self {
         Self {
             qname: &hop.qname,
             qtype: &hop.qtype,
@@ -45,6 +49,7 @@ impl<'a> DigView<'a> {
             message: &hop.response,
             from_cache: hop.from_cache,
             symbols,
+            icmp,
         }
     }
 
@@ -86,6 +91,9 @@ impl<'a> DigView<'a> {
             self.transport,
         ));
         lines.push(format_rtt_plain_line(self.rtt_ms));
+        if let Some(snapshot) = self.icmp {
+            lines.push(format_icmp_plain_line(snapshot));
+        }
         lines.push(format!("status: {}", self.rcode));
         lines.push(format!(
             "source: {}",
@@ -112,6 +120,11 @@ impl<'a> DigView<'a> {
                 Span::raw(format!("{server} ({}) ", self.transport)),
             ]),
             rtt_detail_line(self.rtt_ms, rtt_config, theme),
+        ];
+        if let Some(snapshot) = self.icmp {
+            lines.push(icmp_detail_line(snapshot, theme));
+        }
+        lines.extend([
             Line::from(vec![
                 Span::styled("status: ", theme.label()),
                 Span::styled(self.rcode.to_string(), theme.rcode(self.rcode)),
@@ -121,7 +134,7 @@ impl<'a> DigView<'a> {
                 spans.extend(cache_source_detail_spans(self.from_cache, theme));
                 spans
             }),
-        ];
+        ]);
         if let Some(nsid) = self.nsid {
             lines.push(Line::from(vec![
                 Span::styled("nsid: ", theme.label()),
@@ -206,11 +219,11 @@ pub fn hop_has_dig_view(hop: &TraceHop) -> bool {
     hop.response.is_stored()
 }
 
-pub fn hop_detail_plain(hop: &TraceHop, symbols: UiSymbols) -> String {
+pub fn hop_detail_plain(hop: &TraceHop, symbols: UiSymbols, icmp: Option<&IcmpSnapshot>) -> String {
     if hop_has_dig_view(hop) {
-        DigView::from_hop(hop, symbols).to_plain()
+        DigView::from_hop(hop, symbols, icmp).to_plain()
     } else {
-        legacy_hop_detail_lines(hop, symbols).join("\n")
+        legacy_hop_detail_lines(hop, symbols, icmp).join("\n")
     }
 }
 
@@ -218,11 +231,12 @@ pub fn hop_detail_styled(
     hop: &TraceHop,
     theme: &Theme,
     rtt_config: RttBarConfig,
+    icmp: Option<&IcmpSnapshot>,
 ) -> Vec<Line<'static>> {
     if hop_has_dig_view(hop) {
-        DigView::from_hop(hop, theme.symbols).to_styled(theme, rtt_config)
+        DigView::from_hop(hop, theme.symbols, icmp).to_styled(theme, rtt_config)
     } else {
-        legacy_hop_lines(hop, theme, rtt_config)
+        legacy_hop_lines(hop, theme, rtt_config, icmp)
     }
 }
 
@@ -259,11 +273,20 @@ fn record_styled(record: &DnsRecord, theme: &Theme) -> Line<'static> {
     ])
 }
 
-fn legacy_hop_lines(hop: &TraceHop, theme: &Theme, rtt_config: RttBarConfig) -> Vec<Line<'static>> {
+fn legacy_hop_lines(
+    hop: &TraceHop,
+    theme: &Theme,
+    rtt_config: RttBarConfig,
+    icmp: Option<&IcmpSnapshot>,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    for line in legacy_hop_detail_lines(hop, theme.symbols) {
+    for line in legacy_hop_detail_lines(hop, theme.symbols, icmp) {
         if line.starts_with("rtt: ") {
             lines.push(rtt_detail_line(hop.rtt_ms, rtt_config, theme));
+        } else if line.starts_with("icmp: ") {
+            if let Some(snapshot) = icmp {
+                lines.push(icmp_detail_line(snapshot, theme));
+            }
         } else if line.starts_with("source: ") {
             lines.push(Line::from({
                 let mut spans = vec![Span::styled("source: ", theme.label())];
@@ -343,8 +366,24 @@ mod tests {
     use crate::explore::terminal::UNICODE;
 
     #[test]
+    fn dig_plain_includes_icmp_when_enriched() {
+        use dns_resolve::{IcmpMethod, IcmpSnapshot};
+
+        let snapshot = IcmpSnapshot {
+            method: IcmpMethod::Datagram,
+            samples: 1,
+            min_ms: 107,
+            avg_ms: 107,
+            max_ms: 107,
+            probed_at: "2026-09-06T00:00:00Z".into(),
+        };
+        let text = hop_detail_plain(&sample_hop(), UNICODE, Some(&snapshot));
+        assert!(text.contains("icmp: 107 ms (datagram)"));
+    }
+
+    #[test]
     fn dig_plain_includes_header_and_sections() {
-        let text = hop_detail_plain(&sample_hop(), UNICODE);
+        let text = hop_detail_plain(&sample_hop(), UNICODE, None);
         assert!(text.contains(";; HEADER"));
         assert!(text.contains("flags: QR RD RA (aa) (tc) (ad) (cd)"));
         assert!(text.contains(";; QUESTION SECTION:"));
@@ -360,7 +399,7 @@ mod tests {
     fn legacy_hop_falls_back_to_yaml_lists() {
         let mut hop = sample_hop();
         hop.response = StoredDnsMessage::default();
-        let text = hop_detail_plain(&hop, UNICODE);
+        let text = hop_detail_plain(&hop, UNICODE, None);
         assert!(text.contains("referral NS:\n  - a.gtld-servers.net."));
     }
 }
