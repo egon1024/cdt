@@ -1,6 +1,7 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
 
 use dns_enrichment_cache::{ProbeProfile, SqliteEnrichmentCache, now_unix};
 use dns_resolve::{
@@ -102,6 +103,7 @@ fn populate_icmp_for_tree(
 ) {
     let profile = probe_profile(runtime);
     let collected = collect_unique_server_targets(tree);
+    let mut probe_ips = Vec::new();
     for (ip, names) in collected {
         let entry = document.targets.entry(ip).or_default();
         for name in names {
@@ -110,44 +112,127 @@ fn populate_icmp_for_tree(
         if !should_probe(ip) {
             continue;
         }
-        let snapshot = resolve_icmp_snapshot(
-            ip,
-            runtime.enrichment_cache.as_deref(),
-            &profile,
-            fresh,
-            prober,
-            runtime.config.enrichment_icmp_timeout_ms,
-            runtime.config.enrichment_icmp_ping_samples,
-        );
-        if let Some(snapshot) = snapshot {
+        if let Some(snapshot) =
+            cached_icmp_snapshot(ip, runtime.enrichment_cache.as_deref(), &profile, fresh)
+        {
             entry.icmp = Some(snapshot);
+            continue;
+        }
+        probe_ips.push(ip);
+    }
+    let probed = probe_icmp_snapshots_parallel(
+        &probe_ips,
+        runtime.config.enrichment_icmp_max_parallel_probes,
+        runtime.enrichment_cache.as_deref(),
+        &profile,
+        prober,
+        runtime.config.enrichment_icmp_timeout_ms,
+        runtime.config.enrichment_icmp_ping_samples,
+        |_, _| {},
+    );
+    for (ip, snapshot) in probed {
+        if let Some(snapshot) = snapshot {
+            document.targets.entry(ip).or_default().icmp = Some(snapshot);
         }
     }
+}
+
+fn cached_icmp_snapshot(
+    ip: IpAddr,
+    cache: Option<&SqliteEnrichmentCache>,
+    profile: &ProbeProfile,
+    fresh: bool,
+) -> Option<IcmpSnapshot> {
+    if fresh {
+        return None;
+    }
+    let now = now_unix();
+    cache.and_then(|cache| cache.get_icmp(ip, profile, now))
 }
 
 fn resolve_icmp_snapshot(
     ip: IpAddr,
     cache: Option<&SqliteEnrichmentCache>,
     profile: &ProbeProfile,
-    fresh: bool,
     prober: &dyn TraceEnrichmentProber,
     timeout_ms: u64,
     ping_samples: u8,
 ) -> Option<IcmpSnapshot> {
-    let now = now_unix();
-    if !fresh {
-        if let Some(cache) = cache {
-            if let Some(snapshot) = cache.get_icmp(ip, profile, now) {
-                return Some(snapshot);
-            }
-        }
-    }
     let probed_at = now_rfc3339();
     let snapshot = prober.probe_snapshot(ip, timeout_ms, ping_samples, &probed_at)?;
     if let Some(cache) = cache {
-        let _ = cache.put_icmp(ip, profile, &snapshot, now);
+        let _ = cache.put_icmp(ip, profile, &snapshot, now_unix());
     }
     Some(snapshot)
+}
+
+/// Probe many IPs with a bounded worker pool (batch `thread::scope` workers).
+#[allow(clippy::too_many_arguments)]
+fn probe_icmp_snapshots_parallel(
+    ips: &[IpAddr],
+    max_parallel: usize,
+    cache: Option<&SqliteEnrichmentCache>,
+    profile: &ProbeProfile,
+    prober: &dyn TraceEnrichmentProber,
+    timeout_ms: u64,
+    ping_samples: u8,
+    mut on_progress: impl FnMut(usize, usize),
+) -> Vec<(IpAddr, Option<IcmpSnapshot>)> {
+    let total = ips.len();
+    if total == 0 {
+        return Vec::new();
+    }
+    let max_parallel = max_parallel.max(1);
+    if max_parallel == 1 {
+        return ips
+            .iter()
+            .enumerate()
+            .map(|(index, ip)| {
+                on_progress(index + 1, total);
+                (
+                    *ip,
+                    resolve_icmp_snapshot(*ip, cache, profile, prober, timeout_ms, ping_samples),
+                )
+            })
+            .collect();
+    }
+
+    let mut results = Vec::with_capacity(total);
+    let mut next_index = 0usize;
+    while next_index < total {
+        let batch_end = (next_index + max_parallel).min(total);
+        let batch = &ips[next_index..batch_end];
+        let batch_results = thread::scope(|scope| {
+            batch
+                .iter()
+                .map(|ip| {
+                    let ip = *ip;
+                    scope.spawn(move || {
+                        (
+                            ip,
+                            resolve_icmp_snapshot(
+                                ip,
+                                cache,
+                                profile,
+                                prober,
+                                timeout_ms,
+                                ping_samples,
+                            ),
+                        )
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|handle| handle.join().expect("icmp probe worker"))
+                .collect::<Vec<_>>()
+        });
+        for (offset, outcome) in batch_results.into_iter().enumerate() {
+            on_progress(next_index + offset + 1, total);
+            results.push(outcome);
+        }
+        next_index = batch_end;
+    }
+    results
 }
 
 pub fn probe_profile(runtime: &Runtime) -> ProbeProfile {
@@ -195,22 +280,31 @@ pub fn refresh_icmp_targets_with_prober(
     let profile = probe_profile(runtime);
     let mut updated = 0usize;
     let mut failed = 0usize;
-    for (index, ip) in ips.iter().enumerate() {
-        on_progress(index + 1, total);
-        let prior = document
-            .targets
-            .get(ip)
-            .and_then(|entry| entry.icmp.clone());
-        let snapshot = resolve_icmp_snapshot(
-            *ip,
-            runtime.enrichment_cache.as_deref(),
-            &profile,
-            true,
-            prober,
-            runtime.config.enrichment_icmp_timeout_ms,
-            runtime.config.enrichment_icmp_ping_samples,
-        );
-        let entry = document.targets.entry(*ip).or_default();
+    let priors: BTreeMap<IpAddr, Option<IcmpSnapshot>> = ips
+        .iter()
+        .map(|ip| {
+            (
+                *ip,
+                document
+                    .targets
+                    .get(ip)
+                    .and_then(|entry| entry.icmp.clone()),
+            )
+        })
+        .collect();
+    let probed = probe_icmp_snapshots_parallel(
+        &ips,
+        runtime.config.enrichment_icmp_max_parallel_probes,
+        runtime.enrichment_cache.as_deref(),
+        &profile,
+        prober,
+        runtime.config.enrichment_icmp_timeout_ms,
+        runtime.config.enrichment_icmp_ping_samples,
+        &mut on_progress,
+    );
+    for (ip, snapshot) in probed {
+        let prior = priors.get(&ip).and_then(|value| value.clone());
+        let entry = document.targets.entry(ip).or_default();
         if let Some(snapshot) = snapshot {
             entry.icmp = Some(snapshot);
             updated += 1;
@@ -248,11 +342,14 @@ fn maybe_emit_icmp_notice() {
 mod tests {
     use super::*;
     use dns_resolve::{
-        HopOutcome, IcmpMethod, NodeOrigin, TraceHop, TraceNode, TraceTreeRequest,
+        HopOutcome, IcmpMethod, NodeOrigin, TraceHop, TraceNode, TraceTree, TraceTreeRequest,
         build_linear_tree, tree::BranchIntent,
     };
     use std::collections::BTreeMap;
+    use std::sync::Arc;
     use std::sync::Mutex;
+    use std::sync::atomic::AtomicUsize;
+    use std::time::Duration;
 
     use crate::dig_options::TraceOptions;
     use crate::paths::DelvePaths;
@@ -350,6 +447,99 @@ mod tests {
         runtime.config.enrichment_icmp_enabled = true;
         runtime.config.enrichment_icmp_on_trace = true;
         runtime
+    }
+
+    fn runtime_with_parallelism(dir: &tempfile::TempDir, max_parallel: usize) -> Runtime {
+        let mut runtime = runtime_with_cache(dir);
+        runtime.config.enrichment_icmp_max_parallel_probes = max_parallel;
+        runtime
+    }
+
+    struct ConcurrentProbeTracker {
+        delay: Duration,
+        in_flight: AtomicUsize,
+        peak_in_flight: AtomicUsize,
+        snapshots: BTreeMap<IpAddr, IcmpSnapshot>,
+    }
+
+    impl ConcurrentProbeTracker {
+        fn new(delay: Duration, snapshots: BTreeMap<IpAddr, IcmpSnapshot>) -> Self {
+            Self {
+                delay,
+                in_flight: AtomicUsize::new(0),
+                peak_in_flight: AtomicUsize::new(0),
+                snapshots,
+            }
+        }
+
+        fn record_in_flight(&self, current: usize) {
+            let mut peak = self.peak_in_flight.load(Ordering::SeqCst);
+            while current > peak {
+                match self.peak_in_flight.compare_exchange(
+                    peak,
+                    current,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                ) {
+                    Ok(_) => break,
+                    Err(observed) => peak = observed,
+                }
+            }
+        }
+    }
+
+    impl TraceEnrichmentProber for ConcurrentProbeTracker {
+        fn probe_snapshot(
+            &self,
+            ip: IpAddr,
+            _timeout_ms: u64,
+            _ping_samples: u8,
+            _probed_at: &str,
+        ) -> Option<IcmpSnapshot> {
+            let current = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.record_in_flight(current);
+            std::thread::sleep(self.delay);
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            self.snapshots.get(&ip).cloned()
+        }
+    }
+
+    fn multi_server_tree(servers: &[&str]) -> TraceTree {
+        assert!(servers.len() >= 2);
+        TraceTree {
+            request: TraceTreeRequest {
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                started_at: "2026-09-06T00:00:00Z".into(),
+            },
+            root: TraceNode {
+                hop: hop(servers[0], None),
+                origin: NodeOrigin::Trace,
+                children: servers[1..]
+                    .iter()
+                    .map(|server| TraceNode {
+                        hop: hop(server, None),
+                        origin: NodeOrigin::Branch {
+                            at: dns_resolve::NodePath::root(0),
+                            intent: BranchIntent::AlternateServer,
+                            at_time: "2026-09-06T00:00:00Z".into(),
+                        },
+                        children: vec![],
+                    })
+                    .collect(),
+            },
+            budget_truncated: false,
+        }
+    }
+
+    fn snapshots_for(servers: &[&str]) -> BTreeMap<IpAddr, IcmpSnapshot> {
+        servers
+            .iter()
+            .map(|server| {
+                let ip: IpAddr = server.parse().expect("ip");
+                (ip, snapshot_for(ip))
+            })
+            .collect()
     }
 
     fn snapshot_for(_ip: IpAddr) -> IcmpSnapshot {
@@ -492,5 +682,125 @@ mod tests {
             Some(&snapshot_for(existing))
         );
         assert_eq!(*prober.calls.lock().expect("lock"), vec![new_ip]);
+    }
+
+    #[test]
+    fn parallel_icmp_probes_respect_max_in_flight() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = runtime_with_parallelism(&dir, 2);
+        let servers = ["1.1.1.1", "8.8.8.8", "9.9.9.9", "1.0.0.1"];
+        let tree = multi_server_tree(&servers);
+        let prober =
+            ConcurrentProbeTracker::new(Duration::from_millis(40), snapshots_for(&servers));
+        let mut document = SessionDocument::new("01TEST".into(), sample_request(), tree.clone());
+        populate_icmp_for_tree(&mut document, &tree, &runtime, true, &prober, |_| true);
+        for server in servers {
+            let ip: IpAddr = server.parse().expect("ip");
+            assert!(
+                document
+                    .targets
+                    .get(&ip)
+                    .and_then(|entry| entry.icmp.as_ref())
+                    .is_some(),
+                "missing snapshot for {server}"
+            );
+        }
+        assert!(
+            prober.peak_in_flight.load(Ordering::SeqCst) <= 2,
+            "peak in-flight {} exceeded cap 2",
+            prober.peak_in_flight.load(Ordering::SeqCst)
+        );
+    }
+
+    #[test]
+    fn parallel_icmp_refresh_updates_all_targets_and_reports_progress() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = runtime_with_parallelism(&dir, 3);
+        let servers = ["1.1.1.1", "8.8.8.8", "9.9.9.9"];
+        let tree = multi_server_tree(&servers);
+        let prober = ConcurrentProbeTracker::new(Duration::from_millis(5), snapshots_for(&servers));
+        let mut document = SessionDocument::new("01TEST".into(), sample_request(), tree);
+        let progress = Arc::new(Mutex::new(Vec::new()));
+        let progress_handle = Arc::clone(&progress);
+        let report =
+            refresh_icmp_targets_with_prober(&mut document, &runtime, &prober, |current, total| {
+                progress_handle.lock().expect("lock").push((current, total))
+            });
+        assert_eq!(report.targets_total, 3);
+        assert_eq!(report.targets_updated, 3);
+        assert_eq!(report.targets_failed, 0);
+        for server in servers {
+            let ip: IpAddr = server.parse().expect("ip");
+            assert_eq!(
+                document
+                    .targets
+                    .get(&ip)
+                    .and_then(|entry| entry.icmp.as_ref())
+                    .map(|snapshot| snapshot.avg_ms),
+                Some(12)
+            );
+        }
+        let seen = progress.lock().expect("lock");
+        assert_eq!(seen.len(), 3);
+        assert_eq!(seen.last().copied(), Some((3, 3)));
+    }
+
+    #[test]
+    fn parallel_populate_uses_cache_without_live_probe() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = runtime_with_parallelism(&dir, 4);
+        let servers = ["1.1.1.1", "8.8.8.8"];
+        let tree = multi_server_tree(&servers);
+        let ip_a: IpAddr = "1.1.1.1".parse().expect("ip");
+        let ip_b: IpAddr = "8.8.8.8".parse().expect("ip");
+        let cache = runtime.enrichment_cache.as_ref().expect("cache");
+        let profile = probe_profile(&runtime);
+        let cached = snapshot_for(ip_a);
+        cache
+            .put_icmp(ip_a, &profile, &cached, now_unix())
+            .expect("seed cache");
+        let prober = MockProber::new().with_snapshot(ip_b, snapshot_for(ip_b));
+        let mut document = SessionDocument::new("01TEST".into(), sample_request(), tree.clone());
+        populate_icmp_for_tree(&mut document, &tree, &runtime, false, &prober, |_| true);
+        assert_eq!(
+            document
+                .targets
+                .get(&ip_a)
+                .and_then(|entry| entry.icmp.as_ref()),
+            Some(&cached)
+        );
+        assert_eq!(
+            document
+                .targets
+                .get(&ip_b)
+                .and_then(|entry| entry.icmp.as_ref()),
+            Some(&snapshot_for(ip_b))
+        );
+        assert_eq!(*prober.calls.lock().expect("lock"), vec![ip_b]);
+    }
+
+    #[test]
+    fn max_parallel_one_probes_sequentially_without_overlap() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = runtime_with_parallelism(&dir, 1);
+        let servers = ["1.1.1.1", "8.8.8.8", "9.9.9.9"];
+        let tree = multi_server_tree(&servers);
+        let prober = ConcurrentProbeTracker::new(Duration::from_millis(5), snapshots_for(&servers));
+        let mut document = SessionDocument::new("01TEST".into(), sample_request(), tree.clone());
+        populate_icmp_for_tree(&mut document, &tree, &runtime, true, &prober, |_| true);
+        assert_eq!(prober.peak_in_flight.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn probe_icmp_snapshots_parallel_returns_empty_for_no_targets() {
+        let prober = MockProber::new();
+        let profile = ProbeProfile {
+            timeout_ms: 200,
+            ping_samples: 3,
+        };
+        let results =
+            probe_icmp_snapshots_parallel(&[], 4, None, &profile, &prober, 200, 3, |_, _| {});
+        assert!(results.is_empty());
+        assert!(prober.calls.lock().expect("lock").is_empty());
     }
 }
