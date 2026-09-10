@@ -70,6 +70,45 @@ impl CompareScreenModel {
     pub fn rows(&self) -> &[PathSummary] {
         &self.comparison.paths
     }
+
+    pub fn with_row(mut self, row: usize) -> Self {
+        if row < self.comparison.paths.len() {
+            self.row = row;
+        }
+        self
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ForkComparisonRender {
+    pub header_lines: usize,
+    pub lines: Vec<Line<'static>>,
+}
+
+pub fn render_fork_comparison(
+    model: &CompareScreenModel,
+    rtt_config: RttBarConfig,
+    theme: &Theme,
+) -> ForkComparisonRender {
+    let header = sticky_header_lines(&model.comparison, theme);
+    let header_lines = header.len();
+    let scale = path_scale_ms(&model.comparison);
+    let referral_agree = model.comparison.referral.agree;
+    let mut lines = header;
+    for (index, path) in model.rows().iter().enumerate() {
+        lines.push(summary_row_line(
+            path,
+            index == model.row,
+            referral_agree,
+            scale,
+            rtt_config,
+            theme,
+        ));
+    }
+    ForkComparisonRender {
+        header_lines,
+        lines,
+    }
 }
 
 /// Keep `row` visible in the scrollable body beneath a sticky header.
