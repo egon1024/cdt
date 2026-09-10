@@ -6,6 +6,7 @@ use crate::config::RttBarConfig;
 
 use super::detail::{cache_source_detail_spans, format_server_endpoint, legacy_hop_detail_lines};
 use super::flags::{format_flags_plain, format_flags_spans};
+use super::hop_identity::hop_display_zone;
 use super::rtt_bar::{format_rtt_plain_line, rtt_detail_line};
 use super::terminal::{UiSymbols, format_cache_source};
 use super::theme::Theme;
@@ -21,7 +22,7 @@ struct DigView<'a> {
     nsid: Option<&'a str>,
     ede_code: Option<u16>,
     ede_text: Option<&'a str>,
-    zone: &'a str,
+    zone: String,
     message: &'a StoredDnsMessage,
     from_cache: bool,
     symbols: UiSymbols,
@@ -40,7 +41,7 @@ impl<'a> DigView<'a> {
             nsid: hop.nsid.as_deref(),
             ede_code: hop.ede_code,
             ede_text: hop.ede_text.as_deref(),
-            zone: &hop.zone,
+            zone: hop_display_zone(hop),
             message: &hop.response,
             from_cache: hop.from_cache,
             symbols,
@@ -104,7 +105,7 @@ impl<'a> DigView<'a> {
         let mut lines = vec![
             Line::from(vec![
                 Span::styled("zone: ", theme.label()),
-                Span::styled(self.zone.to_string(), theme.zone()),
+                Span::styled(self.zone.clone(), theme.zone()),
             ]),
             Line::from(vec![
                 Span::styled("server: ", theme.label()),
