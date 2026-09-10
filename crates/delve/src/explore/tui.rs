@@ -1359,7 +1359,7 @@ fn render_compare(
     rtt_config: RttBarConfig,
     theme: &Theme,
 ) {
-    let columns = CompareColumns::for_visible(tree, visible);
+    let columns = CompareColumns::for_visible(tree, visible, rtt_config);
     let selected_index = view.selected_visible_index(tree);
     let scale_max_rtt_ms = max_rtt_ms_for_visible(tree, visible);
     let timing = build_compare_timing(tree, view.compare_fork.as_ref());
@@ -1403,7 +1403,7 @@ fn render_compare(
     let clamped_scroll = compare_scroll.min(max_scroll);
     let scroll_hints = AxisScrollHints::vertical(clamped_scroll, max_scroll).format_vertical();
     let title = format!(
-        "Compare — answered paths only; • marks forks; latency bar scales to visible max{scroll_hints}"
+        "Compare — answered paths only; • marks forks; rtt latency bar scales to visible max{scroll_hints}"
     );
 
     let widget = Paragraph::new(lines)
@@ -1991,7 +1991,7 @@ pub(crate) fn simulate_explore_first_frame(
             tree.trace().clone(),
         );
         let compare_visible = tree.visible_nodes(&view.expanded_paths);
-        let columns = CompareColumns::for_visible(tree, &compare_visible);
+        let columns = CompareColumns::for_visible(tree, &compare_visible, rtt_config);
         let scale_max_rtt_ms = max_rtt_ms_for_visible(tree, &compare_visible);
         let timing = build_compare_timing(tree, view.compare_fork.as_ref());
         let _ = whole_tree_summary_lines(&timing, &theme);
@@ -2319,8 +2319,14 @@ mod tests {
             },
         );
         let visible = tree.visible_nodes(&tree.default_expanded_paths());
-        let columns = CompareColumns::for_visible(&tree, &visible);
+        let columns = CompareColumns::for_visible(&tree, &visible, RttBarConfig::default());
         let header = columns.header(&Theme::from_env());
+        let header_text: String = header
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(header_text.contains("rtt latency"));
         let header_text: String = header
             .spans
             .iter()
@@ -2387,7 +2393,7 @@ mod tests {
         let document = test_document(&tree);
         let visible = tree.visible_nodes(&tree.default_expanded_paths());
         assert!(visible.len() >= 3, "expected root, org, and terminal hops");
-        let columns = CompareColumns::for_visible(&tree, &visible);
+        let columns = CompareColumns::for_visible(&tree, &visible, RttBarConfig::default());
         let scale = max_rtt_ms_for_visible(&tree, &visible);
         let theme = Theme::from_env();
         let root_row = compare_row(
