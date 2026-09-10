@@ -71,7 +71,7 @@ impl CompareColumns {
         Line::from(vec![
             Span::raw(format_prefix(0, "", self.prefix_width)),
             Span::styled(
-                pad_left_display("identity", self.identity_width),
+                pad_right_display("identity", self.identity_width),
                 theme.label(),
             ),
             Span::raw("  "),
@@ -203,6 +203,15 @@ fn pad_left_display(value: impl std::fmt::Display, width: usize) -> String {
         return text;
     }
     format!("{}{}", " ".repeat(width - text_width), text)
+}
+
+fn pad_right_display(value: impl std::fmt::Display, width: usize) -> String {
+    let text = value.to_string();
+    let text_width = display_width(text.as_str());
+    if text_width >= width {
+        return text;
+    }
+    format!("{}{}", text, " ".repeat(width - text_width))
 }
 
 #[cfg(test)]
@@ -372,6 +381,10 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
+        let identity_offset = columns.prefix_width;
+        assert_eq!(display_index(&shallow_text, "["), identity_offset);
+        assert_eq!(display_index(&deep_text, "["), identity_offset);
+
         let rcode_offset = columns.prefix_width + columns.identity_width + 2;
         assert_eq!(display_index(&shallow_text, "NOERROR"), rcode_offset);
         assert_eq!(display_index(&deep_text, "NOERROR"), rcode_offset);

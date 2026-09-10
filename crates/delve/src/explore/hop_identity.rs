@@ -24,29 +24,20 @@ pub fn hop_identity_display_width(hop: &TraceHop, max_width: Option<usize>) -> u
     display_width(format_hop_identity(hop, max_width).as_str())
 }
 
-/// Fixed-width identity column for Compare: pads/truncates to exactly `column_width`.
+/// Fixed-width identity column for Compare: left-aligned, truncated, padded on the right.
 pub fn hop_identity_column_spans(
     hop: &TraceHop,
     theme: &Theme,
     column_width: usize,
     body_style: Style,
 ) -> Vec<Span<'static>> {
-    let identity_text = format_hop_identity(hop, Some(column_width));
-    let padded = pad_left_display(&identity_text, column_width);
-    let content_start = padded.find('[').unwrap_or(0);
-    let mut spans = Vec::new();
-    if content_start > 0 {
-        spans.push(Span::raw(padded[..content_start].to_string()));
-    }
-    let rest = &padded[content_start..];
-    if rest.is_empty() {
-        return spans;
-    }
-    let bracket = rest.find(']').unwrap_or(rest.len().saturating_sub(1));
-    let zone_end = bracket + 1;
-    spans.push(Span::styled(rest[..zone_end].to_string(), theme.zone()));
-    if zone_end < rest.len() {
-        spans.push(Span::styled(rest[zone_end..].to_string(), body_style));
+    let mut spans = hop_identity_spans(hop, theme, Some(column_width), body_style);
+    let rendered_width: usize = spans
+        .iter()
+        .map(|span| display_width(span.content.as_ref()))
+        .sum();
+    if rendered_width < column_width {
+        spans.push(Span::raw(" ".repeat(column_width - rendered_width)));
     }
     spans
 }
@@ -114,12 +105,42 @@ fn display_width(text: &str) -> usize {
     UnicodeWidthStr::width(text)
 }
 
-fn pad_left_display(value: &str, width: usize) -> String {
-    let text_width = display_width(value);
-    if text_width >= width {
-        return value.to_string();
+#[cfg(test)]
+mod column_tests {
+    use super::*;
+    use crate::explore::theme::Theme;
+    use dns_resolve::HopOutcome;
+
+    #[test]
+    fn compare_identity_is_left_aligned_in_column() {
+        let hop = hop("com.", "192.41.162.30", None);
+        let theme = Theme::from_env();
+        let spans = hop_identity_column_spans(&hop, &theme, 30, theme.meta());
+        let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
+        assert!(text.starts_with("[com.]"));
+        assert_eq!(display_width(text.as_str()), 30);
     }
-    format!("{}{}", " ".repeat(width - text_width), value)
+
+    fn hop(zone: &str, server: &str, server_name: Option<&str>) -> TraceHop {
+        TraceHop {
+            zone: zone.into(),
+            server: server.into(),
+            server_name: server_name.map(str::to_string),
+            qname: "example.com.".into(),
+            qtype: "A".into(),
+            transport: "udp".into(),
+            rtt_ms: 10,
+            rcode: "NOERROR".into(),
+            nsid: None,
+            ede_code: None,
+            ede_text: None,
+            referral_ns: vec![],
+            glue: vec![],
+            response: Default::default(),
+            from_cache: false,
+            outcome: HopOutcome::Referral,
+        }
+    }
 }
 
 #[cfg(test)]
