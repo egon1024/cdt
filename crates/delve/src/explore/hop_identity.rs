@@ -1,4 +1,5 @@
-use dns_resolve::TraceHop;
+use dns_core::name::DomainName;
+use dns_resolve::{HopOutcome, TraceHop};
 use ratatui::style::Style;
 use ratatui::text::Span;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -11,9 +12,23 @@ pub const DEFAULT_IDENTITY_MAX_WIDTH: usize = 52;
 pub const MAX_IDENTITY_COLUMN_WIDTH: usize = 56;
 pub const MIN_IDENTITY_COLUMN_WIDTH: usize = 16;
 
+/// Zone cut shown in tree/compare/detail. Answer hops queried at a parent cut
+/// (e.g. `org.`) are promoted to the delegated zone for the qname.
+pub fn hop_display_zone(hop: &TraceHop) -> String {
+    if matches!(hop.outcome, HopOutcome::Answered) {
+        if let (Ok(zone), Ok(qname)) = (DomainName::parse(&hop.zone), DomainName::parse(&hop.qname))
+        {
+            if let Some(cut) = zone.zone_cut_for(&qname) {
+                return cut.to_string();
+            }
+        }
+    }
+    hop.zone.clone()
+}
+
 pub fn format_hop_identity(hop: &TraceHop, max_width: Option<usize>) -> String {
     let body = hop_identity_body(hop);
-    let full = format!("[{}] {body}", hop.zone);
+    let full = format!("[{}] {body}", hop_display_zone(hop));
     match max_width {
         Some(max) => truncate_to_display_width(&full, max),
         None => full,
@@ -30,7 +45,7 @@ pub fn hop_identity_spans(
     max_width: Option<usize>,
     body_style: Style,
 ) -> Vec<Span<'static>> {
-    let zone = format!("[{}] ", hop.zone);
+    let zone = format!("[{}] ", hop_display_zone(hop));
     let body = hop_identity_body(hop);
     let (zone, body) = match max_width {
         Some(max) => truncate_identity_parts(&zone, &body, max),
@@ -132,6 +147,35 @@ mod tests {
             None,
         );
         assert_eq!(text, "[tuininga.org.] ns1.example.net. (193.47.99.5)");
+    }
+
+    #[test]
+    fn display_zone_promotes_answer_hops_to_delegated_cut() {
+        let hop = TraceHop {
+            zone: "org.".into(),
+            server: "193.47.99.5".into(),
+            server_name: Some("helium.ns.hetzner.de.".into()),
+            qname: "www.tuininga.org.".into(),
+            qtype: "A".into(),
+            transport: "udp".into(),
+            rtt_ms: 10,
+            rcode: "NOERROR".into(),
+            nsid: None,
+            ede_code: None,
+            ede_text: None,
+            referral_ns: vec![],
+            glue: vec![],
+            response: Default::default(),
+            from_cache: false,
+            outcome: HopOutcome::Answered,
+        };
+        assert_eq!(hop_display_zone(&hop), "tuininga.org.");
+    }
+
+    #[test]
+    fn display_zone_keeps_referral_at_parent_cut() {
+        let hop = hop("org.", "199.249.112.1", None);
+        assert_eq!(hop_display_zone(&hop), "org.");
     }
 
     #[test]

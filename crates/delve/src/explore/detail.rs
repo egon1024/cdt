@@ -3,6 +3,7 @@ use std::net::IpAddr;
 use dns_resolve::{HopOutcome, TraceHop};
 use ratatui::text::Span;
 
+use super::hop_identity::hop_display_zone;
 use super::rtt_bar::format_rtt_plain_line;
 use super::terminal::{UiSymbols, cache_source_label, cache_source_symbol, format_cache_source};
 use super::theme::Theme;
@@ -80,7 +81,7 @@ pub fn hop_detail_lines(hop: &TraceHop, symbols: UiSymbols) -> Vec<String> {
 
 pub(crate) fn legacy_hop_detail_lines(hop: &TraceHop, symbols: UiSymbols) -> Vec<String> {
     let mut lines = vec![
-        format!("zone: {}", hop.zone),
+        format!("zone: {}", hop_display_zone(hop)),
         format!("query: {} {}", hop.qname, hop.qtype),
         format_server_line(&hop.server, hop.server_name.as_deref(), &hop.transport),
         format_rtt_plain_line(hop.rtt_ms),

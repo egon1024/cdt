@@ -8,8 +8,8 @@ use dns_resolve::trace::{
     seed_ns_targets_from_tree, server_matches_primary, server_target_from_hop,
 };
 use dns_resolve::{
-    BranchIntent, BranchJobRequest, NodeOrigin, NodePath, QueryBudget, ResolveError, ServerTarget,
-    TraceConfig, TraceNode, TraceProgress, run_branch_job, run_expand_cut_branch,
+    BranchIntent, BranchJobRequest, HopOutcome, NodeOrigin, NodePath, QueryBudget, ResolveError,
+    ServerTarget, TraceConfig, TraceNode, TraceProgress, run_branch_job, run_expand_cut_branch,
 };
 use thiserror::Error;
 
@@ -354,6 +354,9 @@ pub fn execute_branch(
             primary_delegation,
             new_nodes,
         );
+        if let Some(reference_zone) = reference_answer_zone(primary_delegation) {
+            align_answer_hop_zones(&mut new_nodes, &reference_zone, &delegation_hop.zone);
+        }
     }
 
     let nodes_added = new_nodes.len();
@@ -450,6 +453,34 @@ fn cut_context(
         });
     }
     Ok((cut_path, at.clone()))
+}
+
+fn reference_answer_zone(primary_delegation: Option<&TraceNode>) -> Option<String> {
+    primary_delegation
+        .and_then(|node| {
+            node.children
+                .iter()
+                .find(|child| matches!(child.hop.outcome, HopOutcome::Answered))
+        })
+        .map(|child| child.hop.zone.clone())
+}
+
+fn align_answer_hop_zones(nodes: &mut [TraceNode], reference_zone: &str, cut_zone: &str) {
+    if reference_zone == cut_zone {
+        return;
+    }
+    for node in nodes.iter_mut() {
+        align_answer_hop_zone_recursive(node, reference_zone, cut_zone);
+    }
+}
+
+fn align_answer_hop_zone_recursive(node: &mut TraceNode, reference_zone: &str, cut_zone: &str) {
+    if matches!(node.hop.outcome, HopOutcome::Answered) && node.hop.zone == cut_zone {
+        node.hop.zone = reference_zone.to_string();
+    }
+    for child in &mut node.children {
+        align_answer_hop_zone_recursive(child, reference_zone, cut_zone);
+    }
 }
 
 /// When expanding at the session root, branch subtrees include a redundant hop at the
@@ -2150,6 +2181,38 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[test]
+    fn align_answer_hop_zones_matches_primary_terminal_cut() {
+        let mut nodes = vec![TraceNode {
+            hop: TraceHop {
+                zone: "org.".into(),
+                server: "193.47.99.5".into(),
+                server_name: Some("helium.ns.hetzner.de.".into()),
+                qname: "tuininga.org.".into(),
+                qtype: "A".into(),
+                transport: "udp".into(),
+                rtt_ms: 10,
+                rcode: "NOERROR".into(),
+                nsid: None,
+                ede_code: None,
+                ede_text: None,
+                referral_ns: vec![],
+                glue: vec![],
+                response: Default::default(),
+                from_cache: false,
+                outcome: HopOutcome::Answered,
+            },
+            origin: NodeOrigin::Branch {
+                at: NodePath::root(0),
+                intent: BranchIntent::ExpandCut,
+                at_time: "now".into(),
+            },
+            children: vec![],
+        }];
+        super::align_answer_hop_zones(&mut nodes, "tuininga.org.", "org.");
+        assert_eq!(nodes[0].hop.zone, "tuininga.org.");
     }
 
     #[test]
