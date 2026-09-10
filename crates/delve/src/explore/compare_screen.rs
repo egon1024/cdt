@@ -90,7 +90,7 @@ pub fn render_fork_comparison(
     rtt_config: RttBarConfig,
     theme: &Theme,
 ) -> ForkComparisonRender {
-    let header = sticky_header_lines(&model.comparison, theme);
+    let header = sticky_header_lines(&model.comparison, rtt_config, theme);
     let header_lines = header.len();
     let scale = path_scale_ms(&model.comparison);
     let referral_agree = model.comparison.referral.agree;
@@ -131,7 +131,11 @@ pub fn scroll_for_row(row: usize, viewport: CompareViewport, current_scroll: u16
     }
 }
 
-pub fn sticky_header_lines(comparison: &ForkComparison, theme: &Theme) -> Vec<Line<'static>> {
+pub fn sticky_header_lines(
+    comparison: &ForkComparison,
+    rtt_config: RttBarConfig,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(vec![
         Span::styled("Compare  ", theme.label()),
         Span::raw(format!(
@@ -152,10 +156,13 @@ pub fn sticky_header_lines(comparison: &ForkComparison, theme: &Theme) -> Vec<Li
         Span::styled(format!("{:<22}", "server"), theme.label()),
         Span::styled(format!(" {:>4}", "hops"), theme.label()),
         Span::styled(format!(" {:>8}", "dns"), theme.label()),
+        Span::raw("  "),
+        Span::styled(
+            pad_bar_header("rtt latency", rtt_config.normalized().max_width as usize),
+            theme.label(),
+        ),
         Span::styled(format!(" {:>6}", "Δ"), theme.label()),
         Span::styled(format!(" {:>6}", "icmp"), theme.label()),
-        Span::raw("  "),
-        Span::styled("latency", theme.label()),
         Span::styled("  outcome", theme.label()),
         Span::styled("  referral Δ", theme.label()),
     ]));
@@ -205,12 +212,10 @@ pub fn summary_row_line(
     };
     let mut spans = vec![Span::styled(
         format!(
-            "{marker}{:<21} {:>4} {:>8} {:>6} {:>6}",
+            "{marker}{:<21} {:>4} {:>8}",
             truncate(&summary.label, 21),
             summary.hop_count,
             format!("{}ms", summary.dns_rtt_total_ms),
-            delta,
-            icmp,
         ),
         field_style,
     )];
@@ -223,7 +228,9 @@ pub fn summary_row_line(
     ));
     spans.push(Span::styled(
         format!(
-            "  {:<16} {}{}",
+            " {:>6} {:>6}  {:<16} {}{}",
+            delta,
+            icmp,
             truncate(&summary.outcome, 16),
             format_referral_delta_column(&summary.referral_diff, referral_agree),
             cache_mark
@@ -231,6 +238,14 @@ pub fn summary_row_line(
         field_style,
     ));
     Line::from(spans)
+}
+
+fn pad_bar_header(label: &str, width: usize) -> String {
+    let label_width = label.chars().count();
+    if label_width >= width {
+        return label.to_string();
+    }
+    format!("{label}{}", " ".repeat(width - label_width))
 }
 
 fn truncate(value: &str, max: usize) -> String {
