@@ -24,13 +24,14 @@ use crate::branch::{
 use crate::config::RttBarConfig;
 use crate::paths::DelvePaths;
 use crate::runtime::Runtime;
-use crate::session::SessionDocument;
+use crate::session::{SessionDocument, TargetEnrichments};
 
 use super::compare::{CompareColumns, compare_row};
 use super::detail::hop_failure_line;
 use super::dig_view::hop_detail_styled;
 use super::hop_identity::{DEFAULT_IDENTITY_MAX_WIDTH, hop_identity_spans};
 use super::pane_split::{AxisScrollHints, VerticalPaneSplit};
+use super::path_summary::icmp_snapshot_from_targets;
 use super::path_timing::{
     build_compare_timing, fork_full_path_lines, fork_sibling_lines, path_on_highlight,
     whole_tree_summary_lines,
@@ -292,6 +293,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
             &tree,
             &visible,
             selected_index,
+            &document.targets,
             rtt_bar_config,
             &theme,
         );
@@ -331,6 +333,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                     &visible,
                     selected_index,
                     &view,
+                    &document.targets,
                     detail_scroll,
                     tree_scroll_x,
                     rtt_bar_config,
@@ -998,12 +1001,14 @@ fn browse_pane_areas(body_area: Rect, split: VerticalPaneSplit) -> (Rect, Rect) 
     split.split(body_area)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn browse_scroll_limits(
     terminal_area: Rect,
     browse_split: VerticalPaneSplit,
     tree: &ExploreTree,
     visible: &[VisibleNode],
     selected_index: usize,
+    targets: &std::collections::BTreeMap<std::net::IpAddr, TargetEnrichments>,
     rtt_config: RttBarConfig,
     theme: &Theme,
 ) -> BrowseScrollLimits {
@@ -1043,7 +1048,13 @@ fn browse_scroll_limits(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded);
     let detail_inner = detail_block.inner(detail_area);
-    let detail_lines = detail_content(tree, visible.get(selected_index), rtt_config, theme);
+    let detail_lines = detail_content(
+        tree,
+        visible.get(selected_index),
+        targets,
+        rtt_config,
+        theme,
+    );
     let detail_max_scroll = max_vertical_scroll(
         wrapped_line_count(&detail_lines, detail_inner.width),
         detail_inner.height,
@@ -1429,6 +1440,7 @@ fn render_browse(
     visible: &[VisibleNode],
     selected_index: usize,
     view: &ViewStateController,
+    targets: &std::collections::BTreeMap<std::net::IpAddr, TargetEnrichments>,
     detail_scroll: u16,
     tree_scroll_x: u16,
     rtt_config: RttBarConfig,
@@ -1506,7 +1518,13 @@ fn render_browse(
     );
     frame.render_widget(tree_widget, tree_area);
 
-    let detail_lines = detail_content(tree, visible.get(selected_index), rtt_config, theme);
+    let detail_lines = detail_content(
+        tree,
+        visible.get(selected_index),
+        targets,
+        rtt_config,
+        theme,
+    );
     let detail_block = Block::default()
         .title("Details")
         .title_bottom(footer_line(theme).centered())
@@ -1702,6 +1720,7 @@ fn hop_tree_line(
 fn detail_content(
     tree: &ExploreTree,
     selected: Option<&VisibleNode>,
+    targets: &std::collections::BTreeMap<std::net::IpAddr, TargetEnrichments>,
     rtt_config: RttBarConfig,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
@@ -1717,7 +1736,8 @@ fn detail_content(
             theme.meta(),
         ))];
     };
-    let mut lines = hop_detail_styled(hop, theme, rtt_config);
+    let icmp = icmp_snapshot_from_targets(targets, &hop.server);
+    let mut lines = hop_detail_styled(hop, theme, rtt_config, icmp);
     if let Some(failure) = hop_failure_line(hop) {
         lines.push(Line::from(Span::styled(failure, theme.failure())));
     }
@@ -1994,6 +2014,7 @@ pub(crate) fn simulate_explore_first_frame(
         tree,
         &visible,
         selected_index,
+        &std::collections::BTreeMap::new(),
         rtt_config,
         &theme,
     );
@@ -2036,7 +2057,13 @@ pub(crate) fn simulate_explore_first_frame(
         if let Some(hop) = tree.hop_at(&node.path) {
             let _ = hop_tree_line("", "  ", hop, &tree.qname, &theme);
         }
-        let _ = detail_content(tree, visible.get(selected_index), rtt_config, &theme);
+        let _ = detail_content(
+            tree,
+            visible.get(selected_index),
+            &std::collections::BTreeMap::new(),
+            rtt_config,
+            &theme,
+        );
     }
 }
 
@@ -2393,6 +2420,45 @@ mod tests {
         .expect("row");
         let row_text: String = row.spans.iter().map(|span| span.content.as_ref()).collect();
         assert!(row_text.contains("8ms"));
+    }
+
+    #[test]
+    fn browse_detail_shows_icmp_from_session_targets() {
+        use dns_resolve::{IcmpMethod, IcmpSnapshot};
+        use std::net::IpAddr;
+
+        use crate::session::TargetEnrichments;
+
+        let tree = fork_explore_tree();
+        let visible = tree.visible_nodes(&tree.default_expanded_paths());
+        let mut document = test_document(&tree);
+        document.targets.insert(
+            "192.0.2.10".parse::<IpAddr>().expect("ip"),
+            TargetEnrichments {
+                icmp: Some(IcmpSnapshot {
+                    method: IcmpMethod::Datagram,
+                    samples: 1,
+                    min_ms: 7,
+                    avg_ms: 8,
+                    max_ms: 9,
+                    probed_at: "2026-09-06T00:00:00Z".into(),
+                }),
+                ..Default::default()
+            },
+        );
+        let lines = detail_content(
+            &tree,
+            visible.get(1),
+            &document.targets,
+            RttBarConfig::default(),
+            &Theme::from_env(),
+        );
+        let text: String = lines
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+            .collect();
+        assert!(text.contains("icmp:"));
+        assert!(text.contains("8 ms (datagram)"));
     }
 
     #[test]
