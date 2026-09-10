@@ -41,8 +41,8 @@ pub struct UiSymbols {
 const ASCII: UiSymbols = UiSymbols {
     cache: "*",
     live: "o",
-    tree_expand: "+",
-    tree_collapse: "-",
+    tree_expand: "v ",
+    tree_collapse: "> ",
     branch_tee: "|-- ",
     branch_end: "`-- ",
     branch_pipe: "|  ",

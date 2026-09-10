@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
@@ -10,8 +11,8 @@ use crate::config::RttBarConfig;
 use crate::session::TargetEnrichments;
 
 use super::hop_identity::{
-    MAX_IDENTITY_COLUMN_WIDTH, MIN_IDENTITY_COLUMN_WIDTH, hop_identity_column_spans,
-    hop_identity_display_width,
+    MAX_IDENTITY_COLUMN_WIDTH, MIN_IDENTITY_COLUMN_WIDTH, hop_identity_display_width,
+    hop_identity_spans,
 };
 use super::path_summary::icmp_rtt_from_targets;
 use super::rtt_bar::rtt_bar_spans;
@@ -20,8 +21,8 @@ use super::tree::{ExploreTree, VisibleNode};
 
 #[derive(Debug, Clone, Copy)]
 pub struct CompareColumns {
-    pub prefix_width: usize,
-    pub identity_width: usize,
+    /// Indent + tree marker + identity, left-aligned; padded on the right.
+    pub tree_column_width: usize,
     pub rcode_width: usize,
     pub rtt_width: usize,
     pub rtt_bar_width: usize,
@@ -36,19 +37,23 @@ impl CompareColumns {
         tree: &ExploreTree,
         visible: &[VisibleNode],
         rtt_config: RttBarConfig,
+        theme: &Theme,
     ) -> Self {
-        let max_depth = visible.iter().map(|node| node.depth).max().unwrap_or(0);
-        let prefix_width = max_depth * Self::INDENT_WIDTH + 2;
         let rtt_bar_width = rtt_config.normalized().max_width as usize;
 
-        let mut identity_width = 8;
+        let mut tree_column_width = display_width("identity");
         let mut rcode_width = Self::MIN_RCODE_WIDTH;
 
         for node in visible {
             let Some(hop) = tree.hop_at(&node.path) else {
                 continue;
             };
-            identity_width = identity_width.max(hop_identity_display_width(hop, None));
+            let marker = compare_tree_marker(node, tree, theme);
+            let identity_width = hop_identity_display_width(hop, Some(MAX_IDENTITY_COLUMN_WIDTH))
+                .min(MAX_IDENTITY_COLUMN_WIDTH);
+            let row_tree_width =
+                node.depth * Self::INDENT_WIDTH + display_width(marker.as_str()) + identity_width;
+            tree_column_width = tree_column_width.max(row_tree_width);
             if matches!(hop.outcome, HopOutcome::Failed { .. }) {
                 rcode_width = rcode_width.max(display_width("FAILED"));
             } else {
@@ -57,9 +62,7 @@ impl CompareColumns {
         }
 
         Self {
-            prefix_width,
-            identity_width: identity_width
-                .clamp(MIN_IDENTITY_COLUMN_WIDTH, MAX_IDENTITY_COLUMN_WIDTH),
+            tree_column_width: tree_column_width.max(MIN_IDENTITY_COLUMN_WIDTH),
             rcode_width,
             rtt_width: 7,
             rtt_bar_width,
@@ -69,9 +72,8 @@ impl CompareColumns {
 
     pub fn header(self, theme: &Theme) -> Line<'static> {
         Line::from(vec![
-            Span::raw(format_prefix(0, "", self.prefix_width)),
             Span::styled(
-                pad_right_display("identity", self.identity_width),
+                pad_right_display("identity", self.tree_column_width),
                 theme.label(),
             ),
             Span::raw("  "),
@@ -102,19 +104,6 @@ pub fn compare_row(
     theme: &Theme,
 ) -> Option<Line<'static>> {
     let hop = tree.hop_at(&node.path)?;
-    let marker = if selected {
-        ">"
-    } else if node.expandable && children_count(node, tree) >= 2 {
-        "•"
-    } else if node.expandable {
-        if node.expanded {
-            theme.symbols.tree_expand
-        } else {
-            theme.symbols.tree_collapse
-        }
-    } else {
-        " "
-    };
 
     let failed = matches!(hop.outcome, HopOutcome::Failed { .. });
     let row_style = if selected {
@@ -140,16 +129,7 @@ pub fn compare_row(
         columns.icmp_width,
     );
 
-    let mut spans = vec![Span::styled(
-        format_prefix(node.depth, marker, columns.prefix_width),
-        row_style,
-    )];
-    spans.extend(hop_identity_column_spans(
-        hop,
-        theme,
-        columns.identity_width,
-        row_style,
-    ));
+    let mut spans = compare_tree_spans(node, hop, tree, columns, theme, row_style);
     spans.extend([
         Span::raw("  "),
         Span::styled(
@@ -176,20 +156,56 @@ pub fn compare_row(
     Some(Line::from(spans))
 }
 
+fn compare_tree_spans(
+    node: &VisibleNode,
+    hop: &dns_resolve::TraceHop,
+    tree: &ExploreTree,
+    columns: CompareColumns,
+    theme: &Theme,
+    row_style: Style,
+) -> Vec<Span<'static>> {
+    let indent = "  ".repeat(node.depth);
+    let marker = compare_tree_marker(node, tree, theme);
+    let mut spans = vec![Span::styled(format!("{indent}{marker}"), row_style)];
+    spans.extend(hop_identity_spans(
+        hop,
+        theme,
+        Some(MAX_IDENTITY_COLUMN_WIDTH),
+        row_style,
+    ));
+    let rendered_width: usize = spans
+        .iter()
+        .map(|span| display_width(span.content.as_ref()))
+        .sum();
+    if rendered_width < columns.tree_column_width {
+        spans.push(Span::raw(
+            " ".repeat(columns.tree_column_width - rendered_width),
+        ));
+    }
+    spans
+}
+
+/// Expand/collapse marker for all expandable nodes; forks also get a branch dot.
+pub fn compare_tree_marker(node: &VisibleNode, tree: &ExploreTree, theme: &Theme) -> String {
+    if !node.expandable {
+        return "  ".to_string();
+    }
+    let expand = if node.expanded {
+        theme.symbols.tree_expand
+    } else {
+        theme.symbols.tree_collapse
+    };
+    if children_count(node, tree) >= 2 {
+        format!("{expand}•")
+    } else {
+        expand.to_string()
+    }
+}
+
 fn children_count(node: &VisibleNode, tree: &ExploreTree) -> usize {
     tree.node_at(&node.path)
         .map(|trace_node| trace_node.children.len())
         .unwrap_or(0)
-}
-
-fn format_prefix(depth: usize, marker: &str, prefix_width: usize) -> String {
-    let indent = "  ".repeat(depth);
-    let content = format!("{indent}{marker}");
-    let content_width = display_width(content.as_str());
-    if content_width >= prefix_width {
-        return content;
-    }
-    format!("{}{}", content, " ".repeat(prefix_width - content_width))
 }
 
 fn display_width(text: &str) -> usize {
@@ -220,18 +236,6 @@ fn display_index(text: &str, needle: &str) -> usize {
         .find(needle)
         .unwrap_or_else(|| panic!("missing {needle}"));
     display_width(&text[..byte])
-}
-
-#[cfg(test)]
-fn column_starts(line: &Line) -> Vec<usize> {
-    let mut starts = Vec::new();
-    let mut offset = 0;
-    for span in &line.spans {
-        starts.push(offset);
-        offset += display_width(span.content.as_ref());
-    }
-    starts.push(offset);
-    starts
 }
 
 #[cfg(test)]
@@ -282,9 +286,9 @@ mod tests {
         let tree = super::super::tree::build_explore_tree(&trace);
         let visible = tree.visible_nodes(&tree.default_expanded_paths());
         let rtt_config = RttBarConfig::default();
-        let columns = CompareColumns::for_visible(&tree, &visible, rtt_config);
-        let scale_max_rtt_ms = max_rtt_ms_for_visible(&tree, &visible);
         let theme = Theme::from_env();
+        let columns = CompareColumns::for_visible(&tree, &visible, rtt_config, &theme);
+        let scale_max_rtt_ms = max_rtt_ms_for_visible(&tree, &visible);
         let targets = BTreeMap::new();
         let row = compare_row(
             &visible[1],
@@ -310,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn header_and_rows_align_columns_at_different_depths() {
+    fn identity_indents_with_tree_depth() {
         let trace = build_linear_tree(
             vec![
                 hop(".", "198.41.0.4", 96),
@@ -327,18 +331,10 @@ mod tests {
         let expanded = tree.default_expanded_paths();
         let visible = tree.visible_nodes(&expanded);
         let rtt_config = RttBarConfig::default();
-        let columns = CompareColumns::for_visible(&tree, &visible, rtt_config);
-        let scale_max_rtt_ms = max_rtt_ms_for_visible(&tree, &visible);
         let theme = Theme::from_env();
+        let columns = CompareColumns::for_visible(&tree, &visible, rtt_config, &theme);
+        let scale_max_rtt_ms = max_rtt_ms_for_visible(&tree, &visible);
         let targets = BTreeMap::new();
-        let header = columns.header(&theme);
-        let header_text: String = header
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        assert!(header_text.contains("identity"));
-        assert!(header_text.contains("rtt latency"));
         let shallow = compare_row(
             &visible[0],
             &tree,
@@ -354,7 +350,7 @@ mod tests {
         let deep = compare_row(
             &visible[visible.len() - 1],
             &tree,
-            true,
+            false,
             false,
             columns,
             &targets,
@@ -363,13 +359,6 @@ mod tests {
             &theme,
         )
         .expect("row");
-
-        let header_starts = column_starts(&header);
-        let shallow_starts = column_starts(&shallow);
-        let deep_starts = column_starts(&deep);
-
-        assert_eq!(header_starts[1], shallow_starts[1]);
-        assert_eq!(header_starts[1], deep_starts[1]);
 
         let shallow_text: String = shallow
             .spans
@@ -381,13 +370,56 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
-        let identity_offset = columns.prefix_width;
-        assert_eq!(display_index(&shallow_text, "["), identity_offset);
-        assert_eq!(display_index(&deep_text, "["), identity_offset);
 
-        let rcode_offset = columns.prefix_width + columns.identity_width + 2;
+        assert!(
+            display_index(&deep_text, "[") > display_index(&shallow_text, "["),
+            "deeper hops should indent identity further right"
+        );
+
+        let rcode_offset = columns.tree_column_width + 2;
         assert_eq!(display_index(&shallow_text, "NOERROR"), rcode_offset);
         assert_eq!(display_index(&deep_text, "NOERROR"), rcode_offset);
+    }
+
+    #[test]
+    fn fork_nodes_show_expand_marker_and_branch_dot() {
+        let fork_tree = super::super::tree::build_explore_tree(&dns_resolve::TraceTree {
+            request: TraceTreeRequest {
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                started_at: "2026-08-25T00:00:00Z".into(),
+            },
+            root: dns_resolve::TraceNode {
+                hop: hop(".", "1.1.1.1", 10),
+                origin: dns_resolve::NodeOrigin::Trace,
+                children: vec![
+                    dns_resolve::TraceNode {
+                        hop: hop("com.", "192.0.2.10", 10),
+                        origin: dns_resolve::NodeOrigin::Trace,
+                        children: vec![],
+                    },
+                    dns_resolve::TraceNode {
+                        hop: hop("com.", "192.0.2.11", 20),
+                        origin: dns_resolve::NodeOrigin::Trace,
+                        children: vec![],
+                    },
+                ],
+            },
+            budget_truncated: false,
+        });
+        let visible = fork_tree.visible_nodes(&fork_tree.default_expanded_paths());
+        let root = visible.first().expect("root");
+        let theme = Theme::from_env();
+        let marker = compare_tree_marker(root, &fork_tree, &theme);
+        assert!(
+            marker.contains('•'),
+            "fork rows should include a branch marker"
+        );
+        assert!(
+            marker.contains(theme.symbols.tree_expand.trim())
+                || marker.contains(theme.symbols.tree_collapse.trim()),
+            "fork rows should show expand/collapse state"
+        );
     }
 
     #[test]
@@ -403,7 +435,8 @@ mod tests {
         let tree = super::super::tree::build_explore_tree(&trace);
         let visible = tree.visible_nodes(&[]);
         let rtt_config = RttBarConfig::default();
-        let columns = CompareColumns::for_visible(&tree, &visible, rtt_config);
+        let theme = Theme::from_env();
+        let columns = CompareColumns::for_visible(&tree, &visible, rtt_config, &theme);
         let mut targets = BTreeMap::new();
         targets.insert(
             "1.1.1.1".parse::<IpAddr>().expect("ip"),
@@ -428,7 +461,7 @@ mod tests {
             &targets,
             rtt_config,
             max_rtt_ms_for_visible(&tree, &visible),
-            &Theme::from_env(),
+            &theme,
         )
         .expect("row");
         let joined: String = row.spans.iter().map(|span| span.content.as_ref()).collect();
@@ -452,7 +485,8 @@ mod tests {
         let tree = super::super::tree::build_explore_tree(&trace);
         let visible = tree.visible_nodes(&[]);
         let rtt_config = RttBarConfig::default();
-        let columns = CompareColumns::for_visible(&tree, &visible, rtt_config);
+        let theme = Theme::from_env();
+        let columns = CompareColumns::for_visible(&tree, &visible, rtt_config, &theme);
         let mut targets = BTreeMap::new();
         targets.insert(
             "1.1.1.1".parse::<IpAddr>().expect("ip"),
@@ -477,7 +511,7 @@ mod tests {
             &targets,
             RttBarConfig::default(),
             max_rtt_ms_for_visible(&tree, &visible),
-            &Theme::from_env(),
+            &theme,
         )
         .expect("row");
         let text = row
@@ -501,7 +535,8 @@ mod tests {
         let tree = super::super::tree::build_explore_tree(&trace);
         let visible = tree.visible_nodes(&[]);
         let rtt_config = RttBarConfig::default();
-        let columns = CompareColumns::for_visible(&tree, &visible, rtt_config);
+        let theme = Theme::from_env();
+        let columns = CompareColumns::for_visible(&tree, &visible, rtt_config, &theme);
         let scale_max_rtt_ms = max_rtt_ms_for_visible(&tree, &visible);
         let row = compare_row(
             &visible[0],
@@ -512,7 +547,7 @@ mod tests {
             &BTreeMap::new(),
             rtt_config,
             scale_max_rtt_ms,
-            &Theme::from_env(),
+            &theme,
         )
         .expect("row");
         let text = row
