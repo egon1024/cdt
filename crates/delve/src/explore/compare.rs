@@ -1,11 +1,16 @@
+use std::collections::BTreeMap;
+use std::net::IpAddr;
+
 use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use dns_resolve::HopOutcome;
 
 use crate::config::RttBarConfig;
+use crate::session::TargetEnrichments;
 
 use super::detail::effective_server_name;
+use super::path_summary::icmp_rtt_from_targets;
 use super::rtt_bar::rtt_bar_spans;
 use super::theme::Theme;
 use super::tree::{ExploreTree, VisibleNode};
@@ -18,6 +23,7 @@ pub struct CompareColumns {
     pub server_name_width: usize,
     pub rcode_width: usize,
     pub rtt_width: usize,
+    pub icmp_width: usize,
 }
 
 impl CompareColumns {
@@ -58,6 +64,7 @@ impl CompareColumns {
             server_name_width: server_name_width.min(Self::MAX_SERVER_NAME_WIDTH),
             rcode_width,
             rtt_width: 7,
+            icmp_width: 6,
         }
     }
 
@@ -77,6 +84,8 @@ impl CompareColumns {
             Span::raw("  "),
             Span::styled(pad_left_display("rtt", self.rtt_width), theme.label()),
             Span::raw("  "),
+            Span::styled(pad_left_display("icmp", self.icmp_width), theme.label()),
+            Span::raw("  "),
             Span::styled("latency", theme.label()),
         ])
     }
@@ -89,6 +98,7 @@ pub fn compare_row(
     selected: bool,
     path_highlighted: bool,
     columns: CompareColumns,
+    targets: &BTreeMap<IpAddr, TargetEnrichments>,
     rtt_config: RttBarConfig,
     scale_max_rtt_ms: u32,
     theme: &Theme,
@@ -128,6 +138,12 @@ pub fn compare_row(
         pad_left_display(&hop.rcode, columns.rcode_width)
     };
     let rtt = pad_left_display(format!("{}ms", hop.rtt_ms), columns.rtt_width);
+    let icmp = pad_left_display(
+        icmp_rtt_from_targets(targets, &hop.server)
+            .map(|ms| format!("{ms}ms"))
+            .unwrap_or_else(|| "n/a".to_string()),
+        columns.icmp_width,
+    );
 
     let mut spans = vec![
         Span::styled(
@@ -153,6 +169,8 @@ pub fn compare_row(
         ),
         Span::raw("  "),
         Span::styled(rtt, row_style),
+        Span::raw("  "),
+        Span::styled(icmp, row_style),
         Span::raw("  "),
     ];
     spans.extend(rtt_bar_spans(
@@ -232,7 +250,11 @@ mod tests {
     use super::*;
     use crate::config::RttBarConfig;
     use crate::explore::rtt_bar::max_rtt_ms_for_visible;
-    use dns_resolve::{HopOutcome, TraceHop, TraceTreeRequest, build_linear_tree};
+    use dns_resolve::{
+        HopOutcome, IcmpMethod, IcmpSnapshot, TraceHop, TraceTreeRequest, build_linear_tree,
+    };
+    use std::collections::BTreeMap;
+    use std::net::IpAddr;
 
     fn hop(zone: &str, server: &str, rtt_ms: u64) -> TraceHop {
         TraceHop {
@@ -273,12 +295,14 @@ mod tests {
         let columns = CompareColumns::for_visible(&tree, &visible);
         let scale_max_rtt_ms = max_rtt_ms_for_visible(&tree, &visible);
         let theme = Theme::from_env();
+        let targets = BTreeMap::new();
         let row = compare_row(
             &visible[1],
             &tree,
             false,
             false,
             columns,
+            &targets,
             RttBarConfig::default(),
             scale_max_rtt_ms,
             &theme,
@@ -314,6 +338,7 @@ mod tests {
         let columns = CompareColumns::for_visible(&tree, &visible);
         let scale_max_rtt_ms = max_rtt_ms_for_visible(&tree, &visible);
         let theme = Theme::from_env();
+        let targets = BTreeMap::new();
         let header = columns.header(&theme);
         let shallow = compare_row(
             &visible[0],
@@ -321,6 +346,7 @@ mod tests {
             false,
             false,
             columns,
+            &targets,
             RttBarConfig::default(),
             scale_max_rtt_ms,
             &theme,
@@ -332,6 +358,7 @@ mod tests {
             true,
             false,
             columns,
+            &targets,
             RttBarConfig::default(),
             scale_max_rtt_ms,
             &theme,
@@ -352,6 +379,56 @@ mod tests {
         assert_eq!(header_starts[7], deep_starts[7]);
         assert_eq!(header_starts[9], shallow_starts[9]);
         assert_eq!(header_starts[9], deep_starts[9]);
+        assert_eq!(header_starts[11], shallow_starts[11]);
+        assert_eq!(header_starts[11], deep_starts[11]);
+    }
+
+    #[test]
+    fn icmp_column_reads_session_targets() {
+        let trace = build_linear_tree(
+            vec![hop(".", "1.1.1.1", 12)],
+            TraceTreeRequest {
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                started_at: "2026-08-25T00:00:00Z".into(),
+            },
+        );
+        let tree = super::super::tree::build_explore_tree(&trace);
+        let visible = tree.visible_nodes(&[]);
+        let columns = CompareColumns::for_visible(&tree, &visible);
+        let mut targets = BTreeMap::new();
+        targets.insert(
+            "1.1.1.1".parse::<IpAddr>().expect("ip"),
+            crate::session::TargetEnrichments {
+                icmp: Some(IcmpSnapshot {
+                    method: IcmpMethod::Datagram,
+                    samples: 1,
+                    min_ms: 4,
+                    avg_ms: 5,
+                    max_ms: 6,
+                    probed_at: "2026-09-06T00:00:00Z".into(),
+                }),
+                ..Default::default()
+            },
+        );
+        let row = compare_row(
+            &visible[0],
+            &tree,
+            false,
+            false,
+            columns,
+            &targets,
+            RttBarConfig::default(),
+            max_rtt_ms_for_visible(&tree, &visible),
+            &Theme::from_env(),
+        )
+        .expect("row");
+        let text = row
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(text.contains("5ms"));
     }
 
     #[test]
@@ -374,6 +451,7 @@ mod tests {
             false,
             false,
             columns,
+            &BTreeMap::new(),
             RttBarConfig::default(),
             scale_max_rtt_ms,
             &Theme::from_env(),
