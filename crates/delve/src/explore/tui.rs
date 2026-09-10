@@ -27,7 +27,6 @@ use crate::runtime::Runtime;
 use crate::session::SessionDocument;
 
 use super::compare::{CompareColumns, compare_row};
-use super::compare_screen::{CompareScreenModel, render_fork_comparison};
 use super::detail::hop_failure_line;
 use super::dig_view::hop_detail_styled;
 use super::pane_split::{AxisScrollHints, VerticalPaneSplit};
@@ -925,31 +924,17 @@ fn screen_indicator(view: &ViewStateController, theme: &Theme) -> Line<'static> 
     Line::from(vec![browse, Span::raw("  "), compare])
 }
 
-fn fork_compare_model(
-    document: &SessionDocument,
-    tree: &ExploreTree,
-    selection: &NodePath,
-    row: usize,
-) -> Option<CompareScreenModel> {
-    CompareScreenModel::from_tree_with_targets(
-        tree,
-        selection,
-        &document.targets,
-        dns_resolve::comparison_icmp_prober(),
-    )
-    .map(|model| model.with_row(row))
-}
-
 fn activate_compare(
     view: &mut ViewStateController,
     tree: &ExploreTree,
-    document: &SessionDocument,
+    _document: &SessionDocument,
 ) {
     view.active_screen = ActiveScreen::Compare;
-    view.compare_fork = tree.compare_fork(&view.selection).map(|fork| fork.at);
-    view.compare_row = fork_compare_model(document, tree, &view.selection, 0)
-        .map(|model| model.row)
-        .unwrap_or_else(|| view.selected_visible_index(tree));
+    view.compare_fork = tree
+        .compare_fork(&view.selection)
+        .map(|fork| fork.at)
+        .or_else(|| tree.nearest_fork());
+    view.compare_row = view.selected_visible_index(tree);
     view.mark_dirty();
 }
 
@@ -1167,7 +1152,7 @@ fn handle_browse_keys(
 #[allow(clippy::too_many_arguments)]
 fn handle_compare_keys(
     key: event::KeyEvent,
-    document: &SessionDocument,
+    _document: &SessionDocument,
     view: &mut ViewStateController,
     tree: &ExploreTree,
     visible: &[VisibleNode],
@@ -1175,44 +1160,26 @@ fn handle_compare_keys(
     scroll_limits: CompareScrollLimits,
     screen_notice: &mut Option<ScreenNotice>,
 ) {
-    if let Some(mut model) = fork_compare_model(document, tree, &view.selection, view.compare_row) {
-        match key.code {
-            KeyCode::Down | KeyCode::Char('j') if model.row + 1 < model.rows().len() => {
-                model.move_row(1);
-                view.compare_row = model.row;
-                if let Some(path) = model.selected_path() {
-                    view.selection = path.clone();
-                }
-                sync_compare_scroll(compare_scroll, model.row, model.rows().len(), scroll_limits);
-                return;
-            }
-            KeyCode::Up | KeyCode::Char('k') if model.row > 0 => {
-                model.move_row(-1);
-                view.compare_row = model.row;
-                if let Some(path) = model.selected_path() {
-                    view.selection = path.clone();
-                }
-                sync_compare_scroll(compare_scroll, model.row, model.rows().len(), scroll_limits);
-                return;
-            }
-            _ => {}
-        }
-    }
-
     let selected_index = view.selected_visible_index(tree);
     match key.code {
         KeyCode::Down | KeyCode::Char('j') if selected_index + 1 < visible.len() => {
             let new_index = selected_index + 1;
             view.set_selection_visible_index(tree, new_index);
             view.compare_row = new_index;
-            view.compare_fork = tree.compare_fork(&view.selection).map(|fork| fork.at);
+            view.compare_fork = tree
+                .compare_fork(&view.selection)
+                .map(|fork| fork.at)
+                .or_else(|| tree.nearest_fork());
             sync_compare_scroll(compare_scroll, new_index, visible.len(), scroll_limits);
         }
         KeyCode::Up | KeyCode::Char('k') => {
             let new_index = selected_index.saturating_sub(1);
             view.set_selection_visible_index(tree, new_index);
             view.compare_row = new_index;
-            view.compare_fork = tree.compare_fork(&view.selection).map(|fork| fork.at);
+            view.compare_fork = tree
+                .compare_fork(&view.selection)
+                .map(|fork| fork.at)
+                .or_else(|| tree.nearest_fork());
             sync_compare_scroll(compare_scroll, new_index, visible.len(), scroll_limits);
         }
         KeyCode::Enter | KeyCode::Char(' ') => {
@@ -1307,13 +1274,8 @@ fn sync_compare_scroll_for_view(
         tree,
         visible.len(),
     );
-    let row = fork_compare_model(document, tree, &view.selection, view.compare_row)
-        .map(|model| model.row)
-        .unwrap_or_else(|| view.selected_visible_index(tree));
-    let row_count = fork_compare_model(document, tree, &view.selection, view.compare_row)
-        .map(|model| model.rows().len())
-        .unwrap_or(visible.len());
-    sync_compare_scroll(scroll, row, row_count, limits);
+    let row = view.selected_visible_index(tree);
+    sync_compare_scroll(scroll, row, visible.len(), limits);
 }
 
 fn compare_scroll_limits(
@@ -1345,19 +1307,11 @@ struct CompareLayout {
 }
 
 fn compare_layout(
-    document: &SessionDocument,
+    _document: &SessionDocument,
     view: &ViewStateController,
     tree: &ExploreTree,
     visible_rows: usize,
 ) -> CompareLayout {
-    if let Some(model) = fork_compare_model(document, tree, &view.selection, view.compare_row) {
-        let rendered = render_fork_comparison(&model, RttBarConfig::default(), &Theme::from_env());
-        return CompareLayout {
-            total_lines: rendered.lines.len(),
-            first_row_line: rendered.header_lines,
-        };
-    }
-
     let timing = build_compare_timing(tree, view.compare_fork.as_ref());
     let mut before = whole_tree_summary_lines(&timing, &Theme::from_env()).len();
     if view.show_fork_full_path_panel {
@@ -1405,33 +1359,6 @@ fn render_compare(
     rtt_config: RttBarConfig,
     theme: &Theme,
 ) {
-    if let Some(model) = fork_compare_model(document, tree, &view.selection, view.compare_row) {
-        let rendered = render_fork_comparison(&model, rtt_config, theme);
-        let inner = Block::default()
-            .title("Compare — fork paths")
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(theme.border_focused())
-            .inner(area);
-        let max_scroll = max_vertical_scroll(rendered.lines.len(), inner.height);
-        let clamped_scroll = compare_scroll.min(max_scroll);
-        let scroll_hints = AxisScrollHints::vertical(clamped_scroll, max_scroll).format_vertical();
-        let title = format!("Compare — sibling paths at fork; j/k move rows{scroll_hints}");
-        let widget = Paragraph::new(rendered.lines)
-            .block(
-                Block::default()
-                    .title(title)
-                    .title_bottom(footer_line(theme).centered())
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(theme.border_focused()),
-            )
-            .wrap(Wrap { trim: false })
-            .scroll((clamped_scroll, 0));
-        frame.render_widget(widget, area);
-        return;
-    }
-
     let columns = CompareColumns::for_visible(tree, visible);
     let selected_index = view.selected_visible_index(tree);
     let scale_max_rtt_ms = max_rtt_ms_for_visible(tree, visible);
@@ -1453,6 +1380,7 @@ fn render_compare(
             index == selected_index,
             path_highlighted,
             columns,
+            &document.targets,
             rtt_config,
             scale_max_rtt_ms,
             theme,
@@ -2054,6 +1982,14 @@ pub(crate) fn simulate_explore_first_frame(
     let _tree_scroll_x = 0u16;
 
     if view.active_screen == ActiveScreen::Compare {
+        let document = SessionDocument::new(
+            "01SIM".into(),
+            crate::trace_request::TraceRequest::from_options(&crate::dig_options::TraceOptions {
+                qname: "example.com".into(),
+                ..Default::default()
+            }),
+            tree.trace().clone(),
+        );
         let compare_visible = tree.visible_nodes(&view.expanded_paths);
         let columns = CompareColumns::for_visible(tree, &compare_visible);
         let scale_max_rtt_ms = max_rtt_ms_for_visible(tree, &compare_visible);
@@ -2067,19 +2003,12 @@ pub(crate) fn simulate_explore_first_frame(
                 index == selected_index,
                 false,
                 columns,
+                &document.targets,
                 rtt_config,
                 scale_max_rtt_ms,
                 &theme,
             );
         }
-        let document = SessionDocument::new(
-            "01SIM".into(),
-            crate::trace_request::TraceRequest::from_options(&crate::dig_options::TraceOptions {
-                qname: "example.com".into(),
-                ..Default::default()
-            }),
-            tree.trace().clone(),
-        );
         let _compare_limits =
             compare_scroll_limits(terminal_area, &document, view, tree, compare_visible.len());
     }
@@ -2339,7 +2268,7 @@ mod tests {
     }
 
     #[test]
-    fn compare_j_moves_fork_row() {
+    fn compare_j_moves_visible_row() {
         let tree = fork_explore_tree();
         let document = test_document(&tree);
         let mut view = ViewStateController::default_for_tree(&tree);
@@ -2363,11 +2292,11 @@ mod tests {
             &mut None,
         );
         assert_eq!(view.compare_row, 1);
-        assert_eq!(view.selection.path, vec![1]);
+        assert_eq!(view.selection.path, vec![0]);
     }
 
     #[test]
-    fn compare_fork_table_includes_icmp_from_session_targets() {
+    fn compare_per_hop_shows_icmp_from_session_targets() {
         use dns_resolve::{IcmpMethod, IcmpSnapshot};
         use std::net::IpAddr;
 
@@ -2389,38 +2318,34 @@ mod tests {
                 ..Default::default()
             },
         );
-        document.targets.insert(
-            "192.0.2.11".parse::<IpAddr>().expect("ip"),
-            TargetEnrichments {
-                icmp: Some(IcmpSnapshot {
-                    method: IcmpMethod::Datagram,
-                    samples: 1,
-                    min_ms: 17,
-                    avg_ms: 18,
-                    max_ms: 19,
-                    probed_at: "2026-09-06T00:00:00Z".into(),
-                }),
-                ..Default::default()
-            },
-        );
-        let model = fork_compare_model(&document, &tree, &NodePath::root(0), 0).expect("fork");
-        let rendered = render_fork_comparison(&model, RttBarConfig::default(), &Theme::from_env());
-        let text: String = rendered
-            .lines
+        let visible = tree.visible_nodes(&tree.default_expanded_paths());
+        let columns = CompareColumns::for_visible(&tree, &visible);
+        let header = columns.header(&Theme::from_env());
+        let header_text: String = header
+            .spans
             .iter()
-            .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+            .map(|span| span.content.as_ref())
             .collect();
-        assert!(text.contains("icmp"));
-        assert!(text.contains("8ms"));
-        assert!(text.contains("18ms"));
+        assert!(header_text.contains("icmp"));
+        let row = compare_row(
+            &visible[1],
+            &tree,
+            false,
+            false,
+            columns,
+            &document.targets,
+            RttBarConfig::default(),
+            max_rtt_ms_for_visible(&tree, &visible),
+            &Theme::from_env(),
+        )
+        .expect("row");
+        let row_text: String = row.spans.iter().map(|span| span.content.as_ref()).collect();
+        assert!(row_text.contains("8ms"));
     }
 
     #[test]
-    fn compare_fork_table_shows_icmp_when_fork_is_below_root() {
-        use dns_resolve::{HopOutcome, IcmpMethod, IcmpSnapshot, NodeOrigin, TraceNode, TraceTree};
-        use std::net::IpAddr;
-
-        use crate::session::TargetEnrichments;
+    fn compare_shows_all_hop_levels_for_deep_fork() {
+        use dns_resolve::{HopOutcome, NodeOrigin, TraceNode, TraceTree};
 
         let tree = super::super::tree::build_explore_tree(&TraceTree {
             request: dns_resolve::TraceTreeRequest {
@@ -2459,29 +2384,48 @@ mod tests {
             },
             budget_truncated: false,
         });
-        let mut document = test_document(&tree);
-        document.targets.insert(
-            "193.47.99.5".parse::<IpAddr>().expect("ip"),
-            TargetEnrichments {
-                icmp: Some(IcmpSnapshot {
-                    method: IcmpMethod::Datagram,
-                    samples: 1,
-                    min_ms: 5,
-                    avg_ms: 6,
-                    max_ms: 7,
-                    probed_at: "2026-09-06T00:00:00Z".into(),
-                }),
-                ..Default::default()
-            },
-        );
-        let model = fork_compare_model(&document, &tree, &NodePath::root(0), 0).expect("fork");
-        let rendered = render_fork_comparison(&model, RttBarConfig::default(), &Theme::from_env());
-        let text: String = rendered
-            .lines
+        let document = test_document(&tree);
+        let visible = tree.visible_nodes(&tree.default_expanded_paths());
+        assert!(visible.len() >= 3, "expected root, org, and terminal hops");
+        let columns = CompareColumns::for_visible(&tree, &visible);
+        let scale = max_rtt_ms_for_visible(&tree, &visible);
+        let theme = Theme::from_env();
+        let root_row = compare_row(
+            &visible[0],
+            &tree,
+            false,
+            false,
+            columns,
+            &document.targets,
+            RttBarConfig::default(),
+            scale,
+            &theme,
+        )
+        .expect("root row");
+        let org_row = compare_row(
+            &visible[1],
+            &tree,
+            false,
+            false,
+            columns,
+            &document.targets,
+            RttBarConfig::default(),
+            scale,
+            &theme,
+        )
+        .expect("org row");
+        let root_text: String = root_row
+            .spans
             .iter()
-            .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+            .map(|span| span.content.as_ref())
             .collect();
-        assert!(text.contains("icmp"), "rendered: {text}");
+        let org_text: String = org_row
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(root_text.contains("1.1.1.1") || root_text.contains("."));
+        assert!(org_text.contains("199.249.112.1"));
     }
 
     fn test_document(tree: &ExploreTree) -> SessionDocument {
