@@ -12,13 +12,13 @@ decision.
 
 ## Utilities
 
-User-facing tools ship in the CDT bundle. Each utility has a short guide in
-`docs/`:
+User-facing tools ship in the CDT bundle. Each utility has a guide in `docs/` —
+a hub page at `docs/<tool>.md`, with deeper pages under `docs/<tool>/` when needed:
 
 | Utility | Binary | Documentation |
 |---------|--------|-----------------|
 | Bundle meta | `cdt` | [docs/cdt.md](docs/cdt.md) |
-| Delegation tracer | `delve` | [docs/delve.md](docs/delve.md) |
+| Delegation tracer | `delve` | [docs/delve.md](docs/delve.md) ([concepts](docs/delve/concepts.md), [reference](docs/delve/reference.md), …) |
 
 ```bash
 cargo run -p delve -- trace example.com
@@ -28,7 +28,7 @@ cargo run -p cdt -- version
 ## Workspace layout
 
 - `cdt-manifest.toml` — bundle and utility version manifest
-- `docs/` — per-utility documentation (Markdown)
+- `docs/` — per-utility documentation (Markdown hub + optional sub-guides)
 - `crates/cdt` — `cdt` bundle meta utility
 - `crates/delve` — `delve` CLI binary
 - `crates/dns-core` — shared DNS primitives (wire format, EDNS/EDE/NSID)

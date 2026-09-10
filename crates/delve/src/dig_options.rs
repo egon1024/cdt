@@ -1,58 +1,19 @@
 use std::time::Duration;
 
 use dns_core::parse_record_type;
+use dns_resolve::{AddressFamilyRequest, ExpansionPolicy};
 
-/// Printed after `delve trace --help` usage (options are dig-style, not clap flags).
-pub const TRACE_OPTIONS_HELP: &str = "\
-Query arguments:
-  QNAME                 Name to trace (required unless only showing help)
-  @SERVER               Start from this server (IP address; default: root hints)
+pub use crate::trace_options_help::TRACE_OPTIONS_HELP;
 
-Query type:
-  -t TYPE               Query type (default: A)
-  -qtype TYPE           Alias for -t
-  -TYPE                 Shorthand for -t TYPE (e.g. -NS, -MX)
-  -x                     Reverse lookup: argument is an IP; queries PTR
-
-Address family:
-  -4                     IPv4 only
-  -6                     IPv6 only
-
-Transport and timing:
-  +tcp / +notcp          Use TCP or UDP (default: UDP)
-  +timeout=N             Per-query timeout in seconds (default: 5; min 1)
-  +time=N                Alias for +timeout=N
-  +tries=N               Retries per server (default: 2)
-
-DNS behavior:
-  +dnssec / +nodnssec    Set or clear the DO bit (default: off)
-  +nsid / +nonsid        Request EDNS NSID (default: on)
-  +follow / +nofollow    Follow CNAME/DNAME alias chains (default: off)
-
-Output and sessions:
-  +events / +noevents    Emit NDJSON events on stdout (default: off)
-  +save / +nosave        Persist trace as a session (default: on)
-  +fresh                 Force a live trace; do not reuse a stored session
-
-Response cache:
-  +cache / +nocache      Use the response cache (default: on)
-  +nocache=QNAME         Skip cache for that qname only (repeatable)
-
-Supported types include A, AAAA, CNAME, DNAME, NS, MX, TXT, SOA, DNSSEC types
-(DNSKEY, DS, RRSIG, …), SVCB, HTTPS, TLSA, and TYPEnn for any IANA code.
-
-Output:
-  Progress and hop summaries go to stderr. With +events, structured NDJSON
-  (hop, message, complete) goes to stdout for piping.
-
-Examples:
-  delve trace example.com
-  delve trace example.com +events > trace.ndjson
-  delve trace example.com +tcp -4 +timeout=3 -t NS @1.1.1.1
-  delve trace example.com +follow +fresh
-  delve trace example.com +nocache=example.com
-  delve trace 192.0.2.1 -x
-";
+/// How the operator selected address family (for stderr notice wording).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FamilySource {
+    #[default]
+    Default,
+    Minus4,
+    Minus6,
+    PlusFamily(AddressFamilyRequest),
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TraceOptions {
@@ -61,8 +22,8 @@ pub struct TraceOptions {
     pub qtype: String,
     pub reverse_lookup: bool,
     pub follow_aliases: bool,
-    pub ipv4_only: bool,
-    pub ipv6_only: bool,
+    pub family_request: AddressFamilyRequest,
+    pub family_source: FamilySource,
     pub use_tcp: bool,
     pub timeout: Duration,
     pub retries: u8,
@@ -72,7 +33,10 @@ pub struct TraceOptions {
     pub cache_skip_qnames: Vec<String>,
     pub save_session: bool,
     pub events: bool,
+    pub debug: bool,
     pub fresh: bool,
+    pub expansion: ExpansionPolicy,
+    pub expand_all_force: bool,
 }
 
 impl Default for TraceOptions {
@@ -83,8 +47,8 @@ impl Default for TraceOptions {
             qtype: "A".into(),
             reverse_lookup: false,
             follow_aliases: false,
-            ipv4_only: false,
-            ipv6_only: false,
+            family_request: AddressFamilyRequest::Auto,
+            family_source: FamilySource::Default,
             use_tcp: false,
             timeout: Duration::from_secs(5),
             retries: 2,
@@ -94,7 +58,10 @@ impl Default for TraceOptions {
             cache_skip_qnames: Vec::new(),
             save_session: true,
             events: false,
+            debug: false,
             fresh: false,
+            expansion: ExpansionPolicy::Last,
+            expand_all_force: false,
         }
     }
 }
@@ -126,13 +93,29 @@ pub enum ParseError {
 pub fn parse_trace_args(args: &[String]) -> Result<TraceOptions, ParseError> {
     let mut options = TraceOptions::default();
     let mut qname: Option<String> = None;
+    let mut saw_v4_flag = false;
+    let mut saw_v6_flag = false;
 
     let mut index = 0;
     while index < args.len() {
         let arg = &args[index];
         match arg.as_str() {
-            "-4" => options.ipv4_only = true,
-            "-6" => options.ipv6_only = true,
+            "-4" => {
+                if saw_v6_flag {
+                    return Err(ParseError::AddressFamily);
+                }
+                saw_v4_flag = true;
+                options.family_request = AddressFamilyRequest::V4;
+                options.family_source = FamilySource::Minus4;
+            }
+            "-6" => {
+                if saw_v4_flag {
+                    return Err(ParseError::AddressFamily);
+                }
+                saw_v6_flag = true;
+                options.family_request = AddressFamilyRequest::V6;
+                options.family_source = FamilySource::Minus6;
+            }
             "-x" => {
                 options.reverse_lookup = true;
                 options.qtype = "PTR".into();
@@ -143,7 +126,9 @@ pub fn parse_trace_args(args: &[String]) -> Result<TraceOptions, ParseError> {
             _ if arg.starts_with('@') => {
                 options.server = Some(arg.trim_start_matches('@').to_string());
             }
-            _ if arg.starts_with('+') => apply_query_option(&mut options, arg)?,
+            _ if arg.starts_with('+') => {
+                apply_query_option(&mut options, arg, &mut saw_v4_flag, &mut saw_v6_flag)?
+            }
             _ if arg.starts_with('-') && arg.len() > 1 => {
                 let type_name = &arg[1..];
                 parse_record_type(type_name)
@@ -164,7 +149,7 @@ pub fn parse_trace_args(args: &[String]) -> Result<TraceOptions, ParseError> {
         return Err(ParseError::MissingQname);
     };
 
-    if options.ipv4_only && options.ipv6_only {
+    if saw_v4_flag && saw_v6_flag {
         return Err(ParseError::AddressFamily);
     }
 
@@ -188,7 +173,12 @@ fn next_value(args: &[String], index: &mut usize, option: &str) -> Result<String
     Ok(value)
 }
 
-fn apply_query_option(options: &mut TraceOptions, arg: &str) -> Result<(), ParseError> {
+fn apply_query_option(
+    options: &mut TraceOptions,
+    arg: &str,
+    saw_v4_flag: &mut bool,
+    saw_v6_flag: &mut bool,
+) -> Result<(), ParseError> {
     let body = arg.trim_start_matches('+');
     let (keyword, value, negate) = split_query_option(body);
 
@@ -214,6 +204,7 @@ fn apply_query_option(options: &mut TraceOptions, arg: &str) -> Result<(), Parse
         "nsid" => options.request_nsid = !negate,
         "nonsid" => options.request_nsid = false,
         "events" => options.events = !negate,
+        "debug" => options.debug = !negate,
         "cache" => {
             if negate {
                 if let Some(raw) = value {
@@ -228,6 +219,34 @@ fn apply_query_option(options: &mut TraceOptions, arg: &str) -> Result<(), Parse
         "save" => options.save_session = !negate,
         "fresh" => options.fresh = !negate,
         "follow" => options.follow_aliases = !negate,
+        "family" => {
+            let Some(raw) = value else {
+                return Err(ParseError::MissingValue {
+                    option: "+family".into(),
+                });
+            };
+            let family = parse_family_value(raw)?;
+            if matches!(family, AddressFamilyRequest::V4) && *saw_v6_flag {
+                return Err(ParseError::AddressFamily);
+            }
+            if matches!(family, AddressFamilyRequest::V6) && *saw_v4_flag {
+                return Err(ParseError::AddressFamily);
+            }
+            options.family_request = family;
+            options.family_source = FamilySource::PlusFamily(family);
+        }
+        "expand" => {
+            let Some(raw) = value else {
+                return Err(ParseError::MissingValue {
+                    option: "+expand".into(),
+                });
+            };
+            let (policy, force) = parse_expand_value(raw)?;
+            options.expansion = policy;
+            if force {
+                options.expand_all_force = true;
+            }
+        }
         other => return Err(ParseError::UnknownOption(format!("+{other}"))),
     }
 
@@ -265,6 +284,39 @@ fn parse_tries(raw: &str) -> Result<u8, ParseError> {
     Ok((parsed.max(1)) as u8)
 }
 
+fn parse_family_value(raw: &str) -> Result<AddressFamilyRequest, ParseError> {
+    match raw {
+        "auto" => Ok(AddressFamilyRequest::Auto),
+        "v4" => Ok(AddressFamilyRequest::V4),
+        "v6" => Ok(AddressFamilyRequest::V6),
+        "both" => Ok(AddressFamilyRequest::Both),
+        other => Err(ParseError::InvalidValue {
+            option: "+family".into(),
+            value: other.into(),
+        }),
+    }
+}
+
+fn parse_expand_value(raw: &str) -> Result<(ExpansionPolicy, bool), ParseError> {
+    let (body, force) = if let Some(stem) = raw.strip_suffix("+force") {
+        (stem, true)
+    } else {
+        (raw, false)
+    };
+    let policy = match body {
+        "last" => ExpansionPolicy::Last,
+        "all" => ExpansionPolicy::All,
+        "none" => ExpansionPolicy::None,
+        other => {
+            return Err(ParseError::InvalidValue {
+                option: "+expand".into(),
+                value: other.into(),
+            });
+        }
+    };
+    Ok((policy, force))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,6 +324,7 @@ mod tests {
     #[test]
     fn trace_options_help_documents_key_flags() {
         assert!(TRACE_OPTIONS_HELP.contains("+follow"));
+        assert!(TRACE_OPTIONS_HELP.contains("+debug"));
         assert!(TRACE_OPTIONS_HELP.contains("+events"));
         assert!(TRACE_OPTIONS_HELP.contains("+timeout=N"));
         assert!(TRACE_OPTIONS_HELP.contains("-x"));
@@ -350,6 +403,15 @@ mod tests {
     }
 
     #[test]
+    fn supports_debug_flag() {
+        let options = parse_trace_args(&args(&["example.com", "+debug"])).expect("parse");
+        assert!(options.debug);
+
+        let options = parse_trace_args(&args(&["example.com", "+nodebug"])).expect("parse");
+        assert!(!options.debug);
+    }
+
+    #[test]
     fn supports_fresh_flag() {
         let options = parse_trace_args(&args(&["example.com", "+fresh"])).expect("parse");
         assert!(options.fresh);
@@ -371,5 +433,81 @@ mod tests {
 
         let options = parse_trace_args(&args(&["example.com", "+follow"])).expect("parse");
         assert!(options.follow_aliases);
+    }
+
+    #[test]
+    fn parses_expand_policy_default() {
+        let options = parse_trace_args(&args(&["example.com"])).expect("parse");
+        assert_eq!(options.expansion, ExpansionPolicy::Last);
+        assert!(!options.expand_all_force);
+    }
+
+    #[test]
+    fn parses_expand_values() {
+        let none = parse_trace_args(&args(&["example.com", "+expand=none"])).expect("parse");
+        assert_eq!(none.expansion, ExpansionPolicy::None);
+
+        let all = parse_trace_args(&args(&["example.com", "+expand=all"])).expect("parse");
+        assert_eq!(all.expansion, ExpansionPolicy::All);
+        assert!(!all.expand_all_force);
+
+        let forced = parse_trace_args(&args(&["example.com", "+expand=all+force"])).expect("parse");
+        assert_eq!(forced.expansion, ExpansionPolicy::All);
+        assert!(forced.expand_all_force);
+    }
+
+    #[test]
+    fn rejects_invalid_expand_value() {
+        let error =
+            parse_trace_args(&args(&["example.com", "+expand=wide"])).expect_err("invalid expand");
+        assert!(matches!(error, ParseError::InvalidValue { option, .. } if option == "+expand"));
+    }
+
+    #[test]
+    fn plain_expand_all_is_not_forced() {
+        let options = parse_trace_args(&args(&["example.com", "+expand=all"])).expect("parse");
+        assert!(!options.expand_all_force);
+    }
+
+    #[test]
+    fn default_family_is_auto() {
+        let options = parse_trace_args(&args(&["example.com"])).expect("parse");
+        assert_eq!(options.family_request, AddressFamilyRequest::Auto);
+        assert_eq!(options.family_source, FamilySource::Default);
+    }
+
+    #[test]
+    fn parses_plus_family_values() {
+        let v6 = parse_trace_args(&args(&["example.com", "+family=v6"])).expect("parse");
+        assert_eq!(v6.family_request, AddressFamilyRequest::V6);
+        assert_eq!(
+            v6.family_source,
+            FamilySource::PlusFamily(AddressFamilyRequest::V6)
+        );
+
+        let both = parse_trace_args(&args(&["example.com", "+family=both"])).expect("parse");
+        assert_eq!(both.family_request, AddressFamilyRequest::Both);
+    }
+
+    #[test]
+    fn rejects_conflicting_family_flags() {
+        let error = parse_trace_args(&args(&["example.com", "-4", "-6"])).expect_err("conflict");
+        assert!(matches!(error, ParseError::AddressFamily));
+    }
+
+    #[test]
+    fn rejects_invalid_family_value() {
+        let error = parse_trace_args(&args(&["example.com", "+family=dual"])).expect_err("invalid");
+        assert!(matches!(
+            error,
+            ParseError::InvalidValue { option, .. } if option == "+family"
+        ));
+    }
+
+    #[test]
+    fn trace_options_help_documents_family_flags() {
+        assert!(TRACE_OPTIONS_HELP.contains("+family=auto|v4|v6|both"));
+        assert!(TRACE_OPTIONS_HELP.contains("-4"));
+        assert!(TRACE_OPTIONS_HELP.contains("-6"));
     }
 }
