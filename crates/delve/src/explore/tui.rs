@@ -208,6 +208,9 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
         }
         if branch_finished {
             branch_rx = None;
+            // Background branch work may have written to stderr before warnings were routed
+            // through the TUI notice overlay; clear stale output before the next draw.
+            let _ = terminal.clear();
         }
 
         let mut refresh_finished = false;
@@ -231,16 +234,20 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                 if report.has_unsaved_changes() {
                                     unsaved_refresh = true;
                                 }
+                                let refresh_screen =
+                                    refresh_origin_screen.take().unwrap_or(ActiveScreen::Browse);
                                 if refresh_had_failures(&report) {
                                     set_screen_notice(
                                         &mut screen_notice,
-                                        refresh_origin_screen
-                                            .take()
-                                            .unwrap_or(ActiveScreen::Browse),
+                                        refresh_screen,
                                         format_refresh_failure(&report),
                                     );
-                                } else {
-                                    refresh_origin_screen = None;
+                                } else if let Some(notice) = report
+                                    .icmp
+                                    .as_ref()
+                                    .and_then(|icmp| icmp.capability_notice.clone())
+                                {
+                                    set_screen_notice(&mut screen_notice, refresh_screen, notice);
                                 }
                             }
                             Err(error) => {
@@ -2406,6 +2413,75 @@ mod tests {
         assert!(text.contains("icmp"));
         assert!(text.contains("8ms"));
         assert!(text.contains("18ms"));
+    }
+
+    #[test]
+    fn compare_fork_table_shows_icmp_when_fork_is_below_root() {
+        use dns_resolve::{HopOutcome, IcmpMethod, IcmpSnapshot, NodeOrigin, TraceNode, TraceTree};
+        use std::net::IpAddr;
+
+        use crate::session::TargetEnrichments;
+
+        let tree = super::super::tree::build_explore_tree(&TraceTree {
+            request: dns_resolve::TraceTreeRequest {
+                qname: "tuininga.org.".into(),
+                qtype: "A".into(),
+                started_at: "2026-08-25T00:00:00Z".into(),
+            },
+            root: TraceNode {
+                hop: sample_hop(),
+                origin: NodeOrigin::Trace,
+                children: vec![TraceNode {
+                    hop: dns_resolve::TraceHop {
+                        zone: "org.".into(),
+                        server: "199.249.112.1".into(),
+                        server_name: None,
+                        qname: "tuininga.org.".into(),
+                        qtype: "A".into(),
+                        transport: "udp".into(),
+                        rtt_ms: 8,
+                        rcode: "NOERROR".into(),
+                        nsid: None,
+                        ede_code: None,
+                        ede_text: None,
+                        referral_ns: vec![],
+                        glue: vec![],
+                        response: Default::default(),
+                        from_cache: false,
+                        outcome: HopOutcome::Referral,
+                    },
+                    origin: NodeOrigin::Trace,
+                    children: vec![
+                        tuininga_answered_leaf("193.47.99.5", "ns1", 12),
+                        tuininga_answered_leaf("88.198.229.192", "ns2", 14),
+                    ],
+                }],
+            },
+            budget_truncated: false,
+        });
+        let mut document = test_document(&tree);
+        document.targets.insert(
+            "193.47.99.5".parse::<IpAddr>().expect("ip"),
+            TargetEnrichments {
+                icmp: Some(IcmpSnapshot {
+                    method: IcmpMethod::Datagram,
+                    samples: 1,
+                    min_ms: 5,
+                    avg_ms: 6,
+                    max_ms: 7,
+                    probed_at: "2026-09-06T00:00:00Z".into(),
+                }),
+                ..Default::default()
+            },
+        );
+        let model = fork_compare_model(&document, &tree, &NodePath::root(0), 0).expect("fork");
+        let rendered = render_fork_comparison(&model, RttBarConfig::default(), &Theme::from_env());
+        let text: String = rendered
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+            .collect();
+        assert!(text.contains("icmp"), "rendered: {text}");
     }
 
     fn test_document(tree: &ExploreTree) -> SessionDocument {

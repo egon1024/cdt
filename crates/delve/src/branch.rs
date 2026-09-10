@@ -162,9 +162,13 @@ pub fn branch_session(
 ) -> Result<BranchReport, BranchError> {
     let mut document = runtime.get_session(session_id)?;
     let tree_index = at.tree;
-    let report = execute_branch(&mut document, at, intent, dry_run, runtime, progress, None)?;
+    let mut report = execute_branch(&mut document, at, intent, dry_run, runtime, progress, None)?;
     if !dry_run && report.nodes_added > 0 {
-        crate::enrichment::populate_after_branch(&mut document, tree_index, runtime, false);
+        if let Some(notice) =
+            crate::enrichment::populate_after_branch(&mut document, tree_index, runtime, false)
+        {
+            report.warnings.push(notice);
+        }
         runtime.update_session(&document)?;
     }
     Ok(report)

@@ -1,6 +1,6 @@
 //! Fork-scoped path comparison projection shared by Compare, outline, and events.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::net::IpAddr;
 use std::str::FromStr;
 
@@ -71,18 +71,53 @@ pub fn fork_for_selection(tree: &TraceTree, selection: &NodePath) -> Option<Node
     if node.children.len() >= 2 {
         return Some(selection.clone());
     }
-    if selection.path.is_empty() {
-        return None;
+    let mut path = selection.path.clone();
+    while !path.is_empty() {
+        path.pop();
+        let parent = NodePath {
+            tree: selection.tree,
+            path: path.clone(),
+        };
+        let Some(parent_node) = tree.resolve(&parent) else {
+            break;
+        };
+        if parent_node.children.len() >= 2 {
+            return Some(parent);
+        }
     }
-    let mut parent_path = selection.path.clone();
-    parent_path.pop();
-    let parent = NodePath {
-        tree: selection.tree,
-        path: parent_path,
-    };
-    let parent_node = tree.resolve(&parent)?;
-    if parent_node.children.len() >= 2 {
-        Some(parent)
+    None
+}
+
+/// Shallowest fork anywhere in the tree.
+pub fn nearest_fork(tree: &TraceTree, tree_index: usize) -> Option<NodePath> {
+    let mut queue = VecDeque::from([NodePath::root(tree_index)]);
+    while let Some(path) = queue.pop_front() {
+        let Some(node) = tree.resolve(&path) else {
+            continue;
+        };
+        if node.children.len() >= 2 {
+            return Some(path);
+        }
+        for index in 0..node.children.len() {
+            let mut child = path.path.clone();
+            child.push(index);
+            queue.push_back(NodePath {
+                tree: path.tree,
+                path: child,
+            });
+        }
+    }
+    None
+}
+
+/// Fork used for Compare at `selection`, including when the fork is below root.
+pub fn fork_for_compare(tree: &TraceTree, selection: &NodePath) -> Option<NodePath> {
+    if let Some(fork) = fork_for_selection(tree, selection) {
+        return Some(fork);
+    }
+    let nearest = nearest_fork(tree, selection.tree)?;
+    if selection.path.is_empty() || nearest.path.starts_with(&selection.path) {
+        Some(nearest)
     } else {
         None
     }
@@ -134,7 +169,7 @@ pub fn summarize_fork(tree: &TraceTree, fork: &NodePath) -> Option<ForkCompariso
 }
 
 pub fn comparison_at(tree: &TraceTree, selection: &NodePath) -> Option<ForkComparison> {
-    let fork = fork_for_selection(tree, selection)?;
+    let fork = fork_for_compare(tree, selection)?;
     summarize_fork(tree, &fork)
 }
 
@@ -914,6 +949,61 @@ mod tests {
         assert!(blank.paths.iter().all(|path| path.icmp_rtt_ms.is_none()));
         let text = render_comparison_text(&blank);
         assert!(text.contains("n/a"));
+    }
+
+    #[test]
+    fn comparison_at_root_uses_nearest_fork_below() {
+        let tree = TraceTree {
+            request: TraceTreeRequest {
+                qname: "tuininga.org.".into(),
+                qtype: "A".into(),
+                started_at: "2026-01-01T00:00:00Z".into(),
+            },
+            root: node(
+                hop(
+                    ".",
+                    "198.41.0.4",
+                    10,
+                    HopOutcome::Referral,
+                    &[],
+                    false,
+                    vec![],
+                ),
+                vec![node(
+                    hop(
+                        "org.",
+                        "199.249.112.1",
+                        8,
+                        HopOutcome::Referral,
+                        &[],
+                        false,
+                        vec![],
+                    ),
+                    vec![
+                        leaf(
+                            "tuininga.org.",
+                            "193.47.99.5",
+                            12,
+                            HopOutcome::Answered,
+                            false,
+                            vec![],
+                        ),
+                        leaf(
+                            "tuininga.org.",
+                            "88.198.229.192",
+                            14,
+                            HopOutcome::Answered,
+                            false,
+                            vec![],
+                        ),
+                    ],
+                )],
+            ),
+            budget_truncated: false,
+        };
+        let comparison = comparison_at(&tree, &NodePath::root(0)).expect("fork below root");
+        assert_eq!(comparison.fork.path, vec![0]);
+        assert_eq!(comparison.paths.len(), 2);
     }
 
     #[test]
