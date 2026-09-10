@@ -104,15 +104,31 @@ pub fn cache_source_symbol(from_cache: bool, symbols: UiSymbols) -> &'static str
     }
 }
 
+pub fn cache_source_label(from_cache: bool) -> &'static str {
+    if from_cache {
+        "response from cache"
+    } else {
+        "live DNS lookup"
+    }
+}
+
+pub fn format_cache_source(from_cache: bool, symbols: UiSymbols) -> String {
+    format!(
+        "{} {}",
+        cache_source_symbol(from_cache, symbols),
+        cache_source_label(from_cache)
+    )
+}
+
 pub fn cache_source_legend(symbols: UiSymbols) -> [(&'static str, &'static str); 2] {
     [
         (
             symbols.cache_legend.unwrap_or(symbols.cache),
-            "response from cache",
+            cache_source_label(true),
         ),
         (
             symbols.live_legend.unwrap_or(symbols.live),
-            "live DNS lookup",
+            cache_source_label(false),
         ),
     ]
 }
@@ -300,6 +316,13 @@ mod tests {
         let symbols = UNICODE;
         assert_eq!(cache_source_symbol(true, symbols), "◆");
         assert_eq!(cache_source_symbol(false, symbols), "◇");
+    }
+
+    #[test]
+    fn format_cache_source_includes_symbol_and_label() {
+        let symbols = UNICODE;
+        assert_eq!(format_cache_source(true, symbols), "◆ response from cache");
+        assert_eq!(format_cache_source(false, symbols), "◇ live DNS lookup");
     }
 
     #[test]
