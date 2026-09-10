@@ -144,16 +144,35 @@ pub fn compare_row(
         Span::styled(rtt, row_style),
         Span::raw("  "),
     ]);
+    let bar_start = spans.len();
     spans.extend(rtt_bar_spans(
         hop.rtt_ms.min(u32::MAX as u64) as u32,
         scale_max_rtt_ms,
         rtt_config,
         theme,
     ));
+    let bar_end = spans.len();
     spans.push(Span::raw("  "));
     spans.push(Span::styled(icmp, row_style));
 
+    if selected {
+        apply_compare_selection(&mut spans, row_style, bar_start..bar_end);
+    }
+
     Some(Line::from(spans))
+}
+
+fn apply_compare_selection(
+    spans: &mut [Span<'static>],
+    style: Style,
+    skip: std::ops::Range<usize>,
+) {
+    for (index, span) in spans.iter_mut().enumerate() {
+        if skip.contains(&index) {
+            continue;
+        }
+        span.style = style;
+    }
 }
 
 fn compare_tree_spans(
@@ -520,6 +539,44 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect::<String>();
         assert!(text.contains("5ms"));
+    }
+
+    #[test]
+    fn selected_row_styles_all_fields_except_rtt_bar() {
+        let trace = build_linear_tree(
+            vec![hop(".", "198.41.0.4", 96)],
+            TraceTreeRequest {
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                started_at: "2026-08-25T00:00:00Z".into(),
+            },
+        );
+        let tree = super::super::tree::build_explore_tree(&trace);
+        let visible = tree.visible_nodes(&[]);
+        let theme = Theme::from_env();
+        let columns = CompareColumns::for_visible(&tree, &visible, RttBarConfig::default(), &theme);
+        let selected_style = theme.tree_selected();
+        let row = compare_row(
+            &visible[0],
+            &tree,
+            true,
+            false,
+            columns,
+            &BTreeMap::new(),
+            RttBarConfig::default(),
+            max_rtt_ms_for_visible(&tree, &visible),
+            &theme,
+        )
+        .expect("row");
+
+        for (index, span) in row.spans.iter().enumerate() {
+            let content = span.content.as_ref();
+            if content.chars().all(|ch| ch == '█' || ch == '░') {
+                assert_ne!(span.style, selected_style);
+                continue;
+            }
+            assert_eq!(span.style, selected_style, "span {index}: {content:?}");
+        }
     }
 
     #[test]
