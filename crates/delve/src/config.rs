@@ -15,6 +15,7 @@ const DEFAULT_ENRICHMENT_ICMP_ON_TRACE: bool = true;
 const DEFAULT_ENRICHMENT_ICMP_TTL_MINUTES: u32 = 15;
 const DEFAULT_ENRICHMENT_ICMP_TIMEOUT_MS: u64 = 200;
 const DEFAULT_ENRICHMENT_ICMP_PING_SAMPLES: u8 = 3;
+const DEFAULT_ENRICHMENT_ICMP_MAX_PARALLEL_PROBES: usize = 8;
 
 /// Fixed RTT scale for absolute-length bars (Browse detail, SVG export cards).
 /// Matches the default `orange_ms` color threshold.
@@ -79,6 +80,7 @@ pub struct DelveConfig {
     pub enrichment_cache_icmp_ttl_seconds: u32,
     pub enrichment_icmp_timeout_ms: u64,
     pub enrichment_icmp_ping_samples: u8,
+    pub enrichment_icmp_max_parallel_probes: usize,
 }
 
 impl Default for DelveConfig {
@@ -94,6 +96,7 @@ impl Default for DelveConfig {
             enrichment_cache_icmp_ttl_seconds: DEFAULT_ENRICHMENT_ICMP_TTL_MINUTES * 60,
             enrichment_icmp_timeout_ms: DEFAULT_ENRICHMENT_ICMP_TIMEOUT_MS,
             enrichment_icmp_ping_samples: DEFAULT_ENRICHMENT_ICMP_PING_SAMPLES,
+            enrichment_icmp_max_parallel_probes: DEFAULT_ENRICHMENT_ICMP_MAX_PARALLEL_PROBES,
         }
     }
 }
@@ -148,6 +151,7 @@ struct IcmpEnrichmentSection {
     on_trace: Option<bool>,
     timeout_ms: Option<u64>,
     ping_samples: Option<u8>,
+    max_parallel_probes: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -213,6 +217,16 @@ impl DelveConfig {
             .ping_samples
             .unwrap_or(DEFAULT_ENRICHMENT_ICMP_PING_SAMPLES)
             .max(1);
+        let enrichment_icmp_max_parallel_probes = match enrichment_icmp.max_parallel_probes {
+            None => DEFAULT_ENRICHMENT_ICMP_MAX_PARALLEL_PROBES,
+            Some(0) => {
+                warnings.push(format!(
+                        "warning: invalid enrichment.icmp.max_parallel_probes 0; using {DEFAULT_ENRICHMENT_ICMP_MAX_PARALLEL_PROBES}"
+                    ));
+                DEFAULT_ENRICHMENT_ICMP_MAX_PARALLEL_PROBES
+            }
+            Some(value) => value,
+        };
         let enrichment_cache_icmp_ttl_seconds = enrichment_cache
             .icmp_ttl_minutes
             .unwrap_or(DEFAULT_ENRICHMENT_ICMP_TTL_MINUTES)
@@ -230,6 +244,7 @@ impl DelveConfig {
                 enrichment_cache_icmp_ttl_seconds,
                 enrichment_icmp_timeout_ms,
                 enrichment_icmp_ping_samples,
+                enrichment_icmp_max_parallel_probes,
             },
             warnings,
         )
@@ -389,6 +404,13 @@ fn write_enrichment_dump_section(
         icmp.and_then(|section| section.ping_samples),
         defaults.enrichment_icmp_ping_samples,
     );
+    let parallel_active = write_yaml_key(
+        &mut body,
+        2,
+        "max_parallel_probes",
+        icmp.and_then(|section| section.max_parallel_probes),
+        defaults.enrichment_icmp_max_parallel_probes,
+    );
     body.push_str("  cache:\n");
     let ttl_active = write_yaml_key(
         &mut body,
@@ -401,6 +423,7 @@ fn write_enrichment_dump_section(
         || on_trace_active
         || timeout_active
         || samples_active
+        || parallel_active
         || ttl_active
         || parsed.enrichment.icmp.is_some()
         || parsed.enrichment.cache.is_some();
@@ -669,6 +692,7 @@ mod tests {
         assert_eq!(config.enrichment_cache_icmp_ttl_seconds, 15 * 60);
         assert_eq!(config.enrichment_icmp_timeout_ms, 200);
         assert_eq!(config.enrichment_icmp_ping_samples, 3);
+        assert_eq!(config.enrichment_icmp_max_parallel_probes, 8);
     }
 
     #[test]
@@ -678,13 +702,33 @@ mod tests {
         std::fs::create_dir_all(paths.config_file().parent().expect("parent")).expect("mkdir");
         std::fs::write(
             paths.config_file(),
-            "enrichment:\n  icmp:\n    enabled: false\n    on_trace: false\n  cache:\n    icmp_ttl_minutes: 30\n",
+            "enrichment:\n  icmp:\n    enabled: false\n    on_trace: false\n    max_parallel_probes: 3\n  cache:\n    icmp_ttl_minutes: 30\n",
         )
         .expect("write config");
         let (config, warnings) = DelveConfig::load(&paths);
         assert!(warnings.is_empty());
         assert!(!config.enrichment_icmp_enabled);
         assert!(!config.enrichment_icmp_on_trace);
+        assert_eq!(config.enrichment_icmp_max_parallel_probes, 3);
         assert_eq!(config.enrichment_cache_icmp_ttl_seconds, 30 * 60);
+    }
+
+    #[test]
+    fn invalid_icmp_max_parallel_probes_falls_back_with_warning() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = DelvePaths::from_root(dir.path());
+        std::fs::create_dir_all(paths.config_file().parent().expect("parent")).expect("mkdir");
+        std::fs::write(
+            paths.config_file(),
+            "enrichment:\n  icmp:\n    max_parallel_probes: 0\n",
+        )
+        .expect("write config");
+        let (config, warnings) = DelveConfig::load(&paths);
+        assert_eq!(config.enrichment_icmp_max_parallel_probes, 8);
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("max_parallel_probes"))
+        );
     }
 }
