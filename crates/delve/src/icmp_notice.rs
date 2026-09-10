@@ -5,14 +5,20 @@ pub fn format_comparison_icmp_notice(capability: IcmpProbeCapability) -> Option<
     match capability {
         IcmpProbeCapability::Datagram => None,
         IcmpProbeCapability::PingCommand => Some(format!(
-            "icmp: unprivileged ICMP sockets unavailable; using /bin/ping for network RTT.{}",
-            linux_ping_group_hint()
+            "icmp: unprivileged ICMP sockets unavailable; using /bin/ping for network RTT.{}{}",
+            linux_ping_group_hint(),
+            disable_icmp_enrichment_hint()
         )),
         IcmpProbeCapability::None => Some(format!(
-            "icmp: unavailable — unprivileged ICMP sockets are blocked and /bin/ping is not usable.{}",
-            linux_ping_group_hint()
+            "icmp: unavailable — unprivileged ICMP sockets are blocked and /bin/ping is not usable.{}{}",
+            linux_ping_group_hint(),
+            disable_icmp_enrichment_hint()
         )),
     }
+}
+
+fn disable_icmp_enrichment_hint() -> String {
+    " To silence this notice, set enrichment.icmp.enabled: false in delve.toml.".into()
 }
 
 fn linux_ping_group_hint() -> String {
@@ -48,12 +54,14 @@ mod tests {
         let notice =
             format_comparison_icmp_notice(IcmpProbeCapability::PingCommand).expect("notice");
         assert!(notice.contains("/bin/ping"));
+        assert!(notice.contains("enrichment.icmp.enabled: false"));
     }
 
     #[test]
     fn unavailable_notice_mentions_icmp() {
         let notice = format_comparison_icmp_notice(IcmpProbeCapability::None).expect("notice");
         assert!(notice.contains("icmp: unavailable"));
+        assert!(notice.contains("enrichment.icmp.enabled: false"));
     }
 
     #[cfg(target_os = "linux")]
