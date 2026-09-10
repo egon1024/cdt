@@ -46,6 +46,7 @@ pub fn populate_after_trace(
         merge_tree_names(document, tree);
         return;
     }
+    maybe_emit_icmp_notice();
     populate_icmp_for_tree(
         document,
         tree,
@@ -61,17 +62,14 @@ pub fn populate_after_branch(
     tree_index: usize,
     runtime: &Runtime,
     fresh: bool,
-) {
-    let Some(tree) = document
+) -> Option<String> {
+    let tree = document
         .trees
         .get(tree_index)
-        .map(|entry| entry.tree.clone())
-    else {
-        return;
-    };
+        .map(|entry| entry.tree.clone())?;
     if !runtime.config.enrichment_icmp_enabled {
         merge_tree_names(document, &tree);
-        return;
+        return None;
     }
     let existing_ips: HashSet<IpAddr> = document.targets.keys().copied().collect();
     populate_icmp_for_tree(
@@ -82,6 +80,7 @@ pub fn populate_after_branch(
         comparison_icmp_prober(),
         |ip| fresh || !existing_ips.contains(&ip),
     );
+    icmp_capability_notice_once()
 }
 
 fn merge_tree_names(document: &mut SessionDocument, tree: &TraceTree) {
@@ -101,7 +100,6 @@ fn populate_icmp_for_tree(
     prober: &dyn TraceEnrichmentProber,
     should_probe: impl Fn(IpAddr) -> bool,
 ) {
-    maybe_emit_icmp_notice();
     let profile = probe_profile(runtime);
     let collected = collect_unique_server_targets(tree);
     for (ip, names) in collected {
@@ -164,6 +162,7 @@ pub struct IcmpRefreshReport {
     pub targets_total: usize,
     pub targets_updated: usize,
     pub targets_failed: usize,
+    pub capability_notice: Option<String>,
 }
 
 pub fn refresh_icmp_targets_with_prober(
@@ -177,6 +176,7 @@ pub fn refresh_icmp_targets_with_prober(
             targets_total: 0,
             targets_updated: 0,
             targets_failed: 0,
+            capability_notice: None,
         };
     };
     if !runtime.config.enrichment_icmp_enabled {
@@ -185,9 +185,10 @@ pub fn refresh_icmp_targets_with_prober(
             targets_total: 0,
             targets_updated: 0,
             targets_failed: 0,
+            capability_notice: None,
         };
     }
-    maybe_emit_icmp_notice();
+    let capability_notice = icmp_capability_notice_once();
     merge_tree_names(document, &tree);
     let ips: Vec<IpAddr> = collect_unique_server_targets(&tree).into_keys().collect();
     let total = ips.len();
@@ -224,14 +225,21 @@ pub fn refresh_icmp_targets_with_prober(
         targets_total: total,
         targets_updated: updated,
         targets_failed: failed,
+        capability_notice,
     }
 }
 
-fn maybe_emit_icmp_notice() {
+/// One-line guidance when comparison ICMP cannot use datagram sockets.
+/// Emitted at most once per process; safe to call from background workers.
+pub fn icmp_capability_notice_once() -> Option<String> {
     if ICMP_NOTICE_EMITTED.swap(true, Ordering::SeqCst) {
-        return;
+        return None;
     }
-    if let Some(notice) = format_comparison_icmp_notice(comparison_icmp_prober().capability()) {
+    format_comparison_icmp_notice(comparison_icmp_prober().capability())
+}
+
+fn maybe_emit_icmp_notice() {
+    if let Some(notice) = icmp_capability_notice_once() {
         eprintln!("{notice}");
     }
 }
@@ -352,6 +360,17 @@ mod tests {
             avg_ms: 12,
             max_ms: 12,
             probed_at: "2026-09-06T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn icmp_capability_notice_emits_at_most_once() {
+        ICMP_NOTICE_EMITTED.store(false, Ordering::SeqCst);
+        let first = icmp_capability_notice_once();
+        let second = icmp_capability_notice_once();
+        assert!(second.is_none());
+        if let Some(notice) = first {
+            assert!(notice.contains("icmp"));
         }
     }
 

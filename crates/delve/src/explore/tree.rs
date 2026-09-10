@@ -1,5 +1,7 @@
 use dns_resolve::{NodePath, TraceHop, TraceNode, TraceTree};
 
+use super::path_summary::{fork_for_compare, nearest_fork as nearest_fork_in_tree};
+
 #[derive(Debug, Clone)]
 pub struct ExploreTree {
     pub qname: String,
@@ -61,32 +63,13 @@ impl ExploreTree {
     }
 
     pub fn compare_fork(&self, selection: &NodePath) -> Option<CompareFork> {
-        let node = self.tree.resolve(selection)?;
-        if node.children.len() >= 2 {
-            return Some(CompareFork {
-                at: selection.clone(),
-                row: 0,
-            });
-        }
-        if selection.path.is_empty() {
-            return None;
-        }
-        let parent_path = parent_path(&selection.path);
-        let parent = self.tree.resolve(&NodePath {
-            tree: selection.tree,
-            path: parent_path.clone(),
-        })?;
-        if parent.children.len() < 2 {
-            return None;
-        }
-        let row = selection.path.last().copied().unwrap_or(0);
-        Some(CompareFork {
-            at: NodePath {
-                tree: selection.tree,
-                path: parent_path,
-            },
-            row,
-        })
+        let fork_at = fork_for_compare(&self.tree, selection)?;
+        let row = if selection.path.len() > fork_at.path.len() {
+            selection.path[fork_at.path.len()]
+        } else {
+            0
+        };
+        Some(CompareFork { at: fork_at, row })
     }
 
     pub fn compare_available(&self, selection: &NodePath) -> bool {
@@ -101,24 +84,7 @@ impl ExploreTree {
     /// Shallowest fork anywhere in the tree, used to tell the operator where
     /// comparison is reachable when the current selection has no sibling paths.
     pub fn nearest_fork(&self) -> Option<NodePath> {
-        let mut queue = std::collections::VecDeque::from([NodePath::root(self.tree_index)]);
-        while let Some(path) = queue.pop_front() {
-            let Some(node) = self.tree.resolve(&path) else {
-                continue;
-            };
-            if node.children.len() >= 2 {
-                return Some(path);
-            }
-            for index in 0..node.children.len() {
-                let mut child = path.path.clone();
-                child.push(index);
-                queue.push_back(NodePath {
-                    tree: path.tree,
-                    path: child,
-                });
-            }
-        }
-        None
+        nearest_fork_in_tree(&self.tree, self.tree_index)
     }
 
     /// Why Compare cannot be opened at all (no fork anywhere in the tree).
@@ -188,12 +154,6 @@ pub fn build_explore_tree_with_qname(
         tree_index,
         tree: trace.clone(),
     }
-}
-
-fn parent_path(path: &[usize]) -> Vec<usize> {
-    let mut parent = path.to_vec();
-    parent.pop();
-    parent
 }
 
 fn collect_expandable_paths(
@@ -403,8 +363,10 @@ mod tests {
         ));
 
         let root = NodePath::root(0);
-        assert!(!tree.compare_available(&root));
+        assert!(tree.compare_available(&root));
         assert!(tree.compare_openable());
+        let fork = tree.compare_fork(&root).expect("fork at root selection");
+        assert_eq!(fork.at.path, vec![0]);
         assert_eq!(
             tree.nearest_fork(),
             Some(NodePath {

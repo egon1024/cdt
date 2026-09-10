@@ -272,10 +272,9 @@ fn trace_branch_compare_and_reopen_round_trip() {
     );
 
     let prober = DatagramIcmpProber::default();
-    assert!(
-        render_outline_comparison(&document, Some(0), None, &prober).is_err(),
-        "single root child should not produce a fork comparison"
-    );
+    let outline_before = render_outline_comparison(&document, Some(0), None, &prober)
+        .expect("fork below root is reachable from hop 0");
+    assert!(outline_before.contains("helium.ns.hetzner.de"));
 
     let report = execute_branch(
         &mut document,
