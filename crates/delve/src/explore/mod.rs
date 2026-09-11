@@ -1,5 +1,4 @@
 mod compare;
-mod options;
 #[allow(dead_code)] // fork-scoped projection; interactive Compare uses the full-tree renderer
 mod compare_screen;
 mod detail;
@@ -7,6 +6,7 @@ mod dig_view;
 mod flags;
 mod hop_identity;
 mod json;
+mod options;
 mod outline;
 mod pane_split;
 mod path_summary;
@@ -22,10 +22,10 @@ mod tui;
 mod view_state;
 
 pub use json::render_tree_json;
+pub use options::{ExploreOptions, ExploreParseError, parse_explore_args};
 pub use outline::render_outline;
 pub(crate) use terminal::{cache_source_symbol, ui_symbols};
 pub use tree::{build_explore_tree, build_explore_tree_with_qname};
-pub use options::{ExploreOptions, ExploreParseError, parse_explore_args};
 pub use tui::{ExploreContext, run_tui};
 
 use crate::branch::resolve_branch_target;

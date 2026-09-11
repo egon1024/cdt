@@ -449,7 +449,9 @@ fn run_config_command(command: ConfigCommand) -> Result<(), CliError> {
 fn map_explore_parse_error(error: ExploreParseError) -> CliError {
     match error {
         ExploreParseError::Unexpected(value) => CliError::Parse(ParseError::Unexpected(value)),
-        ExploreParseError::UnknownOption(value) => CliError::Parse(ParseError::UnknownOption(value)),
+        ExploreParseError::UnknownOption(value) => {
+            CliError::Parse(ParseError::UnknownOption(value))
+        }
     }
 }
 
