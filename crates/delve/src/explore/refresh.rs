@@ -363,6 +363,61 @@ mod tests {
     }
 
     #[test]
+    fn explore_plus_icmp_refresh_persists_targets() {
+        use dns_resolve::{IcmpMethod, IcmpSnapshot};
+        use std::net::IpAddr;
+
+        use crate::enrichment::TraceEnrichmentProber;
+
+        struct MockProber;
+
+        impl TraceEnrichmentProber for MockProber {
+            fn probe_snapshot(
+                &self,
+                _ip: IpAddr,
+                _timeout_ms: u64,
+                _ping_samples: u8,
+                _probed_at: &str,
+            ) -> Option<IcmpSnapshot> {
+                Some(IcmpSnapshot {
+                    method: IcmpMethod::Datagram,
+                    samples: 1,
+                    min_ms: 55,
+                    avg_ms: 55,
+                    max_ms: 55,
+                    probed_at: "2026-09-06T00:00:00Z".into(),
+                })
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = Runtime::open(DelvePaths::from_root(dir.path()));
+        let seed = sample_document();
+        let id = runtime
+            .save_session(
+                seed.primary_tree().expect("tree"),
+                seed.primary_request().expect("request"),
+                false,
+            )
+            .expect("seed");
+        let mut document = runtime.get_session(&id).expect("load");
+        let report =
+            refresh_icmp_targets_with_prober(&mut document, &runtime, true, &MockProber, |_, _| {});
+        assert_eq!(report.targets_updated, 1);
+        persist_refreshed_tree(&runtime, &document).expect("persist");
+        let loaded = runtime.get_session(&id).expect("reload");
+        let ip: IpAddr = "1.1.1.1".parse().expect("ip");
+        assert_eq!(
+            loaded
+                .targets
+                .get(&ip)
+                .and_then(|entry| entry.icmp.as_ref())
+                .map(|snapshot| snapshot.avg_ms),
+            Some(55)
+        );
+    }
+
+    #[test]
     fn persist_refreshed_tree_writes_targets() {
         use dns_resolve::{IcmpMethod, IcmpSnapshot};
         use std::net::IpAddr;

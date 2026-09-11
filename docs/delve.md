@@ -47,8 +47,9 @@ Installed packages also ship `man delve` (CLI synopsis) and this guide at `/usr/
 - **Explore** — Browse and Compare screens; `Tab` / `1` / `2` switch views. Compare analytics and fork tables also via `session outline|events --compare-at-hop|--compare-at-path`. See [explore](delve/explore.md).
 - **Default session** — omit `[id]` on session commands, or set **`DELVE_SESSION`** to pin a session in your shell. See [concepts — default session](delve/concepts.md#default-session).
 - **Alias queries** — `-t CNAME +follow` stops at the CNAME owner; other types follow aliases only when `+follow` is set. See [concepts](delve/concepts.md).
-- **Config** — `session.retention`, `trace.max_parallel_queries`, `trace.max_queries_per_action`, `explore.persist_view_state`, `explore.rtt_bar.*`. Run `delve config dump`. See [configuration](delve/configuration.md).
-- **Cache** — TTL-aware response cache speeds live queries; independent from stored sessions.
+- **Config** — `session.retention`, `trace.max_parallel_queries`, `trace.max_queries_per_action`, `explore.persist_view_state`, `explore.rtt_bar.*`, `enrichment.icmp.*`, `capture.public_ip.*`. Run `delve config dump`. See [configuration](delve/configuration.md).
+- **ICMP enrichment** — off by default; enable in config or use `delve session explore … +icmp` for one-shot backfill via **`r`** refresh.
+- **Cache** — TTL-aware DNS response cache (`delve cache stats|purge`) and separate enrichment ICMP cache (`delve cache enrichment …`); independent from stored sessions.
 
 ## Integration workflow
 

@@ -216,10 +216,33 @@ pub struct CacheCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum CacheSubcommand {
-    /// Show cache statistics.
+    /// Show DNS response cache statistics.
     Stats,
-    /// Purge cache entries.
+    /// Purge DNS response cache entries.
     Purge(CachePurgeArgs),
+    /// Inspect or purge the enrichment probe cache (ICMP; separate database).
+    Enrichment(CacheEnrichmentCommand),
+}
+
+#[derive(Debug, Parser)]
+pub struct CacheEnrichmentCommand {
+    #[command(subcommand)]
+    pub command: CacheEnrichmentSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum CacheEnrichmentSubcommand {
+    /// Show enrichment cache statistics.
+    Stats,
+    /// Purge enrichment cache entries.
+    Purge(CacheEnrichmentPurgeArgs),
+}
+
+#[derive(Debug, Parser)]
+pub struct CacheEnrichmentPurgeArgs {
+    /// Kind to purge: `icmp` (all ICMP rows) or `expired` (TTL-expired ICMP rows only).
+    #[arg(value_name = "KIND")]
+    pub kind: String,
 }
 
 #[derive(Debug, Parser)]

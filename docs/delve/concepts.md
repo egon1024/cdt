@@ -117,7 +117,9 @@ In the Browse screen, select a delegation hop with unqueried nameservers and pre
 
 Separate from sessions, delve keeps a **response cache** on disk (`cache.sqlite`). During a **live** trace or branch, recent DNS responses can be reused within their record TTL so repeated queries to the same names are faster. The cache does not change stored sessions; clearing it does not delete sessions, and vice versa.
 
-`delve cache stats` reports entry count, size, and cumulative hit/miss counts (persisted across runs). `delve cache purge` removes expired entries; `delve cache purge --all` clears the entire cache.
+`delve cache stats` reports entry count, size, and cumulative hit/miss counts (persisted across runs). `delve cache purge` removes expired entries; `delve cache purge --all` clears the entire DNS cache.
+
+**Enrichment cache** (`enrichment.sqlite`, under the data directory) is separate: it stores recent ICMP probe snapshots with a short TTL (default 15 minutes). Session `targets` on disk keep their own ICMP copies until you change the session. Purge with `delve cache enrichment purge icmp`; DNS cache purge does not touch enrichment rows.
 
 Each `delve trace` with `+save` creates a **new** session. Re-running a trace may use the cache for fewer queries, but it does not update an existing session.
 

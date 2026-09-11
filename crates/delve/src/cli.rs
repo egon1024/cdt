@@ -5,9 +5,9 @@ use dns_resolve::{ExpansionPolicy, run_trace};
 use thiserror::Error;
 
 use crate::args::{
-    CacheCommand, CacheSubcommand, Cli, Command, ConfigCommand, ConfigSubcommand,
-    SessionBranchArgs, SessionCommand, SessionExportArgs, SessionExportFormat, SessionExportLayout,
-    SessionSubcommand, TraceArgs,
+    CacheCommand, CacheEnrichmentPurgeArgs, CacheEnrichmentSubcommand, CacheSubcommand, Cli,
+    Command, ConfigCommand, ConfigSubcommand, SessionBranchArgs, SessionCommand, SessionExportArgs,
+    SessionExportFormat, SessionExportLayout, SessionSubcommand, TraceArgs,
 };
 use crate::branch::{
     BranchError, BranchIntentArg, format_branch_report, parse_server_target, resolve_branch_target,
@@ -54,6 +54,15 @@ pub enum CliError {
 
     #[error("response cache is not available")]
     CacheUnavailable,
+
+    #[error(transparent)]
+    EnrichmentCache(#[from] dns_enrichment_cache::EnrichmentCacheError),
+
+    #[error("enrichment cache is not available")]
+    EnrichmentCacheUnavailable,
+
+    #[error("unknown enrichment cache purge kind: {0}")]
+    UnknownEnrichmentPurgeKind(String),
 
     #[error("full expansion requires confirmation; use +expand=all+force in non-interactive mode")]
     ExpandAllNeedsForce,
@@ -290,6 +299,7 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
                 args.compare_at_hop,
                 args.compare_at_path.as_deref(),
                 prober,
+                runtime.config.enrichment_icmp_enabled,
             )?;
             Ok(())
         }
@@ -309,6 +319,7 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
                 args.compare_at_hop,
                 args.compare_at_path.as_deref(),
                 prober,
+                runtime.config.enrichment_icmp_enabled,
             )?;
             Ok(())
         }
@@ -409,9 +420,9 @@ fn run_session_branch(args: SessionBranchArgs, runtime: &Runtime) -> Result<(), 
 fn run_cache_command(command: CacheCommand) -> Result<(), CliError> {
     let runtime = Runtime::open_platform();
     runtime.emit_warnings();
-    let cache = runtime.cache.as_ref().ok_or(CliError::CacheUnavailable)?;
     match command.command {
         CacheSubcommand::Stats => {
+            let cache = runtime.cache.as_ref().ok_or(CliError::CacheUnavailable)?;
             let stats = cache.stats();
             println!("path: {}", runtime.paths.cache_db.display());
             println!("entries: {}", stats.entries);
@@ -421,6 +432,7 @@ fn run_cache_command(command: CacheCommand) -> Result<(), CliError> {
             Ok(())
         }
         CacheSubcommand::Purge(args) => {
+            let cache = runtime.cache.as_ref().ok_or(CliError::CacheUnavailable)?;
             let removed = if args.all {
                 cache.purge_all()?
             } else {
@@ -429,6 +441,44 @@ fn run_cache_command(command: CacheCommand) -> Result<(), CliError> {
             println!("removed {removed} entries");
             Ok(())
         }
+        CacheSubcommand::Enrichment(command) => {
+            run_enrichment_cache_command(&runtime, command.command)
+        }
+    }
+}
+
+fn run_enrichment_cache_command(
+    runtime: &Runtime,
+    command: CacheEnrichmentSubcommand,
+) -> Result<(), CliError> {
+    let cache = runtime
+        .enrichment_cache
+        .as_ref()
+        .ok_or(CliError::EnrichmentCacheUnavailable)?;
+    match command {
+        CacheEnrichmentSubcommand::Stats => {
+            let stats = cache.icmp_stats()?;
+            println!("path: {}", runtime.paths.enrichment_db.display());
+            println!("icmp entries: {}", stats.entries);
+            println!("icmp ttl seconds: {}", cache.icmp_ttl_seconds());
+            Ok(())
+        }
+        CacheEnrichmentSubcommand::Purge(args) => {
+            let removed = purge_enrichment_cache(cache, &args)?;
+            println!("removed {removed} icmp entries");
+            Ok(())
+        }
+    }
+}
+
+fn purge_enrichment_cache(
+    cache: &dns_enrichment_cache::SqliteEnrichmentCache,
+    args: &CacheEnrichmentPurgeArgs,
+) -> Result<usize, CliError> {
+    match args.kind.as_str() {
+        "icmp" => Ok(cache.purge_all_icmp()?),
+        "expired" => Ok(cache.purge_expired_icmp(dns_enrichment_cache::now_unix())?),
+        other => Err(CliError::UnknownEnrichmentPurgeKind(other.to_string())),
     }
 }
 
@@ -516,5 +566,71 @@ fn print_session(document: &SessionDocument, json: bool) {
         for record in &hop.response.answers {
             eprintln!("  {} {} {}", record.name, record.ttl, record.rdata);
         }
+    }
+}
+
+#[cfg(test)]
+mod enrichment_cache_cli_tests {
+    use super::*;
+    use dns_enrichment_cache::{ProbeProfile, now_unix};
+    use dns_resolve::{IcmpMethod, IcmpSnapshot};
+    use std::net::{IpAddr, Ipv4Addr};
+
+    use crate::args::{CacheEnrichmentPurgeArgs, CacheEnrichmentSubcommand};
+    use crate::paths::DelvePaths;
+    use crate::runtime::Runtime;
+
+    fn seed_icmp_cache(runtime: &Runtime) {
+        let cache = runtime.enrichment_cache.as_ref().expect("cache");
+        let ip = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
+        cache
+            .put_icmp(
+                ip,
+                &ProbeProfile::enrichment_default(),
+                &IcmpSnapshot {
+                    method: IcmpMethod::Datagram,
+                    samples: 1,
+                    min_ms: 1,
+                    avg_ms: 1,
+                    max_ms: 1,
+                    probed_at: "2026-09-06T00:00:00Z".into(),
+                },
+                now_unix(),
+            )
+            .expect("seed");
+    }
+
+    #[test]
+    fn enrichment_cache_purge_icmp_clears_rows() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = Runtime::open(DelvePaths::from_root(dir.path()));
+        seed_icmp_cache(&runtime);
+        let cache = runtime.enrichment_cache.as_ref().expect("cache");
+        assert_eq!(cache.icmp_stats().expect("stats").entries, 1);
+        run_enrichment_cache_command(
+            &runtime,
+            CacheEnrichmentSubcommand::Purge(CacheEnrichmentPurgeArgs {
+                kind: "icmp".into(),
+            }),
+        )
+        .expect("purge");
+        assert_eq!(cache.icmp_stats().expect("stats").entries, 0);
+    }
+
+    #[test]
+    fn enrichment_cache_purge_does_not_touch_dns_cache() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = Runtime::open(DelvePaths::from_root(dir.path()));
+        seed_icmp_cache(&runtime);
+        let dns = runtime.cache.as_ref().expect("dns cache");
+        let dns_before = dns.stats().entries;
+        run_enrichment_cache_command(
+            &runtime,
+            CacheEnrichmentSubcommand::Purge(CacheEnrichmentPurgeArgs {
+                kind: "icmp".into(),
+            }),
+        )
+        .expect("purge");
+        assert_eq!(dns.stats().entries, dns_before);
     }
 }

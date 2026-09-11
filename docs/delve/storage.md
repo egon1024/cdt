@@ -8,6 +8,7 @@ Where delve persists data on disk and the shapes it writes.
 |------|------|
 | Config | `$XDG_CONFIG_HOME/cdt/delve.yaml` |
 | Response cache | `$XDG_CACHE_HOME/cdt/delve/cache.sqlite` |
+| Enrichment cache | `$XDG_DATA_HOME/cdt/delve/enrichment.sqlite` |
 | Sessions (SQLite) | `$XDG_DATA_HOME/cdt/delve/sessions.sqlite` |
 | Sessions (NDJSON fallback) | `$XDG_DATA_HOME/cdt/delve/sessions/*.json` |
 
@@ -21,6 +22,7 @@ These are separate on purpose:
 
 - **Sessions** store a full **snapshot** of trace trees (`TraceResult` and nested tree nodes). `delve session show` reads only that stored data — no network, no cache.
 - **Response cache** speeds up **new live traces and branches** by reusing recent DNS responses within record TTL. `delve cache stats` reports entry count, size, and cumulative hit/miss counts (persisted in `cache.sqlite` across runs). Cache expiry does not affect stored sessions.
+- **Enrichment cache** stores recent ICMP probe snapshots keyed by resolver IP (default TTL 15 minutes). Session `targets` on disk are independent; purging enrichment cache does not remove stored session ICMP. Administer with `delve cache enrichment …`.
 
 See [concepts — response cache](concepts.md#response-cache) for operator-facing behavior.
 
@@ -34,7 +36,7 @@ Human progress and the `session: …` line go to stderr.
 
 ### Stored sessions
 
-Sessions use a versioned JSON document containing trace trees, view state, and metadata (`id`, `created_at`, `updated_at`, `pinned`, and the `TraceRequest` used for reuse matching).
+Sessions use a versioned JSON document containing trace trees, view state, enrichment **`targets`** (resolver IPs with optional ICMP snapshots), optional **`capture_context`**, and metadata (`id`, `created_at`, `updated_at`, `pinned`, and the `TraceRequest` used for reuse matching).
 
 Flat export via `session show --json` emits the primary tree as a `TraceResult`-shaped `complete` event. Hierarchical export via `session events` emits an `explore_tree` event — see [explore](explore.md#show-json-vs-events).
 

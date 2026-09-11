@@ -32,7 +32,7 @@ use crate::branch::resolve_branch_target;
 use crate::runtime::Runtime;
 use crate::session::SessionDocument;
 use dns_resolve::{DatagramIcmpProber, IcmpProber};
-use path_summary::{comparison_at, enrich_icmp, render_comparison_json, render_comparison_text};
+use path_summary::{comparison_at, render_comparison_json, render_comparison_text};
 use std::io::{self, IsTerminal, Write};
 
 fn explore_tree_for_document(
@@ -47,7 +47,7 @@ fn explore_tree_for_document(
 }
 
 pub fn run_outline(document: &SessionDocument) -> Result<(), ExploreError> {
-    run_outline_with_compare(document, None, None, &DatagramIcmpProber::default())
+    run_outline_with_compare(document, None, None, &DatagramIcmpProber::default(), true)
 }
 
 pub fn run_outline_with_compare(
@@ -55,9 +55,16 @@ pub fn run_outline_with_compare(
     compare_at_hop: Option<usize>,
     compare_at_path: Option<&str>,
     prober: &dyn IcmpProber,
+    live_probe: bool,
 ) -> Result<(), ExploreError> {
     if compare_at_hop.is_some() || compare_at_path.is_some() {
-        let output = render_outline_comparison(document, compare_at_hop, compare_at_path, prober)?;
+        let output = render_outline_comparison(
+            document,
+            compare_at_hop,
+            compare_at_path,
+            prober,
+            live_probe,
+        )?;
         let mut stdout = io::stdout().lock();
         stdout
             .write_all(output.as_bytes())
@@ -77,7 +84,7 @@ pub fn run_outline_with_compare(
 }
 
 pub fn run_events(document: &SessionDocument) -> Result<(), ExploreError> {
-    run_events_with_compare(document, None, None, &DatagramIcmpProber::default())
+    run_events_with_compare(document, None, None, &DatagramIcmpProber::default(), true)
 }
 
 pub fn run_events_with_compare(
@@ -85,9 +92,16 @@ pub fn run_events_with_compare(
     compare_at_hop: Option<usize>,
     compare_at_path: Option<&str>,
     prober: &dyn IcmpProber,
+    live_probe: bool,
 ) -> Result<(), ExploreError> {
     if compare_at_hop.is_some() || compare_at_path.is_some() {
-        let output = render_events_comparison(document, compare_at_hop, compare_at_path, prober)?;
+        let output = render_events_comparison(
+            document,
+            compare_at_hop,
+            compare_at_path,
+            prober,
+            live_probe,
+        )?;
         println!("{output}");
         return Ok(());
     }
@@ -101,8 +115,15 @@ pub fn render_outline_comparison(
     compare_at_hop: Option<usize>,
     compare_at_path: Option<&str>,
     prober: &dyn IcmpProber,
+    live_probe: bool,
 ) -> Result<String, ExploreError> {
-    let comparison = load_comparison(document, compare_at_hop, compare_at_path, prober)?;
+    let comparison = load_comparison(
+        document,
+        compare_at_hop,
+        compare_at_path,
+        prober,
+        live_probe,
+    )?;
     Ok(render_comparison_text(&comparison))
 }
 
@@ -111,8 +132,15 @@ pub fn render_events_comparison(
     compare_at_hop: Option<usize>,
     compare_at_path: Option<&str>,
     prober: &dyn IcmpProber,
+    live_probe: bool,
 ) -> Result<String, ExploreError> {
-    let comparison = load_comparison(document, compare_at_hop, compare_at_path, prober)?;
+    let comparison = load_comparison(
+        document,
+        compare_at_hop,
+        compare_at_path,
+        prober,
+        live_probe,
+    )?;
     Ok(render_comparison_json(&document.id, &comparison))
 }
 
@@ -121,6 +149,7 @@ fn load_comparison(
     compare_at_hop: Option<usize>,
     compare_at_path: Option<&str>,
     prober: &dyn IcmpProber,
+    live_probe: bool,
 ) -> Result<path_summary::ForkComparison, ExploreError> {
     let target = resolve_branch_target(document, compare_at_hop, compare_at_path)
         .map_err(|error| ExploreError::UnresolvedCompareTarget(error.to_string()))?;
@@ -139,7 +168,13 @@ fn load_comparison(
     let Some(comparison) = comparison_at(tree, &target) else {
         return Err(ExploreError::NothingToCompare { target: named });
     };
-    Ok(enrich_icmp(comparison, tree, &document.targets, prober))
+    Ok(path_summary::enrich_icmp_with_live_probe(
+        comparison,
+        tree,
+        &document.targets,
+        prober,
+        live_probe,
+    ))
 }
 
 pub fn run_explore(
@@ -495,7 +530,8 @@ mod tests {
         let prober = CountingProber {
             calls: AtomicUsize::new(0),
         };
-        let text = render_outline_comparison(&document, Some(0), None, &prober).expect("compare");
+        let text =
+            render_outline_comparison(&document, Some(0), None, &prober, true).expect("compare");
         assert_eq!(prober.calls.load(Ordering::SeqCst), 0);
         assert!(text.contains("12ms"));
         assert!(text.contains("22ms"));
@@ -505,8 +541,8 @@ mod tests {
     #[test]
     fn outline_comparison_prints_rows_without_dns_exchange() {
         let document = fork_document();
-        let text =
-            render_outline_comparison(&document, Some(0), None, &SilentProber).expect("compare");
+        let text = render_outline_comparison(&document, Some(0), None, &SilentProber, true)
+            .expect("compare");
         assert!(text.contains("server"));
         assert!(text.contains("192.5.6.30"));
         assert!(text.contains("192.12.94.30"));
@@ -523,7 +559,8 @@ mod tests {
     #[test]
     fn events_comparison_json_matches_projection() {
         let document = fork_document();
-        let json = render_events_comparison(&document, Some(0), None, &SilentProber).expect("json");
+        let json =
+            render_events_comparison(&document, Some(0), None, &SilentProber, true).expect("json");
         let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
         assert_eq!(value["event"], "path_comparison");
         assert_eq!(value["session"], "01COMPARE");
@@ -578,8 +615,8 @@ mod tests {
                 },
             ),
         );
-        let text = render_outline_comparison(&document, Some(0), None, &SilentProber);
-        let json = render_events_comparison(&document, Some(0), None, &SilentProber);
+        let text = render_outline_comparison(&document, Some(0), None, &SilentProber, true);
+        let json = render_events_comparison(&document, Some(0), None, &SilentProber, true);
         assert!(matches!(text, Err(ExploreError::NothingToCompare { .. })));
         assert!(matches!(json, Err(ExploreError::NothingToCompare { .. })));
         assert!(!format!("{}", text.unwrap_err()).contains("server"));
@@ -596,8 +633,9 @@ mod tests {
         let tree = explore_tree_for_document(&document).expect("tree");
         let projection = summarize_fork(tree.trace(), &NodePath::root(0)).expect("projection");
         let text =
-            render_outline_comparison(&document, Some(0), None, &SilentProber).expect("text");
-        let json = render_events_comparison(&document, Some(0), None, &SilentProber).expect("json");
+            render_outline_comparison(&document, Some(0), None, &SilentProber, true).expect("text");
+        let json =
+            render_events_comparison(&document, Some(0), None, &SilentProber, true).expect("json");
         let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
         let model = CompareScreenModel::from_tree(&tree, &NodePath::root(0)).expect("screen");
         let theme = Theme::from_env();

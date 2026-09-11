@@ -84,6 +84,40 @@ Override detection with `DELVE_TRUECOLOR=1` (force gradient) or `DELVE_BASIC_COL
 
 Defaults: `green_ms` **50**, `yellow_ms` **125**, `orange_ms` **250**, `insane_ms` **1000**, `max_width` **20** characters.
 
+## `enrichment.icmp`
+
+Hop ICMP snapshots (network RTT to resolver IPs) are **off by default**. When enabled, trace and branch may populate session `targets` with ICMP measurements; explore unified refresh (**`r`**) also probes when ICMP is effective.
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `enabled` | **false** | Master switch for ICMP enrichment |
+| `on_trace` | **true** | Probe ICMP during live trace/branch when `enabled` is true |
+| `timeout_ms` | **200** | Per-probe timeout |
+| `ping_samples` | **3** | Samples for ping fallback |
+| `max_parallel_probes` | **8** | Concurrent ICMP workers |
+
+One-shot override without editing config: `delve session explore <id> +icmp` enables ICMP for that explore process (unified **`r`** refresh and compare live fallback). Stored ICMP from a prior save remains visible on reopen.
+
+## `enrichment.cache`
+
+Separate SQLite database (`enrichment.sqlite`) caches recent ICMP probe results (default TTL **15 minutes**). Purging the DNS response cache does not clear enrichment cache rows. Administer with `delve cache enrichment stats` and `delve cache enrichment purge icmp`.
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `icmp_ttl_minutes` | **15** | ICMP cache entry lifetime |
+
+## `capture.public_ip`
+
+Optional session metadata recording a public egress address at trace time. **Off by default.**
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `enabled` | **false** | Store public IP in `capture_context` when tracing |
+| `provider` | **static** | Discovery provider (`static` only in v1) |
+| `static_address` | — | Required when `provider: static` and `enabled: true` |
+
+**Privacy:** Non-static providers (future) may contact third-party services and reveal your egress IP to them. Use the `static` provider when you want metadata without network egress for discovery.
+
 ## See also
 
 - [delve](../delve.md) — hub and quick start

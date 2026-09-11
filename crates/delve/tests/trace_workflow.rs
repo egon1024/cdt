@@ -272,7 +272,7 @@ fn trace_branch_compare_and_reopen_round_trip() {
     );
 
     let prober = DatagramIcmpProber::default();
-    let outline_before = render_outline_comparison(&document, Some(0), None, &prober)
+    let outline_before = render_outline_comparison(&document, Some(0), None, &prober, true)
         .expect("fork below root is reachable from hop 0");
     assert!(outline_before.contains("helium.ns.hetzner.de"));
 
@@ -299,9 +299,9 @@ fn trace_branch_compare_and_reopen_round_trip() {
         .expect("root");
     assert_eq!(root.children.len(), 3);
 
-    let outline = render_outline_comparison(&document, Some(0), None, &prober)
+    let outline = render_outline_comparison(&document, Some(0), None, &prober, true)
         .expect("outline comparison after branch");
-    let events = render_events_comparison(&document, Some(0), None, &prober)
+    let events = render_events_comparison(&document, Some(0), None, &prober, true)
         .expect("events comparison after branch");
     assert!(outline.contains("helium.ns.hetzner.de"));
     assert!(events.contains("\"path_comparison\""));

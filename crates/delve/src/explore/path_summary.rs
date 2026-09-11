@@ -194,6 +194,7 @@ pub fn icmp_rtt_from_targets(
     icmp_snapshot_from_targets(targets, server).map(|snapshot| snapshot.avg_ms)
 }
 
+#[allow(dead_code)]
 pub fn enrich_icmp(
     comparison: ForkComparison,
     tree: &TraceTree,
@@ -1170,6 +1171,20 @@ mod tests {
                 .iter()
                 .all(|path| path.icmp_rtt_ms == Some(4))
         );
+    }
+
+    #[test]
+    fn enrich_icmp_skips_live_probe_when_disabled() {
+        let tree = agreeing_tree();
+        let comparison = summarize_fork(&tree, &NodePath::root(0)).expect("fork");
+        let prober = ScriptedProber {
+            result: IcmpProbeResult::Rtt(Duration::from_millis(4)),
+            calls: AtomicUsize::new(0),
+        };
+        let enriched =
+            enrich_icmp_with_live_probe(comparison, &tree, &BTreeMap::new(), &prober, false);
+        assert_eq!(prober.calls.load(Ordering::SeqCst), 0);
+        assert!(enriched.paths.iter().all(|path| path.icmp_rtt_ms.is_none()));
     }
 
     #[test]
