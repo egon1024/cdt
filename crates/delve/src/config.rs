@@ -83,6 +83,12 @@ pub struct DelveConfig {
     pub enrichment_icmp_max_parallel_probes: usize,
 }
 
+impl DelveConfig {
+    pub fn effective_icmp_enabled(&self, explore_plus_icmp: bool) -> bool {
+        self.enrichment_icmp_enabled || explore_plus_icmp
+    }
+}
+
 impl Default for DelveConfig {
     fn default() -> Self {
         Self {

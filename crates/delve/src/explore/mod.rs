@@ -1,4 +1,5 @@
 mod compare;
+mod options;
 #[allow(dead_code)] // fork-scoped projection; interactive Compare uses the full-tree renderer
 mod compare_screen;
 mod detail;
@@ -24,6 +25,7 @@ pub use json::render_tree_json;
 pub use outline::render_outline;
 pub(crate) use terminal::{cache_source_symbol, ui_symbols};
 pub use tree::{build_explore_tree, build_explore_tree_with_qname};
+pub use options::{ExploreOptions, ExploreParseError, parse_explore_args};
 pub use tui::{ExploreContext, run_tui};
 
 use crate::branch::resolve_branch_target;
@@ -140,7 +142,11 @@ fn load_comparison(
     Ok(enrich_icmp(comparison, tree, &document.targets, prober))
 }
 
-pub fn run_explore(runtime: &Runtime, document: &mut SessionDocument) -> Result<(), ExploreError> {
+pub fn run_explore(
+    runtime: &Runtime,
+    document: &mut SessionDocument,
+    options: ExploreOptions,
+) -> Result<(), ExploreError> {
     if !io::stdout().is_terminal() || !io::stdin().is_terminal() {
         return Err(ExploreError::NotTerminal);
     }
@@ -150,6 +156,7 @@ pub fn run_explore(runtime: &Runtime, document: &mut SessionDocument) -> Result<
         runtime,
         document,
         persist_view_state: runtime.config.explore_persist_view_state,
+        plus_icmp: options.plus_icmp,
     })
     .map_err(ExploreError::Io)
 }

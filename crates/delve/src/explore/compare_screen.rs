@@ -11,7 +11,7 @@ use crate::config::RttBarConfig;
 use crate::session::TargetEnrichments;
 
 use super::path_summary::{
-    ForkComparison, PathSummary, comparison_for_explore, enrich_icmp, format_referral_delta_column,
+    ForkComparison, PathSummary, comparison_for_explore, format_referral_delta_column,
     referral_header_line,
 };
 use super::rtt_bar::rtt_bar_spans;
@@ -41,8 +41,24 @@ impl CompareScreenModel {
         targets: &BTreeMap<IpAddr, TargetEnrichments>,
         prober: &dyn IcmpProber,
     ) -> Option<Self> {
+        Self::from_tree_with_targets_and_live_probe(tree, selection, targets, prober, true)
+    }
+
+    pub fn from_tree_with_targets_and_live_probe(
+        tree: &ExploreTree,
+        selection: &NodePath,
+        targets: &BTreeMap<IpAddr, TargetEnrichments>,
+        prober: &dyn IcmpProber,
+        live_probe: bool,
+    ) -> Option<Self> {
         let comparison = comparison_for_explore(tree, selection)?;
-        let comparison = enrich_icmp(comparison, tree.trace(), targets, prober);
+        let comparison = super::path_summary::enrich_icmp_with_live_probe(
+            comparison,
+            tree.trace(),
+            targets,
+            prober,
+            live_probe,
+        );
         let row = comparison
             .paths
             .iter()

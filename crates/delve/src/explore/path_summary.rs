@@ -195,13 +195,30 @@ pub fn icmp_rtt_from_targets(
 }
 
 pub fn enrich_icmp(
-    mut comparison: ForkComparison,
+    comparison: ForkComparison,
     tree: &TraceTree,
     targets: &BTreeMap<IpAddr, TargetEnrichments>,
     prober: &dyn IcmpProber,
 ) -> ForkComparison {
+    enrich_icmp_with_live_probe(comparison, tree, targets, prober, true)
+}
+
+pub fn enrich_icmp_with_live_probe(
+    mut comparison: ForkComparison,
+    tree: &TraceTree,
+    targets: &BTreeMap<IpAddr, TargetEnrichments>,
+    prober: &dyn IcmpProber,
+    live_probe: bool,
+) -> ForkComparison {
     let mut cache = std::collections::HashMap::new();
-    enrich_icmp_cached(&mut comparison, tree, targets, &mut cache, prober);
+    enrich_icmp_cached(
+        &mut comparison,
+        tree,
+        targets,
+        &mut cache,
+        prober,
+        live_probe,
+    );
     comparison
 }
 
@@ -211,6 +228,7 @@ pub fn enrich_icmp_cached(
     targets: &BTreeMap<IpAddr, TargetEnrichments>,
     cache: &mut std::collections::HashMap<String, Option<u64>>,
     prober: &dyn IcmpProber,
+    live_probe: bool,
 ) {
     for path in &mut comparison.paths {
         let Some(node) = tree.resolve(&path.path) else {
@@ -219,6 +237,9 @@ pub fn enrich_icmp_cached(
         let server = node.hop.server.clone();
         if let Some(rtt) = icmp_rtt_from_targets(targets, &server) {
             path.icmp_rtt_ms = Some(rtt);
+            continue;
+        }
+        if !live_probe {
             continue;
         }
         let rtt = *cache.entry(server.clone()).or_insert_with(|| {
