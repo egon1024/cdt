@@ -4,12 +4,14 @@ use std::time::Duration;
 
 use hickory_proto::op::Message;
 use hickory_proto::rr::Record;
+use hickory_proto::rr::RecordType;
 use serde::{Deserialize, Serialize};
 
 use crate::edns::EdnsMeta;
 use crate::error::{DnsCoreError, Result};
 use crate::name::DomainName;
 use crate::query::extract_edns_meta;
+use crate::query::record_type_name;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Transport {
@@ -82,12 +84,28 @@ impl DnsResponse {
         }
     }
 
-    pub fn referral_zone(&self, _qname: &DomainName) -> Option<DomainName> {
-        self.authorities
+    pub fn referral_zone(&self, qname: &DomainName) -> Option<DomainName> {
+        let mut best: Option<(usize, DomainName)> = None;
+        for record in self
+            .authorities
             .iter()
             .filter(|record| record.rtype == "NS")
-            .filter_map(|record| DomainName::parse(record.name.as_str()).ok())
-            .next()
+        {
+            let Ok(zone) = DomainName::parse(record.name.as_str()) else {
+                continue;
+            };
+            if !qname.is_subdomain_of(&zone) {
+                continue;
+            }
+            let labels = zone_label_count(&zone);
+            if best
+                .as_ref()
+                .is_none_or(|(best_labels, _)| labels > *best_labels)
+            {
+                best = Some((labels, zone));
+            }
+        }
+        best.map(|(_, zone)| zone)
     }
 
     pub fn ns_names(&self) -> Vec<DomainName> {
@@ -108,7 +126,11 @@ impl DnsResponse {
     }
 
     /// CNAME target when `qname` is exactly the CNAME owner in the answer section.
-    pub fn cname_target(&self, qname: &DomainName) -> Option<DomainName> {
+    /// When the query type is CNAME, the record is the answer and this returns None.
+    pub fn cname_target(&self, qname: &DomainName, qtype: RecordType) -> Option<DomainName> {
+        if qtype == RecordType::CNAME {
+            return None;
+        }
         self.answers.iter().find_map(|record| {
             if record.rtype != "CNAME" {
                 return None;
@@ -121,7 +143,13 @@ impl DnsResponse {
     }
 
     /// Rewrite `qname` using the longest applicable DNAME from answers or authority.
-    pub fn dname_rewrite(&self, qname: &DomainName) -> Option<DomainName> {
+    /// When the query type is DNAME and a DNAME is owned exactly by `qname`, this
+    /// returns None because the record is the answer.
+    pub fn dname_rewrite(&self, qname: &DomainName, qtype: RecordType) -> Option<DomainName> {
+        if record_type_name(qtype) == "DNAME" && self.has_dname_at_exact_owner(qname) {
+            return None;
+        }
+
         let q = qname.as_str().trim_end_matches('.');
         let mut best: Option<(usize, &DnsRecord)> = None;
 
@@ -155,14 +183,29 @@ impl DnsResponse {
         DomainName::parse(&rewritten).ok()
     }
 
+    fn has_dname_at_exact_owner(&self, qname: &DomainName) -> bool {
+        let q = qname.as_str().trim_end_matches('.');
+        self.answers
+            .iter()
+            .chain(self.authorities.iter())
+            .any(|record| {
+                record.rtype == "DNAME"
+                    && record
+                        .name
+                        .as_str()
+                        .trim_end_matches('.')
+                        .eq_ignore_ascii_case(q)
+            })
+    }
+
     /// Next qname after following a CNAME or applying a DNAME rewrite, if any.
-    pub fn alias_target(&self, qname: &DomainName) -> Option<DomainName> {
-        if let Some(target) = self.cname_target(qname) {
+    pub fn alias_target(&self, qname: &DomainName, qtype: RecordType) -> Option<DomainName> {
+        if let Some(target) = self.cname_target(qname, qtype) {
             if !target.as_str().eq_ignore_ascii_case(qname.as_str()) {
                 return Some(target);
             }
         }
-        self.dname_rewrite(qname)
+        self.dname_rewrite(qname, qtype)
     }
 }
 
@@ -188,6 +231,14 @@ fn convert_record(record: &Record) -> DnsRecord {
         ttl: record.ttl,
         rdata: record.data.to_string(),
     }
+}
+
+fn zone_label_count(zone: &DomainName) -> usize {
+    let trimmed = zone.as_str().trim_end_matches('.');
+    if trimmed.is_empty() {
+        return 0;
+    }
+    trimmed.split('.').filter(|label| !label.is_empty()).count()
 }
 
 fn rcode_to_text(rcode: u16) -> String {
@@ -238,6 +289,46 @@ mod tests {
     }
 
     #[test]
+    fn referral_zone_prefers_deepest_delegation_owner() {
+        let response = DnsResponse {
+            id: 1,
+            rcode: 0,
+            rcode_text: "NOERROR".into(),
+            authoritative: false,
+            truncated: false,
+            recursion_desired: false,
+            recursion_available: false,
+            authentic_data: false,
+            checking_disabled: false,
+            answers: vec![],
+            authorities: vec![
+                DnsRecord {
+                    name: DomainName::parse(".").expect("root"),
+                    rtype: "NS".into(),
+                    rclass: "IN".into(),
+                    ttl: 86400,
+                    rdata: "a.root-servers.net.".into(),
+                },
+                DnsRecord {
+                    name: DomainName::parse("org.").expect("org"),
+                    rtype: "NS".into(),
+                    rclass: "IN".into(),
+                    ttl: 86400,
+                    rdata: "a2.org.afilias-nst.info.".into(),
+                },
+            ],
+            additionals: vec![],
+            edns: EdnsMeta::default(),
+        };
+
+        let qname = DomainName::parse("tuininga.org.").expect("qname");
+        assert_eq!(
+            response.referral_zone(&qname).map(|zone| zone.to_string()),
+            Some("org.".into())
+        );
+    }
+
+    #[test]
     fn cname_target_from_answer() {
         let qname = DomainName::parse("www.example.com.").expect("qname");
         let response = DnsResponse {
@@ -263,7 +354,135 @@ mod tests {
         };
 
         assert_eq!(
-            response.cname_target(&qname).map(|name| name.to_string()),
+            response
+                .cname_target(&qname, RecordType::A)
+                .map(|name| name.to_string()),
+            Some("cdn.example.com.".into())
+        );
+    }
+
+    #[test]
+    fn sought_cname_is_not_followed() {
+        let qname = DomainName::parse("www.example.com.").expect("qname");
+        let response = DnsResponse {
+            id: 1,
+            rcode: 0,
+            rcode_text: "NOERROR".into(),
+            authoritative: true,
+            truncated: false,
+            recursion_desired: false,
+            recursion_available: false,
+            authentic_data: false,
+            checking_disabled: false,
+            answers: vec![DnsRecord {
+                name: qname.clone(),
+                rtype: "CNAME".into(),
+                rclass: "IN".into(),
+                ttl: 300,
+                rdata: "cdn.example.com.".into(),
+            }],
+            authorities: vec![],
+            additionals: vec![],
+            edns: EdnsMeta::default(),
+        };
+
+        assert!(response.alias_target(&qname, RecordType::CNAME).is_none());
+    }
+
+    #[test]
+    fn sought_dname_is_not_rewritten() {
+        let qname = DomainName::parse("example.com.").expect("qname");
+        let response = DnsResponse {
+            id: 1,
+            rcode: 0,
+            rcode_text: "NOERROR".into(),
+            authoritative: true,
+            truncated: false,
+            recursion_desired: false,
+            recursion_available: false,
+            authentic_data: false,
+            checking_disabled: false,
+            answers: vec![DnsRecord {
+                name: qname.clone(),
+                rtype: "DNAME".into(),
+                rclass: "IN".into(),
+                ttl: 300,
+                rdata: "newexample.net.".into(),
+            }],
+            authorities: vec![],
+            additionals: vec![],
+            edns: EdnsMeta::default(),
+        };
+
+        assert!(
+            response
+                .alias_target(&qname, RecordType::from(39))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn ancestor_dname_still_redirects_for_dname_query() {
+        let qname = DomainName::parse("www.example.com.").expect("qname");
+        let response = DnsResponse {
+            id: 1,
+            rcode: 0,
+            rcode_text: "NOERROR".into(),
+            authoritative: true,
+            truncated: false,
+            recursion_desired: false,
+            recursion_available: false,
+            authentic_data: false,
+            checking_disabled: false,
+            answers: vec![DnsRecord {
+                name: DomainName::parse("example.com.").expect("owner"),
+                rtype: "DNAME".into(),
+                rclass: "IN".into(),
+                ttl: 300,
+                rdata: "newexample.net.".into(),
+            }],
+            authorities: vec![],
+            additionals: vec![],
+            edns: EdnsMeta::default(),
+        };
+
+        assert_eq!(
+            response
+                .alias_target(&qname, RecordType::from(39))
+                .map(|name| name.to_string()),
+            Some("www.newexample.net.".into())
+        );
+    }
+
+    #[test]
+    fn type_a_still_follows_cname() {
+        let qname = DomainName::parse("www.example.com.").expect("qname");
+        let response = DnsResponse {
+            id: 1,
+            rcode: 0,
+            rcode_text: "NOERROR".into(),
+            authoritative: true,
+            truncated: false,
+            recursion_desired: false,
+            recursion_available: false,
+            authentic_data: false,
+            checking_disabled: false,
+            answers: vec![DnsRecord {
+                name: qname.clone(),
+                rtype: "CNAME".into(),
+                rclass: "IN".into(),
+                ttl: 300,
+                rdata: "cdn.example.com.".into(),
+            }],
+            authorities: vec![],
+            additionals: vec![],
+            edns: EdnsMeta::default(),
+        };
+
+        assert_eq!(
+            response
+                .alias_target(&qname, RecordType::A)
+                .map(|name| name.to_string()),
             Some("cdn.example.com.".into())
         );
     }
@@ -294,7 +513,9 @@ mod tests {
         };
 
         assert_eq!(
-            response.dname_rewrite(&qname).map(|name| name.to_string()),
+            response
+                .dname_rewrite(&qname, RecordType::A)
+                .map(|name| name.to_string()),
             Some("www.newexample.net.".into())
         );
     }

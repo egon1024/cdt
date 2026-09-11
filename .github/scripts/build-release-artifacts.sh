@@ -23,7 +23,7 @@ fi
 
 mkdir -p "$OUT_DIR"
 rm -rf packaging/staging packaging/staging-dbg
-mkdir -p packaging/staging/usr/bin packaging/staging-dbg/usr/bin
+mkdir -p packaging/staging/usr/bin packaging/staging-dbg/usr/bin packaging/staging/usr/share/man/man1
 
 echo "Building release binaries for ${VERSION}..."
 pkg_args=()
@@ -36,6 +36,13 @@ for bin in "${BINARIES[@]}"; do
   cp "target/release/${bin}" "packaging/staging-dbg/usr/bin/${bin}"
   cp "target/release/${bin}" "packaging/staging/usr/bin/${bin}"
   strip "packaging/staging/usr/bin/${bin}"
+done
+
+echo "Generating man pages..."
+rm -rf packaging/man
+cargo run -q -p man-pages --release -- packaging/man
+for page in packaging/man/*.1; do
+  gzip -9 -c "$page" >"packaging/staging/usr/share/man/man1/$(basename "$page").gz"
 done
 
 TARBALL_PROD="${OUT_DIR}/cdt-${VERSION}-${ARCH}.tar.gz"
