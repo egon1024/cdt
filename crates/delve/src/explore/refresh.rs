@@ -210,7 +210,8 @@ mod tests {
     #[test]
     fn refresh_scope_all_runs_dns_then_icmp() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let runtime = Runtime::open(DelvePaths::from_root(dir.path()));
+        let mut runtime = Runtime::open(DelvePaths::from_root(dir.path()));
+        runtime.config.enrichment_icmp_enabled = true;
         let mut document = sample_document();
         let mut progress = RecordingProgress::new();
         let report = refresh_document(&mut document, &runtime, RefreshScope::All, &mut progress)

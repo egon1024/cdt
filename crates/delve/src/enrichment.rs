@@ -584,6 +584,32 @@ mod tests {
     }
 
     #[test]
+    fn populate_after_trace_skips_icmp_when_disabled() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = Runtime::open(DelvePaths::from_root(dir.path()));
+        assert!(!runtime.config.enrichment_icmp_enabled);
+        let ip: IpAddr = "1.1.1.1".parse().expect("ip");
+        let tree = build_linear_tree(
+            vec![hop("1.1.1.1", None)],
+            TraceTreeRequest {
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                started_at: "2026-09-06T00:00:00Z".into(),
+            },
+        );
+        let mut document = SessionDocument::new("01TEST".into(), sample_request(), tree.clone());
+        populate_after_trace(&mut document, &tree, &runtime, false);
+        assert!(document.targets.contains_key(&ip));
+        assert!(
+            document
+                .targets
+                .get(&ip)
+                .and_then(|entry| entry.icmp.as_ref())
+                .is_none()
+        );
+    }
+
+    #[test]
     fn populate_after_trace_writes_cache_and_targets() {
         let dir = tempfile::tempdir().expect("tempdir");
         let runtime = runtime_with_cache(&dir);

@@ -10,7 +10,7 @@ const DEFAULT_RTT_YELLOW_MS: u32 = 125;
 const DEFAULT_RTT_ORANGE_MS: u32 = 250;
 const DEFAULT_RTT_INSANE_MS: u32 = 1000;
 const DEFAULT_RTT_BAR_WIDTH: u16 = 20;
-const DEFAULT_ENRICHMENT_ICMP_ENABLED: bool = true;
+const DEFAULT_ENRICHMENT_ICMP_ENABLED: bool = false;
 const DEFAULT_ENRICHMENT_ICMP_ON_TRACE: bool = true;
 const DEFAULT_ENRICHMENT_ICMP_TTL_MINUTES: u32 = 15;
 const DEFAULT_ENRICHMENT_ICMP_TIMEOUT_MS: u64 = 200;
@@ -687,7 +687,7 @@ mod tests {
     #[test]
     fn default_enrichment_icmp_settings_match_design() {
         let config = DelveConfig::default();
-        assert!(config.enrichment_icmp_enabled);
+        assert!(!config.enrichment_icmp_enabled);
         assert!(config.enrichment_icmp_on_trace);
         assert_eq!(config.enrichment_cache_icmp_ttl_seconds, 15 * 60);
         assert_eq!(config.enrichment_icmp_timeout_ms, 200);
