@@ -9,10 +9,19 @@ use crate::trace_request::TraceRequest;
 
 pub const SESSION_FORMAT_VERSION: u32 = 2;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PublicIpCapture {
+    pub provider: String,
+    pub address: IpAddr,
+    pub observed_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct CaptureContext {
     #[serde(default)]
     pub local_source_ips: Vec<IpAddr>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_ip: Option<PublicIpCapture>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]

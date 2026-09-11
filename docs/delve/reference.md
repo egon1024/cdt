@@ -18,14 +18,17 @@ Command synopsis and trace options. For concepts (sessions, branching, expansion
 | `delve session purge <id>` | Remove one unpinned session regardless of retention age |
 | `delve session purge --all` | Remove all unpinned sessions |
 | `delve session purge --dry-run` | Report what would be removed |
-| `delve session explore [id]` | Interactive tree explorer (TUI); omit id for the default session |
+| `delve session explore [id] [+icmp]` | Interactive tree explorer (TUI); `+icmp` enables one-shot ICMP refresh for this process |
 | `delve session outline [id]` | Indented resolution tree on stdout; omit id for the default session |
 | `delve session events [id]` | Structured JSON explore tree on stdout; omit id for the default session |
 | `delve session export [id]` | Export trace tree as SVG or PNG; omit id for the default session |
 | `delve session branch [id]` | Extend a stored trace at a node (live queries) |
-| `delve cache stats` | Response cache statistics |
-| `delve cache purge` | Remove expired cache entries |
-| `delve cache purge --all` | Clear the entire response cache |
+| `delve cache stats` | DNS response cache statistics |
+| `delve cache purge` | Remove expired DNS cache entries |
+| `delve cache purge --all` | Clear the entire DNS response cache |
+| `delve cache enrichment stats` | Enrichment (ICMP) cache statistics |
+| `delve cache enrichment purge icmp` | Clear all ICMP enrichment cache rows |
+| `delve cache enrichment purge expired` | Remove TTL-expired ICMP enrichment cache rows |
 | `delve config dump` | Print resolved config path and YAML template with defaults |
 
 Session ids accept a full ULID or a unique short prefix (like git).

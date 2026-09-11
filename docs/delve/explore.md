@@ -7,6 +7,7 @@ Inspect stored traces without network I/O: interactive TUI, one-shot outline, an
 | Command | Output |
 |---------|--------|
 | **`session explore`** | TUI with Browse (tree + detail) and Compare (full trace tree with per-hop latency bars); `Tab` cycles screens; `?` help |
+| **`session explore … +icmp`** | Same TUI with one-shot ICMP enabled for unified **`r`** refresh (config ICMP may stay off) |
 | **`session outline`** | `session: <id>` header + indented tree on stdout; `--compare-at-hop` / `--compare-at-path` prints a path comparison |
 | **`session events`** | Structured JSON explore tree on stdout; `--compare-at-hop` / `--compare-at-path` emits `path_comparison` JSON |
 | **`session show --json`** | Flat JSON trace snapshot on stdout |
@@ -39,7 +40,7 @@ Two-pane layout: resolution tree on one side, dig-style detail for the selected 
 | `w` | Cycle pane focus within Browse |
 | `c` | Toggle color |
 | `b` | Branch from selected node — see [concepts](concepts.md#branching-in-explore) |
-| `r` | Re-query every hop with cache bypass (RTTs update in memory only; save on quit) |
+| `r` / `R` | Unified refresh: re-query DNS RTTs, then ICMP when effective (config or explore `+icmp`); in memory until save on quit |
 | `?` | Screen-scoped help |
 | `q` | Quit |
 

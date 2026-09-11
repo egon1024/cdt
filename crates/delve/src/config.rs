@@ -16,6 +16,8 @@ const DEFAULT_ENRICHMENT_ICMP_TTL_MINUTES: u32 = 15;
 const DEFAULT_ENRICHMENT_ICMP_TIMEOUT_MS: u64 = 200;
 const DEFAULT_ENRICHMENT_ICMP_PING_SAMPLES: u8 = 3;
 const DEFAULT_ENRICHMENT_ICMP_MAX_PARALLEL_PROBES: usize = 8;
+const DEFAULT_CAPTURE_PUBLIC_IP_ENABLED: bool = false;
+const DEFAULT_CAPTURE_PUBLIC_IP_PROVIDER: &str = "static";
 
 /// Fixed RTT scale for absolute-length bars (Browse detail, SVG export cards).
 /// Matches the default `orange_ms` color threshold.
@@ -81,6 +83,9 @@ pub struct DelveConfig {
     pub enrichment_icmp_timeout_ms: u64,
     pub enrichment_icmp_ping_samples: u8,
     pub enrichment_icmp_max_parallel_probes: usize,
+    pub capture_public_ip_enabled: bool,
+    pub capture_public_ip_provider: String,
+    pub capture_public_ip_static_address: Option<std::net::IpAddr>,
 }
 
 impl DelveConfig {
@@ -103,6 +108,9 @@ impl Default for DelveConfig {
             enrichment_icmp_timeout_ms: DEFAULT_ENRICHMENT_ICMP_TIMEOUT_MS,
             enrichment_icmp_ping_samples: DEFAULT_ENRICHMENT_ICMP_PING_SAMPLES,
             enrichment_icmp_max_parallel_probes: DEFAULT_ENRICHMENT_ICMP_MAX_PARALLEL_PROBES,
+            capture_public_ip_enabled: DEFAULT_CAPTURE_PUBLIC_IP_ENABLED,
+            capture_public_ip_provider: DEFAULT_CAPTURE_PUBLIC_IP_PROVIDER.into(),
+            capture_public_ip_static_address: None,
         }
     }
 }
@@ -117,6 +125,8 @@ struct DelveConfigFile {
     explore: ExploreSection,
     #[serde(default)]
     enrichment: EnrichmentSection,
+    #[serde(default)]
+    capture: CaptureSection,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -163,6 +173,18 @@ struct IcmpEnrichmentSection {
 #[derive(Debug, Deserialize, Default)]
 struct EnrichmentCacheSection {
     icmp_ttl_minutes: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct CaptureSection {
+    public_ip: Option<PublicIpSection>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PublicIpSection {
+    enabled: Option<bool>,
+    provider: Option<String>,
+    static_address: Option<String>,
 }
 
 impl DelveConfig {
@@ -238,6 +260,26 @@ impl DelveConfig {
             .unwrap_or(DEFAULT_ENRICHMENT_ICMP_TTL_MINUTES)
             .saturating_mul(60);
 
+        let public_ip = parsed.capture.public_ip.unwrap_or_default();
+        let capture_public_ip_enabled = public_ip
+            .enabled
+            .unwrap_or(DEFAULT_CAPTURE_PUBLIC_IP_ENABLED);
+        let capture_public_ip_provider = public_ip
+            .provider
+            .unwrap_or_else(|| DEFAULT_CAPTURE_PUBLIC_IP_PROVIDER.to_string());
+        let capture_public_ip_static_address = match public_ip.static_address {
+            None => None,
+            Some(value) => match value.parse() {
+                Ok(address) => Some(address),
+                Err(error) => {
+                    warnings.push(format!(
+                        "warning: invalid capture.public_ip.static_address \"{value}\": {error}; ignoring"
+                    ));
+                    None
+                }
+            },
+        };
+
         (
             Self {
                 session_retention,
@@ -251,6 +293,9 @@ impl DelveConfig {
                 enrichment_icmp_timeout_ms,
                 enrichment_icmp_ping_samples,
                 enrichment_icmp_max_parallel_probes,
+                capture_public_ip_enabled,
+                capture_public_ip_provider,
+                capture_public_ip_static_address,
             },
             warnings,
         )
@@ -284,6 +329,7 @@ impl DelveConfig {
         write_trace_dump_section(&mut out, &parsed, &defaults);
         write_explore_dump_section(&mut out, &parsed, &defaults, default_rtt);
         write_enrichment_dump_section(&mut out, &parsed, &defaults);
+        write_capture_dump_section(&mut out, &parsed, &defaults);
 
         (out, warnings)
     }
@@ -371,6 +417,36 @@ fn write_explore_dump_section(
         write_rtt_bar_dump_section(&mut body, parsed.explore.rtt_bar.as_ref(), default_rtt);
     let active = parsed.explore.persist_view_state.is_some() || rtt_bar_active;
     write_dump_section(out, "explore", active, &body);
+}
+
+fn write_capture_dump_section(out: &mut String, parsed: &DelveConfigFile, defaults: &DelveConfig) {
+    let public_ip = parsed.capture.public_ip.as_ref();
+    let mut body = String::new();
+    body.push_str("  public_ip:\n");
+    let enabled_active = write_yaml_key(
+        &mut body,
+        2,
+        "enabled",
+        public_ip.and_then(|section| section.enabled),
+        defaults.capture_public_ip_enabled,
+    );
+    let provider_active = write_yaml_key(
+        &mut body,
+        2,
+        "provider",
+        public_ip.and_then(|section| section.provider.clone()),
+        defaults.capture_public_ip_provider.clone(),
+    );
+    let static_active = write_yaml_key(
+        &mut body,
+        2,
+        "static_address",
+        public_ip.and_then(|section| section.static_address.clone()),
+        String::new(),
+    );
+    let active =
+        enabled_active || provider_active || static_active || parsed.capture.public_ip.is_some();
+    write_dump_section(out, "capture", active, &body);
 }
 
 fn write_enrichment_dump_section(
@@ -688,6 +764,26 @@ mod tests {
         assert!(yaml.contains("#  persist_view_state: true"));
         assert!(yaml.contains("  rtt_bar:\n    green_ms: 75"));
         assert!(yaml.contains("#    yellow_ms: 125"));
+    }
+
+    #[test]
+    fn parses_capture_public_ip_static_provider() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = DelvePaths::from_root(dir.path());
+        std::fs::create_dir_all(paths.config_file().parent().expect("parent")).expect("mkdir");
+        std::fs::write(
+            paths.config_file(),
+            "capture:\n  public_ip:\n    enabled: true\n    provider: static\n    static_address: 203.0.113.10\n",
+        )
+        .expect("write config");
+        let (config, warnings) = DelveConfig::load(&paths);
+        assert!(warnings.is_empty());
+        assert!(config.capture_public_ip_enabled);
+        assert_eq!(config.capture_public_ip_provider, "static");
+        assert_eq!(
+            config.capture_public_ip_static_address,
+            Some("203.0.113.10".parse().expect("ip"))
+        );
     }
 
     #[test]

@@ -1,5 +1,6 @@
 pub mod args;
 pub mod branch;
+pub mod capture;
 pub mod cli;
 pub mod config;
 pub mod default_session;

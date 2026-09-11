@@ -128,6 +128,7 @@ impl Runtime {
     ) -> Result<String, SessionError> {
         let id = crate::session::id::new_session_id();
         let mut document = SessionDocument::new(id.clone(), request.clone(), result.clone());
+        document.capture_context = crate::capture::capture_context_from_config(&self.config);
         crate::enrichment::populate_after_trace(&mut document, result, self, fresh);
         self.sessions
             .lock()
