@@ -123,12 +123,15 @@ pub struct ExploreContext<'a> {
     pub runtime: &'a Runtime,
     pub document: &'a mut SessionDocument,
     pub persist_view_state: bool,
+    pub plus_icmp: bool,
 }
 
 pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
     let runtime = ctx.runtime;
     let document = ctx.document;
     let persist_view_state = ctx.persist_view_state;
+    let explore_plus_icmp = ctx.plus_icmp;
+    let effective_icmp = runtime.config.effective_icmp_enabled(explore_plus_icmp);
     let mut tree = explore_tree_from_document(document)?;
     let session_id = document.id.clone();
     let paths = runtime.paths.clone();
@@ -360,7 +363,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
             }
 
             if show_help {
-                render_help_overlay(frame, &view, &theme);
+                render_help_overlay(frame, &view, effective_icmp, &theme);
             }
             if branch_overlay != BranchOverlay::None || branch_progress.is_some() {
                 render_branch_overlay(
@@ -634,6 +637,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                         start_refresh(
                             &paths,
                             document,
+                            explore_plus_icmp,
                             &mut refresh_rx,
                             &mut refresh_origin_screen,
                             view.active_screen,
@@ -827,6 +831,7 @@ fn start_branch(
 fn start_refresh(
     paths: &DelvePaths,
     document: &SessionDocument,
+    explore_plus_icmp: bool,
     refresh_rx: &mut Option<mpsc::Receiver<RefreshWorkerMessage>>,
     refresh_origin_screen: &mut Option<ActiveScreen>,
     origin_screen: ActiveScreen,
@@ -840,8 +845,14 @@ fn start_refresh(
         let runtime = Runtime::open(paths);
         let mut progress = RefreshChannelProgress::new(tx.clone());
         let mut working = working;
-        let result = refresh_document(&mut working, &runtime, RefreshScope::All, &mut progress)
-            .map(|report| (Box::new(working), report));
+        let result = refresh_document(
+            &mut working,
+            &runtime,
+            RefreshScope::All,
+            explore_plus_icmp,
+            &mut progress,
+        )
+        .map(|report| (Box::new(working), report));
         let _ = tx.send(RefreshWorkerMessage::Done(result));
     });
 }
@@ -1840,10 +1851,15 @@ fn footer_line(theme: &Theme) -> Line<'static> {
     ])
 }
 
-fn render_help_overlay(frame: &mut ratatui::Frame<'_>, view: &ViewStateController, theme: &Theme) {
+fn render_help_overlay(
+    frame: &mut ratatui::Frame<'_>,
+    view: &ViewStateController,
+    effective_icmp: bool,
+    theme: &Theme,
+) {
     let area = centered_rect(62, 72, frame.area());
     frame.render_widget(Clear, area);
-    let help_text = Paragraph::new(help_lines(view, theme))
+    let help_text = Paragraph::new(help_lines(view, effective_icmp, theme))
         .block(
             Block::default()
                 .title("Keyboard shortcuts")
@@ -1920,7 +1936,16 @@ fn format_refresh_failure(report: &UnifiedRefreshReport) -> String {
     }
 }
 
-fn help_lines(view: &ViewStateController, theme: &Theme) -> Vec<Line<'static>> {
+fn help_lines(
+    view: &ViewStateController,
+    effective_icmp: bool,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let refresh_help = if effective_icmp {
+        "Refresh DNS RTTs and ICMP in memory"
+    } else {
+        "Refresh DNS RTTs in memory (use explore +icmp for ICMP)"
+    };
     let mut lines = vec![
         help_section("Global", theme),
         help_binding("?", "Show this help", theme),
@@ -1930,7 +1955,7 @@ fn help_lines(view: &ViewStateController, theme: &Theme) -> Vec<Line<'static>> {
         help_binding("Tab / Shift-Tab", "Cycle screens", theme),
         help_binding("1 / 2", "Select Browse / Compare", theme),
         help_binding("m", "Jump to Compare", theme),
-        help_binding("r", "Refresh DNS RTTs and ICMP in memory", theme),
+        help_binding("r", refresh_help, theme),
         help_binding("E / C", "Expand all / collapse all", theme),
         Line::from(""),
     ];
@@ -2213,6 +2238,33 @@ mod tests {
     }
 
     #[test]
+    fn help_mentions_plus_icmp_when_icmp_not_effective() {
+        let view = ViewStateController::default_for_tree(&super::super::tree::build_explore_tree(
+            &dns_resolve::build_linear_tree(
+                vec![sample_hop()],
+                dns_resolve::TraceTreeRequest {
+                    qname: "example.com.".into(),
+                    qtype: "A".into(),
+                    started_at: "2026-08-25T00:00:00Z".into(),
+                },
+            ),
+        ));
+        let theme = Theme::from_env();
+        let text = help_lines(&view, false, &theme)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("explore +icmp"));
+        assert!(!text.contains("Refresh DNS RTTs and ICMP in memory"));
+    }
+
+    #[test]
     fn help_lists_screen_bindings() {
         let view = ViewStateController::default_for_tree(&super::super::tree::build_explore_tree(
             &dns_resolve::build_linear_tree(
@@ -2225,7 +2277,7 @@ mod tests {
             ),
         ));
         let theme = Theme::from_env();
-        let text = help_lines(&view, &theme)
+        let text = help_lines(&view, true, &theme)
             .into_iter()
             .map(|line| {
                 line.spans

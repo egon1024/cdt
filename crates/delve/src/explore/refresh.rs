@@ -79,8 +79,10 @@ pub fn refresh_document(
     document: &mut SessionDocument,
     runtime: &Runtime,
     scope: RefreshScope,
+    explore_plus_icmp: bool,
     progress: &mut dyn UnifiedRefreshProgress,
 ) -> Result<UnifiedRefreshReport, RefreshError> {
+    let effective_icmp = runtime.config.effective_icmp_enabled(explore_plus_icmp);
     let dns = match scope {
         RefreshScope::All | RefreshScope::DnsRttOnly => {
             Some(refresh_document_dns(document, runtime, progress)?)
@@ -88,9 +90,12 @@ pub fn refresh_document(
         RefreshScope::IcmpOnly => None,
     };
     let icmp = match scope {
-        RefreshScope::All | RefreshScope::IcmpOnly => {
-            Some(refresh_targets_icmp(document, runtime, progress))
-        }
+        RefreshScope::All | RefreshScope::IcmpOnly => Some(refresh_targets_icmp(
+            document,
+            runtime,
+            effective_icmp,
+            progress,
+        )),
         RefreshScope::DnsRttOnly => None,
     };
     Ok(UnifiedRefreshReport { dns, icmp })
@@ -121,11 +126,13 @@ fn refresh_document_dns(
 pub fn refresh_targets_icmp(
     document: &mut SessionDocument,
     runtime: &Runtime,
+    effective_icmp: bool,
     progress: &mut dyn UnifiedRefreshProgress,
 ) -> IcmpRefreshReport {
     refresh_icmp_targets_with_prober(
         document,
         runtime,
+        effective_icmp,
         dns_resolve::comparison_icmp_prober(),
         |current, total| progress.icmp_target_started(current, total),
     )
@@ -208,14 +215,58 @@ mod tests {
     }
 
     #[test]
+    fn refresh_scope_all_skips_icmp_without_effective_icmp() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = Runtime::open(DelvePaths::from_root(dir.path()));
+        let mut document = sample_document();
+        let mut progress = RecordingProgress::new();
+        let report = refresh_document(
+            &mut document,
+            &runtime,
+            RefreshScope::All,
+            false,
+            &mut progress,
+        )
+        .expect("refresh");
+        assert!(report.dns.is_some());
+        assert_eq!(report.icmp.as_ref().map(|icmp| icmp.targets_total), Some(0));
+        assert!(progress.icmp.is_empty());
+    }
+
+    #[test]
+    fn refresh_scope_all_runs_icmp_with_explore_plus_icmp() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = Runtime::open(DelvePaths::from_root(dir.path()));
+        let mut document = sample_document();
+        let mut progress = RecordingProgress::new();
+        let report = refresh_document(
+            &mut document,
+            &runtime,
+            RefreshScope::All,
+            true,
+            &mut progress,
+        )
+        .expect("refresh");
+        assert!(report.dns.is_some());
+        assert!(report.icmp.is_some());
+        assert!(!progress.icmp.is_empty());
+    }
+
+    #[test]
     fn refresh_scope_all_runs_dns_then_icmp() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut runtime = Runtime::open(DelvePaths::from_root(dir.path()));
         runtime.config.enrichment_icmp_enabled = true;
         let mut document = sample_document();
         let mut progress = RecordingProgress::new();
-        let report = refresh_document(&mut document, &runtime, RefreshScope::All, &mut progress)
-            .expect("refresh");
+        let report = refresh_document(
+            &mut document,
+            &runtime,
+            RefreshScope::All,
+            false,
+            &mut progress,
+        )
+        .expect("refresh");
         assert!(report.dns.is_some());
         assert!(report.icmp.is_some());
         assert!(!progress.dns.is_empty());
@@ -297,7 +348,8 @@ mod tests {
         let prober = MockProber {
             calls: Mutex::new(Vec::new()),
         };
-        let report = refresh_icmp_targets_with_prober(&mut document, &runtime, &prober, |_, _| {});
+        let report =
+            refresh_icmp_targets_with_prober(&mut document, &runtime, true, &prober, |_, _| {});
         assert_eq!(report.targets_updated, 1);
         assert_eq!(
             document

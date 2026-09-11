@@ -253,6 +253,7 @@ pub struct IcmpRefreshReport {
 pub fn refresh_icmp_targets_with_prober(
     document: &mut SessionDocument,
     runtime: &Runtime,
+    effective_icmp: bool,
     prober: &dyn TraceEnrichmentProber,
     mut on_progress: impl FnMut(usize, usize),
 ) -> IcmpRefreshReport {
@@ -264,7 +265,7 @@ pub fn refresh_icmp_targets_with_prober(
             capability_notice: None,
         };
     };
-    if !runtime.config.enrichment_icmp_enabled {
+    if !effective_icmp {
         merge_tree_names(document, &tree);
         return IcmpRefreshReport {
             targets_total: 0,
@@ -748,10 +749,13 @@ mod tests {
         let mut document = SessionDocument::new("01TEST".into(), sample_request(), tree);
         let progress = Arc::new(Mutex::new(Vec::new()));
         let progress_handle = Arc::clone(&progress);
-        let report =
-            refresh_icmp_targets_with_prober(&mut document, &runtime, &prober, |current, total| {
-                progress_handle.lock().expect("lock").push((current, total))
-            });
+        let report = refresh_icmp_targets_with_prober(
+            &mut document,
+            &runtime,
+            true,
+            &prober,
+            |current, total| progress_handle.lock().expect("lock").push((current, total)),
+        );
         assert_eq!(report.targets_total, 3);
         assert_eq!(report.targets_updated, 3);
         assert_eq!(report.targets_failed, 0);

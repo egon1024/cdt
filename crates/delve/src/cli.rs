@@ -16,7 +16,8 @@ use crate::config::DelveConfig;
 use crate::dig_options::{ParseError, TraceOptions, parse_trace_args};
 use crate::expand_confirm::{ExpandConfirmOutcome, confirm_expand_all, expand_all_is_tty};
 use crate::explore::{
-    ExploreError, run_events_with_compare, run_explore, run_outline_with_compare,
+    ExploreError, ExploreParseError, parse_explore_args, run_events_with_compare, run_explore,
+    run_outline_with_compare,
 };
 use crate::family_notice::format_family_notice;
 use crate::hop_display::{HopDisplayState, print_hop_human};
@@ -312,10 +313,11 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
             Ok(())
         }
         SessionSubcommand::Explore(args) => {
-            let (session_id, _) = resolve_session_target(args.id, Vec::new(), &runtime)?;
+            let (session_id, trailing) = resolve_session_target(args.id, args.args, &runtime)?;
+            let explore_options = parse_explore_args(&trailing).map_err(map_explore_parse_error)?;
             let document = runtime.get_session(&session_id)?;
             let mut document = document;
-            run_explore(&runtime, &mut document)?;
+            run_explore(&runtime, &mut document, explore_options)?;
             Ok(())
         }
         SessionSubcommand::Export(args) => run_session_export(args, &runtime),
@@ -441,6 +443,13 @@ fn run_config_command(command: ConfigCommand) -> Result<(), CliError> {
             print!("{yaml}");
             Ok(())
         }
+    }
+}
+
+fn map_explore_parse_error(error: ExploreParseError) -> CliError {
+    match error {
+        ExploreParseError::Unexpected(value) => CliError::Parse(ParseError::Unexpected(value)),
+        ExploreParseError::UnknownOption(value) => CliError::Parse(ParseError::UnknownOption(value)),
     }
 }
 
