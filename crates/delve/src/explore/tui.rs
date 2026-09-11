@@ -47,6 +47,9 @@ use super::view_state::{ActiveScreen, BrowsePane, ViewStateController, apply_vie
 struct BrowseScrollLimits {
     detail_max_scroll: u16,
     tree_max_scroll_x: u16,
+    tree_max_scroll_y: u16,
+    tree_inner_height: u16,
+    tree_row_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,6 +141,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
     let mut theme = Theme::from_env();
     let mut detail_scroll = 0u16;
     let mut tree_scroll_x = 0u16;
+    let mut tree_scroll_y = 0u16;
     let mut compare_scroll = 0u16;
     let rtt_bar_config = runtime.config.explore_rtt_bar;
     let mut show_help = false;
@@ -299,6 +303,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
         );
         detail_scroll = detail_scroll.min(scroll_limits.detail_max_scroll);
         tree_scroll_x = tree_scroll_x.min(scroll_limits.tree_max_scroll_x);
+        sync_browse_tree_scroll(&mut tree_scroll_y, selected_index, scroll_limits);
 
         if view.active_screen == ActiveScreen::Compare {
             let compare_visible = tree.visible_nodes(&view.expanded_paths);
@@ -336,6 +341,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                     &document.targets,
                     detail_scroll,
                     tree_scroll_x,
+                    tree_scroll_y,
                     rtt_bar_config,
                     &theme,
                     &session_id,
@@ -1063,7 +1069,20 @@ fn browse_scroll_limits(
     BrowseScrollLimits {
         detail_max_scroll,
         tree_max_scroll_x,
+        tree_max_scroll_y: max_vertical_scroll(visible.len(), tree_inner.height),
+        tree_inner_height: tree_inner.height,
+        tree_row_count: visible.len(),
     }
+}
+
+fn sync_browse_tree_scroll(scroll: &mut u16, selected_index: usize, limits: BrowseScrollLimits) {
+    ensure_line_visible(
+        selected_index,
+        scroll,
+        limits.tree_inner_height,
+        limits.tree_row_count,
+    );
+    *scroll = (*scroll).min(limits.tree_max_scroll_y);
 }
 
 fn wrapped_line_count(lines: &[Line<'_>], width: u16) -> usize {
@@ -1443,6 +1462,7 @@ fn render_browse(
     targets: &std::collections::BTreeMap<std::net::IpAddr, TargetEnrichments>,
     detail_scroll: u16,
     tree_scroll_x: u16,
+    tree_scroll_y: u16,
     rtt_config: RttBarConfig,
     theme: &Theme,
     session_id: &str,
@@ -1490,9 +1510,13 @@ fn render_browse(
     let tree_inner = tree_block.inner(tree_area);
     let tree_max_scroll_x = max_horizontal_scroll(max_line_width, tree_inner.width);
     let clamped_tree_scroll_x = tree_scroll_x.min(tree_max_scroll_x);
-    let tree_scroll_hints =
+    let tree_max_scroll_y = max_vertical_scroll(raw_tree_lines.len(), tree_inner.height);
+    let clamped_tree_scroll_y = tree_scroll_y.min(tree_max_scroll_y);
+    let tree_h_scroll_hints =
         AxisScrollHints::horizontal(clamped_tree_scroll_x, tree_max_scroll_x).format_horizontal();
-    let tree_title = format!("{tree_title_base}{tree_scroll_hints}");
+    let tree_v_scroll_hints =
+        AxisScrollHints::vertical(clamped_tree_scroll_y, tree_max_scroll_y).format_vertical();
+    let tree_title = format!("{tree_title_base}{tree_v_scroll_hints}{tree_h_scroll_hints}");
     let tree_rows = raw_tree_lines
         .into_iter()
         .map(|(line, selected)| {
@@ -1504,8 +1528,15 @@ fn render_browse(
             ListItem::new(scroll_line(line, clamped_tree_scroll_x))
         })
         .collect::<Vec<_>>();
+    let tree_viewport = tree_inner.height as usize;
+    let tree_start = clamped_tree_scroll_y as usize;
+    let tree_visible_rows: Vec<_> = tree_rows
+        .into_iter()
+        .skip(tree_start)
+        .take(tree_viewport)
+        .collect();
 
-    let tree_widget = List::new(tree_rows).block(
+    let tree_widget = List::new(tree_visible_rows).block(
         Block::default()
             .title(tree_title)
             .borders(Borders::ALL)
@@ -2089,6 +2120,26 @@ mod tests {
     }
 
     #[test]
+    fn browse_tree_scroll_keeps_selected_row_visible() {
+        let mut scroll = 0u16;
+        let limits = BrowseScrollLimits {
+            detail_max_scroll: 0,
+            tree_max_scroll_x: 0,
+            tree_max_scroll_y: 8,
+            tree_inner_height: 5,
+            tree_row_count: 13,
+        };
+        sync_browse_tree_scroll(&mut scroll, 0, limits);
+        assert_eq!(scroll, 0);
+        sync_browse_tree_scroll(&mut scroll, 4, limits);
+        assert_eq!(scroll, 0);
+        sync_browse_tree_scroll(&mut scroll, 5, limits);
+        assert_eq!(scroll, 1);
+        sync_browse_tree_scroll(&mut scroll, 12, limits);
+        assert_eq!(scroll, 8);
+    }
+
+    #[test]
     fn detail_scroll_stops_at_bottom_when_pressing_down() {
         let tree = super::super::tree::build_explore_tree(&dns_resolve::build_linear_tree(
             vec![sample_hop()],
@@ -2105,6 +2156,9 @@ mod tests {
         let limits = BrowseScrollLimits {
             detail_max_scroll: 3,
             tree_max_scroll_x: 0,
+            tree_max_scroll_y: 0,
+            tree_inner_height: 20,
+            tree_row_count: 1,
         };
 
         view.browse_pane = BrowsePane::Detail;
@@ -2150,6 +2204,9 @@ mod tests {
             BrowseScrollLimits {
                 detail_max_scroll: 0,
                 tree_max_scroll_x: 0,
+                tree_max_scroll_y: 0,
+                tree_inner_height: 20,
+                tree_row_count: 1,
             },
         );
         assert_eq!(view.browse_pane, BrowsePane::Tree);
