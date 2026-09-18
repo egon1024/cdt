@@ -15,6 +15,7 @@ use thiserror::Error;
 
 use crate::runtime::Runtime;
 use crate::session::{SessionDocument, SessionTree};
+use crate::explore::{ExploreQueryOverrides, apply_explore_query_overrides};
 use crate::trace_config::trace_config_from_request;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,10 +160,20 @@ pub fn branch_session(
     intent: BranchIntentArg,
     dry_run: bool,
     progress: &mut dyn TraceProgress,
+    query_overrides: Option<&ExploreQueryOverrides>,
 ) -> Result<BranchReport, BranchError> {
     let mut document = runtime.get_session(session_id)?;
     let tree_index = at.tree;
-    let mut report = execute_branch(&mut document, at, intent, dry_run, runtime, progress, None)?;
+    let mut report = execute_branch(
+        &mut document,
+        at,
+        intent,
+        dry_run,
+        runtime,
+        progress,
+        None,
+        query_overrides,
+    )?;
     if !dry_run && report.nodes_added > 0 {
         if let Some(notice) =
             crate::enrichment::populate_after_branch(&mut document, tree_index, runtime, false)
@@ -182,6 +193,7 @@ pub fn execute_branch(
     runtime: &Runtime,
     progress: &mut dyn TraceProgress,
     exchange_override: Option<std::sync::Arc<dyn dns_resolve::DnsExchange>>,
+    query_overrides: Option<&ExploreQueryOverrides>,
 ) -> Result<BranchReport, BranchError> {
     let session_tree =
         document
@@ -221,6 +233,9 @@ pub fn execute_branch(
     )?;
     if let Some(exchange) = exchange_override {
         config.exchange = exchange;
+    }
+    if let Some(overrides) = query_overrides {
+        apply_explore_query_overrides(&mut config, overrides);
     }
     seed_ns_targets_from_tree(&config, &session_tree.tree.root);
 
@@ -1285,6 +1300,7 @@ mod tests {
             &runtime,
             &mut SilentProgress,
             None,
+            None,
         )
         .expect("dry run");
         assert!(report.dry_run);
@@ -1317,6 +1333,7 @@ mod tests {
             &runtime,
             &mut SilentProgress,
             Some(Arc::new(AuthoritativeExchange)),
+            None,
         )
         .expect("branch");
         assert_eq!(report.nodes_added, 3);
@@ -1394,6 +1411,7 @@ mod tests {
             &runtime,
             &mut SilentProgress,
             Some(Arc::new(AuthoritativeExchange)),
+            None,
         )
         .expect("branch");
         assert_eq!(report.nodes_added, 0);
@@ -1446,6 +1464,7 @@ mod tests {
             &runtime,
             &mut SilentProgress,
             None,
+            None,
         )
         .expect("branch");
         let plan = report.plan.expect("plan");
@@ -1484,6 +1503,7 @@ mod tests {
             Some(Arc::new(TuiningaBranchExchangeImpl {
                 root_cut_queried: Mutex::new(HashSet::new()),
             })),
+            None,
         )
         .expect("branch should not hit delegation loop at tuininga.org");
         assert_eq!(report.nodes_added, 5);
@@ -1535,6 +1555,7 @@ mod tests {
             Some(Arc::new(SkippedTldBranchExchange {
                 root_cut_queried: Mutex::new(HashSet::new()),
             })),
+            None,
         )
         .expect("branch");
         assert_eq!(report.nodes_added, 5, "{:?}", report.warnings);
@@ -1664,6 +1685,7 @@ mod tests {
             false,
             &runtime,
             &mut SilentProgress,
+            None,
             None,
         )
         .expect("live branch");
@@ -1914,6 +1936,7 @@ mod tests {
             &runtime,
             &mut SilentProgress,
             None,
+            None,
         )
         .expect("branch");
         let text = format_branch_report(&report);
@@ -1946,6 +1969,7 @@ mod tests {
             true,
             &runtime,
             &mut SilentProgress,
+            None,
             None,
         )
         .expect("branch");
@@ -2155,6 +2179,7 @@ mod tests {
             Some(Arc::new(TuiningaBranchExchange {
                 root_cut_queried: Mutex::new(HashSet::new()),
             })),
+            None,
         )
         .expect("branch");
         assert_eq!(report.nodes_added, 2);
@@ -2338,6 +2363,7 @@ mod tests {
             &runtime,
             &mut SilentProgress,
             Some(std::sync::Arc::new(PanicExchange)),
+            None,
         )
         .expect("branch");
         assert_eq!(report.nodes_added, 0);
@@ -2416,6 +2442,7 @@ mod tests {
             &runtime,
             &mut SilentProgress,
             Some(Arc::new(AuthoritativeExchange)),
+            None,
         )
         .expect("branch");
         assert_eq!(report.nodes_added, 0);
@@ -2454,6 +2481,7 @@ mod tests {
                     IpAddr::V4(Ipv4Addr::new(192, 0, 0, 3)),
                 ],
             })),
+            None,
         )
         .expect("branch");
         assert_eq!(report.nodes_added, 3);
@@ -2516,6 +2544,7 @@ mod tests {
             &runtime,
             &mut SilentProgress,
             Some(Arc::new(AuthoritativeExchange)),
+            None,
         )
         .expect("branch");
         assert!(report.nodes_added > 0);
@@ -2567,6 +2596,7 @@ mod tests {
             &runtime,
             &mut SilentProgress,
             Some(Arc::new(AuthoritativeExchange)),
+            None,
         )
         .expect("branch");
         document.id = "missing-session-id".into();
@@ -2848,6 +2878,7 @@ mod tests {
             Some(Arc::new(TuiningaBranchExchangeImpl {
                 root_cut_queried: Mutex::new(HashSet::new()),
             })),
+            None,
         )
         .expect("first branch");
         assert_eq!(first.nodes_added, 2);
@@ -2905,6 +2936,7 @@ mod tests {
             Some(Arc::new(TuiningaBranchExchangeImpl {
                 root_cut_queried: Mutex::new(HashSet::new()),
             })),
+            None,
         )
         .expect("second branch");
         assert_eq!(second.nodes_added, 0);
@@ -2951,6 +2983,7 @@ mod tests {
             true,
             &runtime,
             &mut SilentProgress,
+            None,
             None,
         )
         .expect("branch");

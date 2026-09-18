@@ -770,8 +770,9 @@ mod tests {
             );
         }
         let seen = progress.lock().expect("lock");
-        assert_eq!(seen.len(), 3);
+        assert_eq!(seen.first().copied(), Some((0, 3)));
         assert_eq!(seen.last().copied(), Some((3, 3)));
+        assert_eq!(seen.len(), 4);
     }
 
     #[test]

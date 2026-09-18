@@ -412,6 +412,7 @@ fn run_session_branch(args: SessionBranchArgs, runtime: &Runtime) -> Result<(), 
         intent,
         args.dry_run,
         &mut progress,
+        None,
     )?;
     println!("{}", format_branch_report(&report));
     Ok(())
@@ -501,6 +502,12 @@ fn map_explore_parse_error(error: ExploreParseError) -> CliError {
         ExploreParseError::Unexpected(value) => CliError::Parse(ParseError::Unexpected(value)),
         ExploreParseError::UnknownOption(value) => {
             CliError::Parse(ParseError::UnknownOption(value))
+        }
+        ExploreParseError::MissingValue(option) => {
+            CliError::Parse(ParseError::MissingValue { option })
+        }
+        ExploreParseError::InvalidValue { option, value } => {
+            CliError::Parse(ParseError::InvalidValue { option, value })
         }
     }
 }

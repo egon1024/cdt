@@ -21,6 +21,7 @@ use crate::branch::{
     BranchError, BranchIntentArg, BranchReport, ServerTargetInput, branch_session,
     format_branch_report,
 };
+use crate::explore::ExploreQueryOverrides;
 use crate::config::RttBarConfig;
 use crate::paths::DelvePaths;
 use crate::runtime::Runtime;
@@ -125,6 +126,7 @@ pub struct ExploreContext<'a> {
     pub document: &'a mut SessionDocument,
     pub persist_view_state: bool,
     pub plus_icmp: bool,
+    pub query_overrides: ExploreQueryOverrides,
 }
 
 pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
@@ -132,6 +134,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
     let document = ctx.document;
     let persist_view_state = ctx.persist_view_state;
     let explore_plus_icmp = ctx.plus_icmp;
+    let query_overrides = ctx.query_overrides;
     let effective_icmp = runtime.config.effective_icmp_enabled(explore_plus_icmp);
     let mut tree = explore_tree_from_document(document)?;
     let session_id = document.id.clone();
@@ -481,6 +484,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                     BranchIntentArg::AlternateServer {
                                         target: parse_server_target_input(target),
                                     },
+                                    query_overrides,
                                     &mut branch_rx,
                                 );
                                 branch_overlay = BranchOverlay::None;
@@ -515,6 +519,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                 session_id.clone(),
                                 view.selection.clone(),
                                 BranchIntentArg::ExpandCut,
+                                query_overrides,
                                 &mut branch_rx,
                             );
                             branch_overlay = BranchOverlay::None;
@@ -641,6 +646,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                             &paths,
                             document,
                             explore_plus_icmp,
+                            query_overrides,
                             &mut refresh_rx,
                             &mut refresh_origin_screen,
                             view.active_screen,
@@ -818,6 +824,7 @@ fn start_branch(
     session_id: String,
     at: NodePath,
     intent: BranchIntentArg,
+    query_overrides: ExploreQueryOverrides,
     branch_rx: &mut Option<mpsc::Receiver<BranchWorkerMessage>>,
 ) {
     let (tx, rx) = mpsc::channel();
@@ -826,7 +833,20 @@ fn start_branch(
     std::thread::spawn(move || {
         let runtime = Runtime::open(paths);
         let mut progress = ChannelProgress::new(tx.clone());
-        let result = branch_session(&runtime, &session_id, at, intent, false, &mut progress);
+        let overrides = if query_overrides.is_empty() {
+            None
+        } else {
+            Some(query_overrides)
+        };
+        let result = branch_session(
+            &runtime,
+            &session_id,
+            at,
+            intent,
+            false,
+            &mut progress,
+            overrides.as_ref(),
+        );
         let _ = tx.send(BranchWorkerMessage::Done(result));
     });
 }
@@ -835,6 +855,7 @@ fn start_refresh(
     paths: &DelvePaths,
     document: &SessionDocument,
     explore_plus_icmp: bool,
+    query_overrides: ExploreQueryOverrides,
     refresh_rx: &mut Option<mpsc::Receiver<RefreshWorkerMessage>>,
     refresh_origin_screen: &mut Option<ActiveScreen>,
     origin_screen: ActiveScreen,
@@ -854,6 +875,7 @@ fn start_refresh(
             RefreshScope::All,
             explore_plus_icmp,
             &mut progress,
+            &query_overrides,
         )
         .map(|report| (Box::new(working), report));
         let _ = tx.send(RefreshWorkerMessage::Done(result));

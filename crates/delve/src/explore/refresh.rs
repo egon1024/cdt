@@ -1,6 +1,7 @@
 use dns_resolve::{RefreshProgress, RefreshTreeReport, refresh_tree_rtts};
 
 use crate::enrichment::{IcmpRefreshReport, refresh_icmp_targets_with_prober};
+use crate::explore::{ExploreQueryOverrides, apply_explore_query_overrides};
 use crate::runtime::Runtime;
 use crate::session::{SessionDocument, SessionError};
 use crate::trace_config::{TraceConfigError, trace_config_from_request};
@@ -81,11 +82,17 @@ pub fn refresh_document(
     scope: RefreshScope,
     explore_plus_icmp: bool,
     progress: &mut dyn UnifiedRefreshProgress,
+    query_overrides: &ExploreQueryOverrides,
 ) -> Result<UnifiedRefreshReport, RefreshError> {
     let effective_icmp = runtime.config.effective_icmp_enabled(explore_plus_icmp);
     let dns = match scope {
         RefreshScope::All | RefreshScope::DnsRttOnly => {
-            Some(refresh_document_dns(document, runtime, progress)?)
+            Some(refresh_document_dns(
+                document,
+                runtime,
+                progress,
+                query_overrides,
+            )?)
         }
         RefreshScope::IcmpOnly => None,
     };
@@ -105,6 +112,7 @@ fn refresh_document_dns(
     document: &mut SessionDocument,
     runtime: &Runtime,
     progress: &mut dyn UnifiedRefreshProgress,
+    query_overrides: &ExploreQueryOverrides,
 ) -> Result<RefreshTreeReport, RefreshError> {
     let session_tree = document.trees.get_mut(0).ok_or(RefreshError::NoTree)?;
     let request = session_tree.request.clone();
@@ -114,6 +122,7 @@ fn refresh_document_dns(
         runtime.config.trace_max_queries_per_action,
         runtime.config.trace_max_parallel_queries,
     )?;
+    apply_explore_query_overrides(&mut config, query_overrides);
     config.use_cache = false;
     let mut adapter = DnsProgressAdapter(progress);
     Ok(refresh_tree_rtts(
@@ -226,6 +235,7 @@ mod tests {
             RefreshScope::All,
             false,
             &mut progress,
+            &ExploreQueryOverrides::default(),
         )
         .expect("refresh");
         assert!(report.dns.is_some());
@@ -245,6 +255,7 @@ mod tests {
             RefreshScope::All,
             true,
             &mut progress,
+            &ExploreQueryOverrides::default(),
         )
         .expect("refresh");
         assert!(report.dns.is_some());
@@ -265,6 +276,7 @@ mod tests {
             RefreshScope::All,
             false,
             &mut progress,
+            &ExploreQueryOverrides::default(),
         )
         .expect("refresh");
         assert!(report.dns.is_some());

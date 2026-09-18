@@ -22,7 +22,10 @@ mod tui;
 mod view_state;
 
 pub use json::render_tree_json;
-pub use options::{ExploreOptions, ExploreParseError, parse_explore_args};
+pub use options::{
+    ExploreOptions, ExploreParseError, ExploreQueryOverrides, apply_explore_query_overrides,
+    parse_explore_args,
+};
 pub use outline::render_outline;
 pub(crate) use terminal::{cache_source_symbol, ui_symbols};
 pub use tree::{build_explore_tree, build_explore_tree_with_qname};
@@ -192,6 +195,7 @@ pub fn run_explore(
         document,
         persist_view_state: runtime.config.explore_persist_view_state,
         plus_icmp: options.plus_icmp,
+        query_overrides: options.query_overrides,
     })
     .map_err(ExploreError::Io)
 }

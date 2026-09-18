@@ -286,6 +286,7 @@ fn trace_branch_compare_and_reopen_round_trip() {
         Some(Arc::new(TuiningaBranchExchange {
             root_cut_queried: Mutex::new(HashSet::new()),
         })),
+        None,
     )
     .expect("branch");
     assert_eq!(report.nodes_added, 2);

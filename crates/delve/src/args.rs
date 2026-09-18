@@ -160,7 +160,7 @@ pub struct SessionEventsArgs {
 pub struct SessionExploreArgs {
     /// Session id or prefix. When omitted, uses the default session.
     pub id: Option<String>,
-    /// Dig-style options such as +icmp (one-shot ICMP for this explore session).
+    /// Dig-style options such as +icmp, +timeout=N, +tries=N, and +tcp.
     #[arg(
         trailing_var_arg = true,
         allow_hyphen_values = true,
