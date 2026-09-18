@@ -29,6 +29,7 @@ pub struct RefreshTreeReport {
 }
 
 pub trait RefreshProgress: Send {
+    /// Report refresh progress. `current` is hops completed so far; `total` is the hop count.
     fn hop_started(&mut self, current: usize, total: usize);
 }
 
@@ -58,31 +59,26 @@ pub fn refresh_tree_rtts(
     let mut parse_failures = Vec::new();
     collect_hop_snapshots(&tree.root, &[], &mut snapshots, &mut parse_failures);
     let total = snapshots.len() + parse_failures.len();
+    let mut outcomes = parse_failures;
     if total > 0 {
-        progress.hop_started(0, total);
+        progress.hop_started(outcomes.len(), total);
     }
     let max_parallel = config.max_parallel_queries.max(1);
-    let mut outcomes = parse_failures;
-    let queried = if max_parallel == 1 {
-        snapshots
-            .into_iter()
-            .enumerate()
-            .map(|(index, snapshot)| {
-                progress.hop_started(outcomes.len() + index + 1, total);
-                query_hop_nocache(config, snapshot)
-            })
-            .collect()
+    if max_parallel == 1 {
+        for snapshot in snapshots {
+            outcomes.push(query_hop_nocache(config, snapshot));
+            progress.hop_started(outcomes.len(), total);
+        }
     } else {
-        refresh_parallel(
+        outcomes.extend(refresh_parallel(
             config,
             snapshots,
             max_parallel,
             progress,
             outcomes.len(),
             total,
-        )
-    };
-    outcomes.extend(queried);
+        ));
+    }
 
     let mut hops_updated = 0usize;
     let mut hops_failed = 0usize;
@@ -131,20 +127,22 @@ fn refresh_parallel(
     while next_index < snapshots.len() {
         let batch_end = (next_index + max_parallel).min(snapshots.len());
         let batch = snapshots[next_index..batch_end].to_vec();
-        let batch_start = outcomes.len();
         let batch_outcomes = thread::scope(|scope| {
-            batch
-                .into_iter()
-                .enumerate()
-                .map(|(batch_index, snapshot)| {
-                    progress.hop_started(completed + batch_start + batch_index + 1, total);
-                    let config = config.clone();
-                    scope.spawn(move || query_hop_nocache(&config, snapshot))
-                })
-                .collect::<Vec<_>>()
-                .into_iter()
-                .map(|handle| handle.join().expect("worker"))
-                .collect::<Vec<_>>()
+            let (tx, rx) = std::sync::mpsc::channel();
+            for snapshot in batch {
+                let tx = tx.clone();
+                let config = config.clone();
+                scope.spawn(move || {
+                    let _ = tx.send(query_hop_nocache(&config, snapshot));
+                });
+            }
+            drop(tx);
+            let mut batch_outcomes = Vec::with_capacity(batch_end - next_index);
+            while let Ok(outcome) = rx.recv() {
+                batch_outcomes.push(outcome);
+                progress.hop_started(completed + outcomes.len() + batch_outcomes.len(), total);
+            }
+            batch_outcomes
         });
         outcomes.extend(batch_outcomes);
         next_index = batch_end;
@@ -380,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn refresh_tree_rtts_reports_progress_before_queries_run() {
+    fn refresh_tree_rtts_reports_progress_on_each_completion() {
         let mut tree = sample_tree();
         let exchange = Arc::new(ScriptedExchange {
             rtts: HashMap::from([
@@ -394,8 +392,7 @@ mod tests {
         config.max_parallel_queries = 2;
         let mut progress = RecordingProgress { events: Vec::new() };
         let _report = refresh_tree_rtts(&mut tree, &config, &mut progress);
-        assert_eq!(progress.events.first(), Some(&(0, 2)));
-        assert!(progress.events.iter().any(|(current, total)| *current == 1 && *total == 2));
+        assert_eq!(progress.events, vec![(0, 2), (1, 2), (2, 2)]);
     }
 
     #[test]

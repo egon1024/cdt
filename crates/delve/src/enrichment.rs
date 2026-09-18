@@ -182,19 +182,18 @@ fn probe_icmp_snapshots_parallel(
     if total == 0 {
         return Vec::new();
     }
+    on_progress(0, total);
     let max_parallel = max_parallel.max(1);
     if max_parallel == 1 {
-        return ips
-            .iter()
-            .enumerate()
-            .map(|(index, ip)| {
-                on_progress(index + 1, total);
-                (
-                    *ip,
-                    resolve_icmp_snapshot(*ip, cache, profile, prober, timeout_ms, ping_samples),
-                )
-            })
-            .collect();
+        let mut results = Vec::with_capacity(total);
+        for ip in ips {
+            results.push((
+                *ip,
+                resolve_icmp_snapshot(*ip, cache, profile, prober, timeout_ms, ping_samples),
+            ));
+            on_progress(results.len(), total);
+        }
+        return results;
     }
 
     let mut results = Vec::with_capacity(total);
@@ -203,33 +202,33 @@ fn probe_icmp_snapshots_parallel(
         let batch_end = (next_index + max_parallel).min(total);
         let batch = &ips[next_index..batch_end];
         let batch_results = thread::scope(|scope| {
-            batch
-                .iter()
-                .map(|ip| {
-                    let ip = *ip;
-                    scope.spawn(move || {
-                        (
+            let (tx, rx) = std::sync::mpsc::channel();
+            for ip in batch {
+                let ip = *ip;
+                let tx = tx.clone();
+                scope.spawn(move || {
+                    let _ = tx.send((
+                        ip,
+                        resolve_icmp_snapshot(
                             ip,
-                            resolve_icmp_snapshot(
-                                ip,
-                                cache,
-                                profile,
-                                prober,
-                                timeout_ms,
-                                ping_samples,
-                            ),
-                        )
-                    })
-                })
-                .collect::<Vec<_>>()
-                .into_iter()
-                .map(|handle| handle.join().expect("icmp probe worker"))
-                .collect::<Vec<_>>()
+                            cache,
+                            profile,
+                            prober,
+                            timeout_ms,
+                            ping_samples,
+                        ),
+                    ));
+                });
+            }
+            drop(tx);
+            let mut batch_results = Vec::with_capacity(batch.len());
+            while let Ok(outcome) = rx.recv() {
+                batch_results.push(outcome);
+                on_progress(results.len() + batch_results.len(), total);
+            }
+            batch_results
         });
-        for (offset, outcome) in batch_results.into_iter().enumerate() {
-            on_progress(next_index + offset + 1, total);
-            results.push(outcome);
-        }
+        results.extend(batch_results);
         next_index = batch_end;
     }
     results
@@ -832,5 +831,42 @@ mod tests {
             probe_icmp_snapshots_parallel(&[], 4, None, &profile, &prober, 200, 3, |_, _| {});
         assert!(results.is_empty());
         assert!(prober.calls.lock().expect("lock").is_empty());
+    }
+
+    #[test]
+    fn probe_icmp_snapshots_parallel_reports_progress_on_each_completion() {
+        let servers = ["1.1.1.1", "8.8.8.8"];
+        let ips: Vec<IpAddr> = servers
+            .iter()
+            .map(|server| server.parse().expect("ip"))
+            .collect();
+        let prober = MockProber::new().with_snapshot(
+            "1.1.1.1".parse().expect("ip"),
+            IcmpSnapshot {
+                method: IcmpMethod::Datagram,
+                samples: 1,
+                min_ms: 1,
+                avg_ms: 1,
+                max_ms: 1,
+                probed_at: "2026-09-06T00:00:00Z".into(),
+            },
+        );
+        let profile = ProbeProfile {
+            timeout_ms: 200,
+            ping_samples: 3,
+        };
+        let mut progress = Vec::new();
+        let results = probe_icmp_snapshots_parallel(
+            &ips,
+            2,
+            None,
+            &profile,
+            &prober,
+            200,
+            3,
+            |current, total| progress.push((current, total)),
+        );
+        assert_eq!(results.len(), 2);
+        assert_eq!(progress, vec![(0, 2), (1, 2), (2, 2)]);
     }
 }
