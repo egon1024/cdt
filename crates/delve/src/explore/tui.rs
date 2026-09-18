@@ -1721,18 +1721,13 @@ fn hop_tree_line(
     theme: &Theme,
 ) -> Line<'static> {
     let failed = matches!(hop.outcome, HopOutcome::Failed { .. });
-    let prefix = if failed {
-        Span::styled("✗ ", theme.failure())
-    } else {
-        Span::raw("")
-    };
     let status = if failed { "FAILED" } else { hop.rcode.as_str() };
     let body_style = if failed {
         theme.failure()
     } else {
         theme.meta()
     };
-    let mut spans = vec![Span::raw(format!("{indent}{marker}")), prefix];
+    let mut spans = vec![Span::raw(format!("{indent}{marker}"))];
     spans.extend(hop_identity_spans(
         hop,
         theme,
