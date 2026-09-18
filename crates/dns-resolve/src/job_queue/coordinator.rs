@@ -908,20 +908,57 @@ fn collapse_single_child_placeholders(mut node: TraceNode) -> TraceNode {
     node
 }
 
+fn materialize_stored_branch(stored_child: &TraceNode, sibling_count: usize) -> Option<TraceNode> {
+    let collapsed = collapse_single_child_placeholders(stored_child.clone());
+    if is_placeholder_root_hop(&collapsed.hop) {
+        if is_placeholder_root_hop(&stored_child.hop)
+            && !stored_child.children.is_empty()
+            && sibling_count <= 1
+        {
+            return Some(stored_child.clone());
+        }
+        return None;
+    }
+    if collapsed.children.is_empty()
+        && sibling_count <= 1
+        && is_placeholder_root_hop(&stored_child.hop)
+        && !stored_child.children.is_empty()
+    {
+        return Some(stored_child.clone());
+    }
+    Some(collapsed)
+}
+
+/// Attach a delegation subtree from `ResultStore` under the root-server hop at `index`
+/// in the `+expand=all` top-level fan-out (`0` = primary root hop, `1` = first sibling, …).
+fn attach_delegation_at_root_index(
+    all_root: &mut TraceNode,
+    index: usize,
+    delegation: TraceNode,
+) {
+    if index == 0 {
+        all_root.children.insert(0, delegation);
+        return;
+    }
+    let sibling_slot = index - 1;
+    if sibling_slot < all_root.children.len() {
+        all_root.children[sibling_slot]
+            .children
+            .insert(0, delegation);
+    } else {
+        all_root.children.push(delegation);
+    }
+}
+
 fn merge_all_roots(stored: TraceNode, all_root: TraceNode) -> TraceNode {
     if is_placeholder_root_hop(&stored.hop) {
-        if stored.children.is_empty() {
-            return all_root;
-        }
-        let collapsed = collapse_single_child_placeholders(stored.children[0].clone());
         let sibling_count = all_root.children.len();
         let mut merged = all_root;
-        if !is_placeholder_root_hop(&collapsed.hop)
-            && (!collapsed.children.is_empty() || sibling_count > 1)
-        {
-            merged.children.insert(0, collapsed);
-        } else if !stored.children[0].children.is_empty() {
-            merged.children.insert(0, stored.children[0].clone());
+        for (index, stored_child) in stored.children.iter().enumerate() {
+            let Some(delegation) = materialize_stored_branch(stored_child, sibling_count) else {
+                continue;
+            };
+            attach_delegation_at_root_index(&mut merged, index, delegation);
         }
         return merged;
     }
@@ -1861,6 +1898,129 @@ mod tests {
             hops.extend(collect_hops(child));
         }
         hops
+    }
+
+    /// Delegation can continue from a non-zero root sibling (live progress `0.1.0`, stored `[1,0,…]`).
+    #[test]
+    fn merge_all_roots_attaches_delegation_under_matching_root_index() {
+        let stored = TraceNode {
+            hop: placeholder_root_hop(),
+            origin: NodeOrigin::Trace,
+            children: vec![
+                TraceNode {
+                    hop: placeholder_root_hop(),
+                    origin: NodeOrigin::Trace,
+                    children: vec![],
+                },
+                TraceNode {
+                    hop: placeholder_root_hop(),
+                    origin: NodeOrigin::Trace,
+                    children: vec![TraceNode {
+                        hop: TraceHop {
+                            zone: "org.".into(),
+                            server: "199.19.56.1".into(),
+                            server_name: Some("a0.org.afilias-nst.info.".into()),
+                            qname: "tuininga.org.".into(),
+                            qtype: "A".into(),
+                            transport: "udp".into(),
+                            rtt_ms: 75,
+                            rcode: "NOERROR".into(),
+                            nsid: None,
+                            ede_code: None,
+                            ede_text: None,
+                            referral_ns: vec!["helium.ns.hetzner.de.".into()],
+                            glue: vec![],
+                            response: Default::default(),
+                            from_cache: false,
+                            outcome: HopOutcome::Referral,
+                        },
+                        origin: NodeOrigin::Trace,
+                        children: vec![TraceNode {
+                            hop: TraceHop {
+                                zone: "tuininga.org.".into(),
+                                server: "193.47.99.5".into(),
+                                server_name: Some("helium.ns.hetzner.de.".into()),
+                                qname: "tuininga.org.".into(),
+                                qtype: "A".into(),
+                                transport: "udp".into(),
+                                rtt_ms: 107,
+                                rcode: "NOERROR".into(),
+                                nsid: None,
+                                ede_code: None,
+                                ede_text: None,
+                                referral_ns: vec![],
+                                glue: vec![],
+                                response: Default::default(),
+                                from_cache: false,
+                                outcome: HopOutcome::Answered,
+                            },
+                            origin: NodeOrigin::Trace,
+                            children: vec![],
+                        }],
+                    }],
+                },
+            ],
+        };
+        let all_root = TraceNode {
+            hop: TraceHop {
+                zone: ".".into(),
+                server: "198.41.0.4".into(),
+                server_name: None,
+                qname: "tuininga.org.".into(),
+                qtype: "A".into(),
+                transport: "udp".into(),
+                rtt_ms: 95,
+                rcode: "NOERROR".into(),
+                nsid: None,
+                ede_code: None,
+                ede_text: None,
+                referral_ns: vec![],
+                glue: vec![],
+                response: Default::default(),
+                from_cache: false,
+                outcome: HopOutcome::Referral,
+            },
+            origin: NodeOrigin::Trace,
+            children: vec![TraceNode {
+                hop: TraceHop {
+                    zone: ".".into(),
+                    server: "199.9.14.201".into(),
+                    server_name: None,
+                    qname: "tuininga.org.".into(),
+                    qtype: "A".into(),
+                    transport: "udp".into(),
+                    rtt_ms: 24,
+                    rcode: "NOERROR".into(),
+                    nsid: None,
+                    ede_code: None,
+                    ede_text: None,
+                    referral_ns: vec![],
+                    glue: vec![],
+                    response: Default::default(),
+                    from_cache: false,
+                    outcome: HopOutcome::Referral,
+                },
+                origin: NodeOrigin::Trace,
+                children: vec![],
+            }],
+        };
+
+        let merged = merge_all_roots(stored, all_root);
+        assert_eq!(merged.hop.server, "198.41.0.4");
+        assert!(
+            merged.children[0].hop.server == "199.9.14.201"
+                && merged.children[0]
+                    .children
+                    .iter()
+                    .any(|child| child.hop.zone == "org."),
+            "org delegation should attach under root sibling index 1"
+        );
+        assert!(
+            !collect_hops(&merged)
+                .iter()
+                .any(|hop| hop.server == "0.0.0.0"),
+            "placeholder hops must not appear in the merged tree"
+        );
     }
 
     /// Pre-fix `merge_all_roots` returned the placeholder `ResultStore` chain and dropped
