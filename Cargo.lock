@@ -165,7 +165,7 @@ dependencies = [
 
 [[package]]
 name = "cdt"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "clap",
  "serde",
@@ -367,7 +367,7 @@ checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
 name = "delve"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "crossterm",
@@ -432,7 +432,7 @@ dependencies = [
 
 [[package]]
 name = "dns-cache"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "dns-core",
  "rusqlite",
@@ -445,7 +445,7 @@ dependencies = [
 
 [[package]]
 name = "dns-core"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "hickory-proto",
  "serde",
@@ -455,7 +455,7 @@ dependencies = [
 
 [[package]]
 name = "dns-enrichment-cache"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "directories",
  "dns-resolve",
@@ -469,7 +469,7 @@ dependencies = [
 
 [[package]]
 name = "dns-resolve"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "dns-cache",
  "dns-core",
