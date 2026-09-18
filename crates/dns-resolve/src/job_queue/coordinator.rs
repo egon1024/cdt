@@ -892,8 +892,40 @@ fn child_path_for_policy(policy: ExpansionPolicy, parent_path: &[usize]) -> Vec<
     }
 }
 
+fn is_placeholder_root_hop(hop: &TraceHop) -> bool {
+    hop.zone == "." && hop.server == "0.0.0.0"
+}
+
+fn collapse_single_child_placeholders(mut node: TraceNode) -> TraceNode {
+    while is_placeholder_root_hop(&node.hop) && node.children.len() == 1 {
+        node = node.children.remove(0);
+    }
+    node.children = node
+        .children
+        .into_iter()
+        .map(collapse_single_child_placeholders)
+        .collect();
+    node
+}
+
 fn merge_all_roots(stored: TraceNode, all_root: TraceNode) -> TraceNode {
-    if stored.hop.zone != "." || stored.hop.server == "0.0.0.0" {
+    if is_placeholder_root_hop(&stored.hop) {
+        if stored.children.is_empty() {
+            return all_root;
+        }
+        let collapsed = collapse_single_child_placeholders(stored.children[0].clone());
+        let sibling_count = all_root.children.len();
+        let mut merged = all_root;
+        if !is_placeholder_root_hop(&collapsed.hop)
+            && (!collapsed.children.is_empty() || sibling_count > 1)
+        {
+            merged.children.insert(0, collapsed);
+        } else if !stored.children[0].children.is_empty() {
+            merged.children.insert(0, stored.children[0].clone());
+        }
+        return merged;
+    }
+    if stored.hop.zone != "." {
         return stored;
     }
     if stored.children.is_empty() {
@@ -905,7 +937,7 @@ fn merge_all_roots(stored: TraceNode, all_root: TraceNode) -> TraceNode {
         mut children,
     } = all_root;
     let mut merged = stored;
-    if hop.server != "0.0.0.0" {
+    if !is_placeholder_root_hop(&hop) {
         children.insert(
             0,
             TraceNode {
@@ -1800,5 +1832,261 @@ mod tests {
                 "terminal expansion subtrees must stay single-path under +expand=last"
             );
         }
+    }
+
+    fn placeholder_root_hop() -> TraceHop {
+        TraceHop {
+            zone: ".".into(),
+            server: "0.0.0.0".into(),
+            server_name: None,
+            qname: "example.com.".into(),
+            qtype: "A".into(),
+            transport: "udp".into(),
+            rtt_ms: 0,
+            rcode: "NOERROR".into(),
+            nsid: None,
+            ede_code: None,
+            ede_text: None,
+            referral_ns: vec![],
+            glue: vec![],
+            response: Default::default(),
+            from_cache: false,
+            outcome: HopOutcome::Referral,
+        }
+    }
+
+    fn collect_hops(node: &TraceNode) -> Vec<TraceHop> {
+        let mut hops = vec![node.hop.clone()];
+        for child in &node.children {
+            hops.extend(collect_hops(child));
+        }
+        hops
+    }
+
+    /// Pre-fix `merge_all_roots` returned the placeholder `ResultStore` chain and dropped
+    /// every real root-server hop gathered in `top_level_siblings`.
+    #[test]
+    fn merge_all_roots_keeps_root_fanout_when_stored_root_is_placeholder() {
+        let stored = TraceNode {
+            hop: placeholder_root_hop(),
+            origin: NodeOrigin::Trace,
+            children: vec![TraceNode {
+                hop: placeholder_root_hop(),
+                origin: NodeOrigin::Trace,
+                children: vec![TraceNode {
+                    hop: TraceHop {
+                        zone: "com.".into(),
+                        server: "2.0.0.2".into(),
+                        server_name: Some("ns.com.".into()),
+                        qname: "example.com.".into(),
+                        qtype: "A".into(),
+                        transport: "udp".into(),
+                        rtt_ms: 1,
+                        rcode: "NOERROR".into(),
+                        nsid: None,
+                        ede_code: None,
+                        ede_text: None,
+                        referral_ns: vec![],
+                        glue: vec![],
+                        response: Default::default(),
+                        from_cache: false,
+                        outcome: HopOutcome::Referral,
+                    },
+                    origin: NodeOrigin::Trace,
+                    children: vec![TraceNode {
+                        hop: TraceHop {
+                            zone: "example.com.".into(),
+                            server: "2.0.0.2".into(),
+                            server_name: None,
+                            qname: "example.com.".into(),
+                            qtype: "A".into(),
+                            transport: "udp".into(),
+                            rtt_ms: 1,
+                            rcode: "NOERROR".into(),
+                            nsid: None,
+                            ede_code: None,
+                            ede_text: None,
+                            referral_ns: vec![],
+                            glue: vec![],
+                            response: Default::default(),
+                            from_cache: false,
+                            outcome: HopOutcome::Answered,
+                        },
+                        origin: NodeOrigin::Trace,
+                        children: vec![],
+                    }],
+                }],
+            }],
+        };
+        let failed_root = |server: &str| TraceNode {
+            hop: TraceHop {
+                zone: ".".into(),
+                server: server.into(),
+                server_name: None,
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                transport: "udp".into(),
+                rtt_ms: 0,
+                rcode: "SERVFAIL".into(),
+                nsid: None,
+                ede_code: None,
+                ede_text: None,
+                referral_ns: vec![],
+                glue: vec![],
+                response: Default::default(),
+                from_cache: false,
+                outcome: HopOutcome::Failed {
+                    kind: "core".into(),
+                    detail: "SERVFAIL".into(),
+                },
+            },
+            origin: NodeOrigin::Trace,
+            children: vec![],
+        };
+        let all_root = TraceNode {
+            hop: TraceHop {
+                zone: ".".into(),
+                server: "1.0.0.1".into(),
+                server_name: None,
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                transport: "udp".into(),
+                rtt_ms: 1,
+                rcode: "NOERROR".into(),
+                nsid: None,
+                ede_code: None,
+                ede_text: None,
+                referral_ns: vec!["ns.com.".into()],
+                glue: vec!["2.0.0.2".into()],
+                response: Default::default(),
+                from_cache: false,
+                outcome: HopOutcome::Referral,
+            },
+            origin: NodeOrigin::Trace,
+            children: vec![failed_root("1.0.0.2"), failed_root("1.0.0.3")],
+        };
+
+        let merged = merge_all_roots(stored, all_root);
+        assert_eq!(merged.hop.server, "1.0.0.1");
+        assert!(
+            merged
+                .children
+                .iter()
+                .any(|child| child.hop.zone == "com."),
+            "delegation subtree should attach under the primary root hop"
+        );
+        assert!(
+            merged
+                .children
+                .iter()
+                .filter(|child| child.hop.zone == "." && child.hop.server != "0.0.0.0")
+                .count()
+                >= 2,
+            "failed root siblings should remain alongside delegation"
+        );
+        assert!(
+            !collect_hops(&merged)
+                .iter()
+                .any(|hop| hop.server == "0.0.0.0"),
+            "placeholder hops must not appear in the merged tree"
+        );
+    }
+
+    struct ExpandAllRootFanoutExchange;
+
+    impl crate::DnsExchange for ExpandAllRootFanoutExchange {
+        fn exchange(
+            &self,
+            server: IpAddr,
+            _port: u16,
+            options: &dns_core::query::QueryOptions,
+        ) -> dns_core::Result<dns_core::response::QueryResult> {
+            let qname = options.qname.to_string();
+            if qname == "example.com." {
+                match server {
+                    IpAddr::V4(v4) if v4 == Ipv4Addr::new(1, 0, 0, 1) => {
+                        return Ok(make_query_result(
+                            server,
+                            options,
+                            referral_response(&options.qname, "com.", "ns.com.", "2.0.0.2"),
+                        ));
+                    }
+                    IpAddr::V4(v4)
+                        if v4 == Ipv4Addr::new(1, 0, 0, 2)
+                            || v4 == Ipv4Addr::new(1, 0, 0, 3) =>
+                    {
+                        return Err(dns_core::DnsCoreError::Parse("SERVFAIL".into()));
+                    }
+                    IpAddr::V4(v4) if v4 == Ipv4Addr::new(2, 0, 0, 2) => {
+                        return Ok(make_query_result(
+                            server,
+                            options,
+                            authoritative_a(&options.qname, "93.184.216.34"),
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            Err(dns_core::DnsCoreError::Parse(format!(
+                "unexpected query {qname} to {server}"
+            )))
+        }
+    }
+
+    fn make_query_result(
+        server: IpAddr,
+        options: &dns_core::query::QueryOptions,
+        response: DnsResponse,
+    ) -> dns_core::response::QueryResult {
+        dns_core::response::QueryResult {
+            server,
+            transport: options.transport,
+            qname: options.qname.clone(),
+            qtype: options.qtype.to_string(),
+            rtt: std::time::Duration::from_millis(1),
+            response,
+            from_cache: false,
+        }
+    }
+
+    #[test]
+    fn expand_all_root_fanout_keeps_failed_siblings_without_placeholders() {
+        let mut config = test_config("example.com.", Arc::new(ExpandAllRootFanoutExchange));
+        config.expansion_policy = ExpansionPolicy::All;
+        config.start_servers = Some(vec![
+            IpAddr::V4(Ipv4Addr::new(1, 0, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(1, 0, 0, 2)),
+            IpAddr::V4(Ipv4Addr::new(1, 0, 0, 3)),
+        ]);
+        let mut budget = QueryBudget::new(64);
+        let qname = DomainName::parse("example.com.").expect("qname");
+        let tree =
+            run_policy(&config, &mut budget, &mut SilentProgress, qname, false).expect("trace");
+
+        let hops = collect_hops(&tree);
+        assert!(
+            !hops.iter().any(|hop| hop.server == "0.0.0.0"),
+            "placeholder hops leaked into stored tree: {hops:?}"
+        );
+        let root_cut: Vec<_> = hops.iter().filter(|hop| hop.zone == ".").collect();
+        assert!(
+            root_cut.len() >= 3,
+            "expected every queried root server in the tree, got {root_cut:?}"
+        );
+        assert!(
+            root_cut
+                .iter()
+                .any(|hop| matches!(hop.outcome, HopOutcome::Failed { .. })),
+            "expected at least one failed root hop, got {root_cut:?}"
+        );
+        assert!(
+            hops.iter().any(|hop| hop.zone == "com."),
+            "expected delegation to continue under the primary root path"
+        );
+        assert!(
+            hops.iter()
+                .any(|hop| matches!(hop.outcome, HopOutcome::Answered)),
+            "expected a terminal answer hop"
+        );
     }
 }
