@@ -21,8 +21,8 @@ use crate::branch::{
     BranchError, BranchIntentArg, BranchReport, ServerTargetInput, branch_session,
     format_branch_report,
 };
-use crate::explore::ExploreQueryOverrides;
 use crate::config::RttBarConfig;
+use crate::explore::ExploreQueryOverrides;
 use crate::paths::DelvePaths;
 use crate::runtime::Runtime;
 use crate::session::{SessionDocument, TargetEnrichments};

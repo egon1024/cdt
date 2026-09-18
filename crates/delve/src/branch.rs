@@ -13,9 +13,9 @@ use dns_resolve::{
 };
 use thiserror::Error;
 
+use crate::explore::{ExploreQueryOverrides, apply_explore_query_overrides};
 use crate::runtime::Runtime;
 use crate::session::{SessionDocument, SessionTree};
-use crate::explore::{ExploreQueryOverrides, apply_explore_query_overrides};
 use crate::trace_config::trace_config_from_request;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,6 +185,7 @@ pub fn branch_session(
     Ok(report)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn execute_branch(
     document: &mut SessionDocument,
     at: NodePath,

@@ -209,14 +209,7 @@ fn probe_icmp_snapshots_parallel(
                 scope.spawn(move || {
                     let _ = tx.send((
                         ip,
-                        resolve_icmp_snapshot(
-                            ip,
-                            cache,
-                            profile,
-                            prober,
-                            timeout_ms,
-                            ping_samples,
-                        ),
+                        resolve_icmp_snapshot(ip, cache, profile, prober, timeout_ms, ping_samples),
                     ));
                 });
             }

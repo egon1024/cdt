@@ -22,10 +22,7 @@ impl ExploreQueryOverrides {
     }
 }
 
-pub fn apply_explore_query_overrides(
-    config: &mut TraceConfig,
-    overrides: &ExploreQueryOverrides,
-) {
+pub fn apply_explore_query_overrides(config: &mut TraceConfig, overrides: &ExploreQueryOverrides) {
     if let Some(timeout_secs) = overrides.timeout_secs {
         config.timeout = Duration::from_secs(timeout_secs.max(1));
     }
@@ -155,8 +152,7 @@ mod tests {
 
     #[test]
     fn parse_timeout_and_tries_overrides() {
-        let options =
-            parse_explore_args(&args(&["+timeout=2", "+tries=1"])).expect("parse");
+        let options = parse_explore_args(&args(&["+timeout=2", "+tries=1"])).expect("parse");
         assert_eq!(options.query_overrides.timeout_secs, Some(2));
         assert_eq!(options.query_overrides.retries, Some(1));
     }

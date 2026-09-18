@@ -86,14 +86,12 @@ pub fn refresh_document(
 ) -> Result<UnifiedRefreshReport, RefreshError> {
     let effective_icmp = runtime.config.effective_icmp_enabled(explore_plus_icmp);
     let dns = match scope {
-        RefreshScope::All | RefreshScope::DnsRttOnly => {
-            Some(refresh_document_dns(
-                document,
-                runtime,
-                progress,
-                query_overrides,
-            )?)
-        }
+        RefreshScope::All | RefreshScope::DnsRttOnly => Some(refresh_document_dns(
+            document,
+            runtime,
+            progress,
+            query_overrides,
+        )?),
         RefreshScope::IcmpOnly => None,
     };
     let icmp = match scope {

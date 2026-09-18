@@ -931,11 +931,7 @@ fn materialize_stored_branch(stored_child: &TraceNode, sibling_count: usize) -> 
 
 /// Attach a delegation subtree from `ResultStore` under the root-server hop at `index`
 /// in the `+expand=all` top-level fan-out (`0` = primary root hop, `1` = first sibling, …).
-fn attach_delegation_at_root_index(
-    all_root: &mut TraceNode,
-    index: usize,
-    delegation: TraceNode,
-) {
+fn attach_delegation_at_root_index(all_root: &mut TraceNode, index: usize, delegation: TraceNode) {
     if index == 0 {
         all_root.children.insert(0, delegation);
         return;
@@ -2129,10 +2125,7 @@ mod tests {
         let merged = merge_all_roots(stored, all_root);
         assert_eq!(merged.hop.server, "1.0.0.1");
         assert!(
-            merged
-                .children
-                .iter()
-                .any(|child| child.hop.zone == "com."),
+            merged.children.iter().any(|child| child.hop.zone == "com."),
             "delegation subtree should attach under the primary root hop"
         );
         assert!(
@@ -2172,8 +2165,7 @@ mod tests {
                         ));
                     }
                     IpAddr::V4(v4)
-                        if v4 == Ipv4Addr::new(1, 0, 0, 2)
-                            || v4 == Ipv4Addr::new(1, 0, 0, 3) =>
+                        if v4 == Ipv4Addr::new(1, 0, 0, 2) || v4 == Ipv4Addr::new(1, 0, 0, 3) =>
                     {
                         return Err(dns_core::DnsCoreError::Parse("SERVFAIL".into()));
                     }
