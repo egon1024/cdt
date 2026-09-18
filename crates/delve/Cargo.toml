@@ -6,6 +6,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[lib]
+name = "delve"
+path = "src/lib.rs"
+
 [[bin]]
 name = "delve"
 path = "src/main.rs"
@@ -16,6 +20,7 @@ crossterm = "0.28"
 directories.workspace = true
 dns-cache = { path = "../dns-cache" }
 dns-core = { path = "../dns-core" }
+dns-enrichment-cache = { path = "../dns-enrichment-cache" }
 dns-resolve = { path = "../dns-resolve" }
 ratatui = "0.29"
 unicode-width = "0.2"
@@ -29,3 +34,13 @@ ulid.workspace = true
 
 [dev-dependencies]
 tempfile = "3.14"
+
+[features]
+default = ["export-png"]
+export-png = ["dep:resvg"]
+
+[dependencies.resvg]
+version = "0.48"
+optional = true
+default-features = false
+features = ["text", "system-fonts"]

@@ -1,8 +1,9 @@
 use std::env;
 use std::fs;
+use std::io;
 use std::path::PathBuf;
 
-fn main() {
+fn main() -> io::Result<()> {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let manifest_path = manifest_dir.join("../../cdt-manifest.toml");
     println!("cargo:rerun-if-changed={}", manifest_path.display());
@@ -12,4 +13,5 @@ fn main() {
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
     fs::write(out_dir.join("cdt-manifest.toml"), contents).expect("write embedded manifest");
+    Ok(())
 }

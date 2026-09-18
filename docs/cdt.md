@@ -1,8 +1,6 @@
 # cdt
 
-The `cdt` binary is the **bundle meta utility** for Cole's DNS Tools. It reports
-what is in the CDT release and which versions are installed. It does not perform
-DNS operations itself.
+The `cdt` binary is the **bundle meta utility** for Cole's DNS Tools. It reports what is in the CDT release and which versions are installed. It does not perform DNS operations itself.
 
 ## Commands
 
@@ -15,8 +13,7 @@ cdt list --json
 
 ## Version output
 
-The bundle version and per-utility versions live in `cdt-manifest.toml` at the
-repository root.
+The bundle version and per-utility versions live in `cdt-manifest.toml` at the repository root.
 
 ```bash
 make version

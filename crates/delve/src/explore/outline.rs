@@ -1,28 +1,26 @@
-use super::detail::{
-    final_detail_lines, final_summary_line, hop_detail_lines, hop_summary_line,
-    render_indented_block,
-};
+use std::collections::HashMap;
+
+use super::detail::{hop_detail_lines, hop_failure_line, hop_summary_line, render_indented_block};
 use super::terminal::UiSymbols;
-use super::tree::{ExploreNode, ExploreTree};
+use super::tree::ExploreTree;
+use dns_resolve::{TraceNode, TraceTree};
 
-pub fn render_outline(tree: &ExploreTree, symbols: UiSymbols) -> String {
-    let mut output = String::new();
-    output.push_str(&format!("{} {}\n", tree.qname, tree.qtype));
-
-    let child_count = tree.children.len();
-    for (index, child) in tree.children.iter().enumerate() {
-        let last = index + 1 == child_count;
-        render_node(tree, child, "", last, symbols, &mut output);
+pub fn render_trace_outline(tree: &TraceTree, symbols: UiSymbols) -> String {
+    let mut indices = HashMap::new();
+    for (index, path) in tree.display_order().into_iter().enumerate() {
+        indices.insert(path.path, index);
     }
-
+    let mut output = format!("{} {}\n", tree.qname(), tree.qtype());
+    render_trace_node(&tree.root, &[], true, &indices, "", symbols, &mut output);
     output
 }
 
-fn render_node(
-    tree: &ExploreTree,
-    node: &ExploreNode,
-    prefix: &str,
+fn render_trace_node(
+    node: &TraceNode,
+    path: &[usize],
     last: bool,
+    indices: &HashMap<Vec<usize>, usize>,
+    prefix: &str,
     symbols: UiSymbols,
     output: &mut String,
 ) {
@@ -37,72 +35,38 @@ fn render_node(
         if last { "   " } else { symbols.branch_pipe }
     );
     let detail_indent = format!("{child_prefix}   ");
+    let display_index = indices.get(path).copied().unwrap_or(0);
 
-    match node {
-        ExploreNode::Delegation {
-            hop_index,
-            children,
-        } => {
-            let hop = tree.hop(*hop_index);
-            output.push_str(&format!(
-                "{prefix}{branch}{}\n",
-                hop_summary_line(hop, symbols)
-            ));
-            output.push_str(&render_indented_block(
-                &hop_detail_lines(hop, symbols),
-                &detail_indent,
-            ));
-            render_children(tree, children, &child_prefix, symbols, output);
-        }
-        ExploreNode::Resolve { target, children } => {
-            output.push_str(&format!("{prefix}{branch}(resolve {target})\n"));
-            render_children(tree, children, &child_prefix, symbols, output);
-        }
-        ExploreNode::Hop { hop_index } => {
-            let hop = tree.hop(*hop_index);
-            output.push_str(&format!(
-                "{prefix}{branch}{}\n",
-                hop_summary_line(hop, symbols)
-            ));
-            output.push_str(&render_indented_block(
-                &hop_detail_lines(hop, symbols),
-                &detail_indent,
-            ));
-        }
-        ExploreNode::Final => {
-            output.push_str(&format!(
-                "{prefix}{branch}{}\n",
-                final_summary_line(
-                    &tree.qname,
-                    &tree.qtype,
-                    tree.trace().final_response.as_ref(),
-                    symbols,
-                )
-            ));
-            if let Some(answer) = tree.trace().final_response.as_ref() {
-                output.push_str(&render_indented_block(
-                    &final_detail_lines(answer, symbols),
-                    &detail_indent,
-                ));
-            } else {
-                output.push_str(&format!("{detail_indent}{}\n", symbols.missing));
-            }
-        }
+    output.push_str(&format!(
+        "{prefix}{branch}[{display_index}] {}\n",
+        hop_summary_line(&node.hop, symbols)
+    ));
+    if let Some(failure) = hop_failure_line(&node.hop) {
+        output.push_str(&render_indented_block(&[failure], &detail_indent));
+    }
+    output.push_str(&render_indented_block(
+        &hop_detail_lines(&node.hop, symbols),
+        &detail_indent,
+    ));
+
+    let child_count = node.children.len();
+    for (index, child) in node.children.iter().enumerate() {
+        let mut child_path = path.to_vec();
+        child_path.push(index);
+        render_trace_node(
+            child,
+            &child_path,
+            index + 1 == child_count,
+            indices,
+            &child_prefix,
+            symbols,
+            output,
+        );
     }
 }
 
-fn render_children(
-    tree: &ExploreTree,
-    children: &[ExploreNode],
-    prefix: &str,
-    symbols: UiSymbols,
-    output: &mut String,
-) {
-    let child_count = children.len();
-    for (index, child) in children.iter().enumerate() {
-        let last = index + 1 == child_count;
-        render_node(tree, child, prefix, last, symbols, output);
-    }
+pub fn render_outline(tree: &ExploreTree, symbols: UiSymbols) -> String {
+    render_trace_outline(tree.trace(), symbols)
 }
 
 #[cfg(test)]
@@ -110,14 +74,11 @@ mod tests {
     use super::*;
     use crate::explore::terminal::UNICODE;
     use crate::explore::tree::build_explore_tree;
-    use dns_resolve::{FinalAnswer, TraceHop, TraceResult};
+    use dns_resolve::{HopOutcome, TraceHop, TraceTreeRequest, build_linear_tree};
 
-    fn sample_trace() -> TraceResult {
-        TraceResult {
-            qname: "example.com.".into(),
-            qtype: "A".into(),
-            started_at: "2026-08-25T00:00:00Z".into(),
-            hops: vec![TraceHop {
+    fn sample_trace() -> dns_resolve::TraceTree {
+        build_linear_tree(
+            vec![TraceHop {
                 zone: ".".into(),
                 server: "198.41.0.4".into(),
                 server_name: None,
@@ -133,21 +94,14 @@ mod tests {
                 glue: vec![],
                 response: Default::default(),
                 from_cache: false,
+                outcome: HopOutcome::Answered,
             }],
-            final_response: Some(FinalAnswer {
-                server: "93.184.216.34".into(),
-                server_name: None,
-                rtt_ms: 5,
-                rcode: "NOERROR".into(),
-                records: vec!["example.com. 300 93.184.216.34".into()],
-                nsid: None,
-                qname: String::new(),
-                qtype: String::new(),
-                transport: String::new(),
-                response: Default::default(),
-                from_cache: false,
-            }),
-        }
+            TraceTreeRequest {
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                started_at: "2026-08-25T00:00:00Z".into(),
+            },
+        )
     }
 
     #[test]
@@ -157,7 +111,16 @@ mod tests {
         assert!(outline.starts_with("example.com. A\n"));
         assert!(outline.contains("referral NS:\n"));
         assert!(outline.contains("  - a.gtld-servers.net."));
-        assert!(outline.contains("records:\n"));
-        assert!(outline.contains("  - example.com. 300 93.184.216.34"));
+    }
+
+    #[test]
+    fn outline_display_index_matches_tree_resolution() {
+        let tree = build_explore_tree(&sample_trace());
+        let outline = render_outline(&tree, UNICODE);
+        let trace = tree.trace();
+        for (index, path) in trace.display_order().into_iter().enumerate() {
+            assert!(outline.contains(&format!("[{index}]")));
+            assert_eq!(trace.path_for_display_index(index), Some(path));
+        }
     }
 }

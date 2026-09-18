@@ -77,6 +77,9 @@ Cole's DNS Tools debug binaries (unstripped) for troubleshooting.
                 "  - src: docs",
                 "    dst: /usr/share/doc/cdt/docs",
                 "    type: tree",
+                "  - src: packaging/staging/usr/share/man/man1",
+                "    dst: /usr/share/man/man1",
+                "    type: tree",
             ]
         )
     return "\n".join(lines) + "\n"

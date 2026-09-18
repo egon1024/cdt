@@ -1,0 +1,18 @@
+[package]
+name = "man-pages"
+description = "Generate man pages from clap command definitions"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "generate-man-pages"
+path = "src/main.rs"
+
+[dependencies]
+cdt = { path = "../cdt" }
+clap = { workspace = true }
+clap_mangen = "0.2"
+delve = { path = "../delve" }

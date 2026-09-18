@@ -1,34 +1,34 @@
 use std::net::IpAddr;
 
-use dns_resolve::{FinalAnswer, TraceHop};
+use dns_resolve::{HopOutcome, IcmpMethod, IcmpSnapshot, TraceHop};
+use ratatui::text::{Line, Span};
 
-use super::terminal::{UiSymbols, cache_source_symbol};
-
-pub fn final_summary_line(
-    qname: &str,
-    qtype: &str,
-    answer: Option<&FinalAnswer>,
-    symbols: UiSymbols,
-) -> String {
-    match answer {
-        Some(answer) => format!(
-            "{qname} {qtype}  {}  {}",
-            answer.rcode,
-            cache_source_symbol(answer.from_cache, symbols)
-        ),
-        None => format!("{qname} {qtype}"),
-    }
-}
+use super::hop_identity::hop_display_zone;
+use super::rtt_bar::format_rtt_plain_line;
+use super::terminal::{UiSymbols, cache_source_label, cache_source_symbol, format_cache_source};
+use super::theme::Theme;
 
 pub fn hop_summary_line(hop: &TraceHop, symbols: UiSymbols) -> String {
+    let marker = if matches!(hop.outcome, HopOutcome::Failed { .. }) {
+        "✗ "
+    } else {
+        ""
+    };
     format!(
-        "[{}] {} {}  {}  {}",
+        "{marker}[{}] {} {}  {}  {}",
         hop.zone,
         hop.qname,
         hop.qtype,
         hop.rcode,
         cache_source_symbol(hop.from_cache, symbols)
     )
+}
+
+pub fn hop_failure_line(hop: &TraceHop) -> Option<String> {
+    match &hop.outcome {
+        HopOutcome::Failed { kind, detail } => Some(format!("failure: {kind}: {detail}")),
+        _ => None,
+    }
 }
 
 pub fn format_server_endpoint(server: &str, server_name: Option<&str>) -> String {
@@ -43,10 +43,6 @@ pub fn format_server_line(server: &str, server_name: Option<&str>, transport: &s
         "server: {} ({transport})",
         format_server_endpoint(server, server_name)
     )
-}
-
-pub fn format_query_response_time_line(rtt_ms: u64) -> String {
-    format!("query response time: {rtt_ms}ms")
 }
 
 pub fn effective_server_name(server: &str, server_name: Option<&str>) -> Option<String> {
@@ -69,34 +65,38 @@ pub fn render_indented_block(lines: &[String], indent: &str) -> String {
 }
 
 pub fn hop_detail_lines(hop: &TraceHop, symbols: UiSymbols) -> Vec<String> {
-    if hop.response.is_stored() {
-        return super::dig_view::hop_detail_plain(hop, symbols)
+    let mut lines = if hop.response.is_stored() {
+        super::dig_view::hop_detail_plain(hop, symbols, None)
             .lines()
             .map(str::to_owned)
-            .collect();
+            .collect()
+    } else {
+        legacy_hop_detail_lines(hop, symbols, None)
+    };
+    if let Some(failure) = hop_failure_line(hop) {
+        lines.push(failure);
     }
-    legacy_hop_detail_lines(hop, symbols)
+    lines
 }
 
-pub fn final_detail_lines(answer: &FinalAnswer, symbols: UiSymbols) -> Vec<String> {
-    if answer.response.is_stored() {
-        return super::dig_view::final_detail_plain(answer, symbols)
-            .lines()
-            .map(str::to_owned)
-            .collect();
-    }
-    legacy_final_detail_lines(answer, symbols)
-}
-
-pub(crate) fn legacy_hop_detail_lines(hop: &TraceHop, symbols: UiSymbols) -> Vec<String> {
+pub(crate) fn legacy_hop_detail_lines(
+    hop: &TraceHop,
+    symbols: UiSymbols,
+    icmp: Option<&IcmpSnapshot>,
+) -> Vec<String> {
     let mut lines = vec![
-        format!("zone: {}", hop.zone),
+        format!("zone: {}", hop_display_zone(hop)),
         format!("query: {} {}", hop.qname, hop.qtype),
         format_server_line(&hop.server, hop.server_name.as_deref(), &hop.transport),
-        format_query_response_time_line(hop.rtt_ms),
-        format!("rcode: {}", hop.rcode),
-        format!("source: {}", cache_source_symbol(hop.from_cache, symbols)),
+        format_rtt_plain_line(hop.rtt_ms),
     ];
+    if let Some(snapshot) = icmp {
+        lines.push(format_icmp_plain_line(snapshot));
+    }
+    lines.extend([
+        format!("rcode: {}", hop.rcode),
+        format!("source: {}", format_cache_source(hop.from_cache, symbols)),
+    ]);
     if let Some(nsid) = &hop.nsid {
         lines.push(format!("nsid: {nsid}"));
     }
@@ -109,29 +109,50 @@ pub(crate) fn legacy_hop_detail_lines(hop: &TraceHop, symbols: UiSymbols) -> Vec
     lines
 }
 
-pub(crate) fn legacy_final_detail_lines(answer: &FinalAnswer, symbols: UiSymbols) -> Vec<String> {
-    let mut lines = vec![
-        format_server_line(
-            &answer.server,
-            answer.server_name.as_deref(),
-            if answer.transport.is_empty() {
-                "udp"
-            } else {
-                answer.transport.as_str()
-            },
+pub fn cache_source_detail_spans(from_cache: bool, theme: &Theme) -> Vec<Span<'static>> {
+    let style = theme.cache_source(from_cache);
+    vec![
+        Span::styled(
+            format!("{} ", cache_source_symbol(from_cache, theme.symbols)),
+            style,
         ),
-        format_query_response_time_line(answer.rtt_ms),
-        format!("rcode: {}", answer.rcode),
-        format!(
-            "source: {}",
-            cache_source_symbol(answer.from_cache, symbols)
-        ),
-    ];
-    if let Some(nsid) = &answer.nsid {
-        lines.push(format!("nsid: {nsid}"));
+        Span::styled(cache_source_label(from_cache).to_string(), style),
+    ]
+}
+
+pub fn icmp_method_label(method: IcmpMethod) -> &'static str {
+    match method {
+        IcmpMethod::Datagram => "datagram",
+        IcmpMethod::Ping => "ping",
     }
-    append_yaml_list_lines(&mut lines, "records", &answer.records);
-    lines
+}
+
+pub fn format_icmp_plain_line(snapshot: &IcmpSnapshot) -> String {
+    let method = icmp_method_label(snapshot.method);
+    if snapshot.samples <= 1 {
+        format!("icmp: {} ms ({method})", snapshot.avg_ms)
+    } else {
+        format!(
+            "icmp: {} ms avg, {}–{} ms ({method}, {} samples)",
+            snapshot.avg_ms, snapshot.min_ms, snapshot.max_ms, snapshot.samples
+        )
+    }
+}
+
+pub fn icmp_detail_line(snapshot: &IcmpSnapshot, theme: &Theme) -> Line<'static> {
+    let method = icmp_method_label(snapshot.method);
+    let value = if snapshot.samples <= 1 {
+        format!("{} ms ({method})", snapshot.avg_ms)
+    } else {
+        format!(
+            "{} ms avg, {}–{} ms ({method}, {} samples)",
+            snapshot.avg_ms, snapshot.min_ms, snapshot.max_ms, snapshot.samples
+        )
+    };
+    Line::from(vec![
+        Span::styled("icmp: ", theme.label()),
+        Span::raw(value),
+    ])
 }
 
 fn append_yaml_list_lines(lines: &mut Vec<String>, key: &str, values: &[String]) {
@@ -148,6 +169,7 @@ fn append_yaml_list_lines(lines: &mut Vec<String>, key: &str, values: &[String])
 mod tests {
     use super::*;
     use crate::explore::terminal::UNICODE;
+    use dns_resolve::HopOutcome;
 
     #[test]
     fn formats_multi_value_fields_as_yaml_lists() {
@@ -167,6 +189,7 @@ mod tests {
             server_name: None,
             response: Default::default(),
             from_cache: false,
+            outcome: Default::default(),
         };
         let detail = hop_detail_lines(&hop, UNICODE).join("\n");
         assert!(detail.contains("referral NS:\n  - ns1.example.com.\n  - ns2.example.com."));
@@ -180,10 +203,63 @@ mod tests {
     }
 
     #[test]
-    fn query_response_time_line_uses_expected_label() {
+    fn rtt_plain_line_uses_expected_label() {
+        assert_eq!(format_rtt_plain_line(11), "rtt: 11 ms");
+    }
+
+    #[test]
+    fn icmp_plain_line_includes_method_and_samples() {
+        use dns_resolve::{IcmpMethod, IcmpSnapshot};
+
+        let single = IcmpSnapshot {
+            method: IcmpMethod::Ping,
+            samples: 1,
+            min_ms: 10,
+            avg_ms: 10,
+            max_ms: 10,
+            probed_at: "2026-09-06T00:00:00Z".into(),
+        };
+        assert_eq!(format_icmp_plain_line(&single), "icmp: 10 ms (ping)");
+
+        let multi = IcmpSnapshot {
+            samples: 3,
+            min_ms: 8,
+            avg_ms: 10,
+            max_ms: 12,
+            ..single
+        };
         assert_eq!(
-            format_query_response_time_line(11),
-            "query response time: 11ms"
+            format_icmp_plain_line(&multi),
+            "icmp: 10 ms avg, 8–12 ms (ping, 3 samples)"
         );
+    }
+
+    #[test]
+    fn failed_hop_summary_and_detail_include_failure_reason() {
+        let hop = TraceHop {
+            zone: "com.".into(),
+            server: "192.0.2.1".into(),
+            server_name: None,
+            qname: "example.com.".into(),
+            qtype: "A".into(),
+            transport: "udp".into(),
+            rtt_ms: 0,
+            rcode: "SERVFAIL".into(),
+            nsid: None,
+            ede_code: None,
+            ede_text: None,
+            referral_ns: vec![],
+            glue: vec![],
+            response: Default::default(),
+            from_cache: false,
+            outcome: HopOutcome::Failed {
+                kind: "timeout".into(),
+                detail: "no response".into(),
+            },
+        };
+        let summary = hop_summary_line(&hop, UNICODE);
+        assert!(summary.starts_with("✗ "));
+        let detail = hop_detail_lines(&hop, UNICODE).join("\n");
+        assert!(detail.contains("failure: timeout: no response"));
     }
 }

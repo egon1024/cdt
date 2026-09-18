@@ -62,6 +62,19 @@ impl DomainName {
         DomainName::parse(&parent).ok()
     }
 
+    /// First delegation zone below the DNS root for `qname` (e.g. `org.` for `tuininga.org.`).
+    pub fn first_delegation_below_root(&self) -> Option<DomainName> {
+        let trimmed = self.as_str().trim_end_matches('.');
+        if trimmed.is_empty() {
+            return None;
+        }
+        let labels: Vec<&str> = trimmed.split('.').collect();
+        if labels.len() < 2 {
+            return None;
+        }
+        DomainName::parse(&format!("{}.", labels[labels.len() - 1])).ok()
+    }
+
     pub fn is_subdomain_of(&self, parent: &DomainName) -> bool {
         let child = self.as_str().trim_end_matches('.').to_ascii_lowercase();
         let parent = parent.as_str().trim_end_matches('.').to_ascii_lowercase();
@@ -120,5 +133,22 @@ mod tests {
         let qname = DomainName::parse("www.example.com.").expect("qname");
         let cut = zone.zone_cut_for(&qname).expect("cut");
         assert_eq!(cut.as_str(), "example.com.");
+    }
+
+    #[test]
+    fn first_delegation_below_root() {
+        let qname = DomainName::parse("tuininga.org.").expect("qname");
+        assert_eq!(
+            qname
+                .first_delegation_below_root()
+                .map(|zone| zone.to_string()),
+            Some("org.".into())
+        );
+        let deep = DomainName::parse("www.example.com.").expect("qname");
+        assert_eq!(
+            deep.first_delegation_below_root()
+                .map(|zone| zone.to_string()),
+            Some("com.".into())
+        );
     }
 }

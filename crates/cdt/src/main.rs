@@ -1,32 +1,8 @@
-mod manifest;
-
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
-use manifest::load_embedded;
-
-#[derive(Debug, Parser)]
-#[command(name = "cdt", version, about = "Cole's DNS Tools bundle")]
-struct Cli {
-    #[command(subcommand)]
-    command: Option<Command>,
-}
-
-#[derive(Debug, Subcommand)]
-enum Command {
-    /// Show bundle and component versions.
-    Version {
-        /// Emit JSON.
-        #[arg(long)]
-        json: bool,
-    },
-    /// List bundled utilities.
-    List {
-        /// Emit JSON.
-        #[arg(long)]
-        json: bool,
-    },
-}
+use cdt::args::{Cli, Command};
+use cdt::manifest::load_embedded;
+use clap::Parser;
 
 fn main() -> ExitCode {
     let cli = Cli::parse();

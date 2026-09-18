@@ -6,6 +6,7 @@ target
 # Release packaging staging and artifacts
 packaging/staging
 packaging/staging-dbg
+packaging/man
 packaging/nfpm/*.generated.yaml
 release-artifacts
 
