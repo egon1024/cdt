@@ -58,6 +58,9 @@ pub fn refresh_tree_rtts(
     let mut parse_failures = Vec::new();
     collect_hop_snapshots(&tree.root, &[], &mut snapshots, &mut parse_failures);
     let total = snapshots.len() + parse_failures.len();
+    if total > 0 {
+        progress.hop_started(0, total);
+    }
     let max_parallel = config.max_parallel_queries.max(1);
     let mut outcomes = parse_failures;
     let queried = if max_parallel == 1 {
@@ -128,10 +131,13 @@ fn refresh_parallel(
     while next_index < snapshots.len() {
         let batch_end = (next_index + max_parallel).min(snapshots.len());
         let batch = snapshots[next_index..batch_end].to_vec();
+        let batch_start = outcomes.len();
         let batch_outcomes = thread::scope(|scope| {
             batch
                 .into_iter()
-                .map(|snapshot| {
+                .enumerate()
+                .map(|(batch_index, snapshot)| {
+                    progress.hop_started(completed + batch_start + batch_index + 1, total);
                     let config = config.clone();
                     scope.spawn(move || query_hop_nocache(&config, snapshot))
                 })
@@ -140,10 +146,7 @@ fn refresh_parallel(
                 .map(|handle| handle.join().expect("worker"))
                 .collect::<Vec<_>>()
         });
-        for outcome in batch_outcomes {
-            outcomes.push(outcome);
-            progress.hop_started(completed + outcomes.len(), total);
-        }
+        outcomes.extend(batch_outcomes);
         next_index = batch_end;
     }
     outcomes
@@ -286,6 +289,16 @@ mod tests {
         fn hop_started(&mut self, _current: usize, _total: usize) {}
     }
 
+    struct RecordingProgress {
+        events: Vec<(usize, usize)>,
+    }
+
+    impl RefreshProgress for RecordingProgress {
+        fn hop_started(&mut self, current: usize, total: usize) {
+            self.events.push((current, total));
+        }
+    }
+
     fn sample_tree() -> TraceTree {
         build_linear_tree(
             vec![hop(".", "198.41.0.4", 10), hop("com.", "192.0.2.1", 20)],
@@ -364,6 +377,25 @@ mod tests {
         assert_eq!(report.hops_failed, 1);
         assert_eq!(tree.root.hop.rtt_ms, 111);
         assert_eq!(tree.root.children[0].hop.rtt_ms, 20);
+    }
+
+    #[test]
+    fn refresh_tree_rtts_reports_progress_before_queries_run() {
+        let mut tree = sample_tree();
+        let exchange = Arc::new(ScriptedExchange {
+            rtts: HashMap::from([
+                (IpAddr::V4(Ipv4Addr::new(198, 41, 0, 4)), 1),
+                (IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 2),
+            ]),
+            calls: Arc::new(AtomicUsize::new(0)),
+            fail: None,
+        });
+        let mut config = config_with_exchange(exchange);
+        config.max_parallel_queries = 2;
+        let mut progress = RecordingProgress { events: Vec::new() };
+        let _report = refresh_tree_rtts(&mut tree, &config, &mut progress);
+        assert_eq!(progress.events.first(), Some(&(0, 2)));
+        assert!(progress.events.iter().any(|(current, total)| *current == 1 && *total == 2));
     }
 
     #[test]

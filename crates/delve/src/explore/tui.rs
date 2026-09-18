@@ -75,6 +75,7 @@ enum BranchWorkerMessage {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RefreshPhase {
+    Starting,
     Dns,
     Icmp,
 }
@@ -374,7 +375,9 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                     branch_progress.as_deref(),
                 );
             }
-            if let Some((phase, current, total)) = refresh_progress {
+            if refresh_rx.is_some() {
+                let (phase, current, total) =
+                    refresh_progress.unwrap_or((RefreshPhase::Starting, 0, 0));
                 render_refresh_progress_overlay(frame, &theme, phase, current, total);
             }
             if refresh_overlay == RefreshOverlay::ConfirmExitSave {
@@ -384,7 +387,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                 && branch_overlay == BranchOverlay::None
                 && branch_progress.is_none()
                 && refresh_overlay == RefreshOverlay::None
-                && refresh_progress.is_none()
+                && refresh_rx.is_none()
             {
                 match view.active_screen {
                     ActiveScreen::Browse => render_message_overlay(frame, &theme, message),
@@ -1667,6 +1670,24 @@ fn render_compare_notice(frame: &mut ratatui::Frame<'_>, theme: &Theme, message:
     frame.render_widget(widget, area);
 }
 
+fn refresh_progress_overlay_text(
+    phase: RefreshPhase,
+    current: usize,
+    total: usize,
+) -> (&'static str, String) {
+    match phase {
+        RefreshPhase::Starting => ("Refresh", "Starting refresh…".to_string()),
+        RefreshPhase::Dns => (
+            "Refresh — DNS RTT",
+            format!("Refreshing DNS RTTs… {current}/{total}"),
+        ),
+        RefreshPhase::Icmp => (
+            "Refresh — ICMP",
+            format!("Refreshing ICMP targets… {current}/{total}"),
+        ),
+    }
+}
+
 fn render_refresh_progress_overlay(
     frame: &mut ratatui::Frame<'_>,
     theme: &Theme,
@@ -1676,16 +1697,7 @@ fn render_refresh_progress_overlay(
 ) {
     let area = centered_rect(50, 20, frame.area());
     frame.render_widget(Clear, area);
-    let (title, message) = match phase {
-        RefreshPhase::Dns => (
-            "Refresh — DNS RTT",
-            format!("Refreshing DNS RTTs… {current}/{total}"),
-        ),
-        RefreshPhase::Icmp => (
-            "Refresh — ICMP",
-            format!("Refreshing ICMP targets… {current}/{total}"),
-        ),
-    };
+    let (title, message) = refresh_progress_overlay_text(phase, current, total);
     let widget = Paragraph::new(message).block(
         Block::default()
             .title(title)
@@ -2137,6 +2149,13 @@ mod tests {
     fn detail_scroll_max_is_zero_when_content_fits() {
         let lines = vec![Line::from("short line")];
         assert_eq!(max_vertical_scroll(wrapped_line_count(&lines, 80), 20), 0);
+    }
+
+    #[test]
+    fn refresh_progress_overlay_shows_starting_message_before_first_hop() {
+        let (title, message) = refresh_progress_overlay_text(RefreshPhase::Starting, 0, 0);
+        assert_eq!(title, "Refresh");
+        assert_eq!(message, "Starting refresh…");
     }
 
     #[test]
