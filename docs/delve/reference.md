@@ -7,7 +7,7 @@ Command synopsis and trace options. For concepts (sessions, branching, expansion
 | Command | Purpose |
 |---------|---------|
 | `delve trace …` | Run a delegation trace |
-| `delve session list` | List stored sessions (`*` pinned, `@` current default) |
+| `delve session list` | List stored sessions (`^` frozen, `*` pinned, `@` current default) |
 | `delve session current` | Print the current default session id |
 | `delve session show [id]` | Show a stored session (no network); omit id for the default |
 | `delve session show [id] --json` | Same session as flat JSON (`event: complete`) |
@@ -21,7 +21,11 @@ Command synopsis and trace options. For concepts (sessions, branching, expansion
 | `delve session explore [id] [+icmp]` | Interactive tree explorer (TUI); `+icmp` enables one-shot ICMP refresh for this process |
 | `delve session outline [id]` | Indented resolution tree on stdout; omit id for the default session |
 | `delve session events [id]` | Structured JSON explore tree on stdout; omit id for the default session |
-| `delve session export [id]` | Export trace tree as SVG or PNG; omit id for the default session |
+| `delve session diagram [id]` | Export trace tree as SVG or PNG; omit id for the default session |
+| `delve session export [<id>…]` | Export session documents as a JSON bundle (`--all`, `-o PATH`) |
+| `delve session import [PATH]` | Import a session bundle from a file or stdin |
+| `delve session freeze <id>` | Mark a session frozen (content writes refused) |
+| `delve session thaw <id>` | Unfreeze a session for branching and explore persist |
 | `delve session branch [id]` | Extend a stored trace at a node (live queries) |
 | `delve cache stats` | DNS response cache statistics |
 | `delve cache purge` | Remove expired DNS cache entries |
