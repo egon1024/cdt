@@ -73,41 +73,59 @@ pub enum SessionSubcommand {
     Events(SessionEventsArgs),
     /// Explore a stored session in the interactive tree TUI.
     Explore(SessionExploreArgs),
-    /// Export a stored session as SVG (or PNG when enabled).
-    Export(SessionExportArgs),
+    /// Export a stored session trace diagram as SVG (or PNG when enabled).
+    Diagram(SessionDiagramArgs),
+    /// Export stored sessions as a portable JSON bundle.
+    Export(SessionBundleExportArgs),
+    /// Mark a session frozen so trace content cannot be modified.
+    Freeze(SessionIdArgs),
+    /// Mark a session mutable again after freeze.
+    Thaw(SessionIdArgs),
     /// Branch a stored trace at a node.
     Branch(SessionBranchArgs),
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq, Default)]
-pub enum SessionExportFormat {
+pub enum SessionDiagramFormat {
     #[default]
     Svg,
     Png,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq, Default)]
-pub enum SessionExportLayout {
+pub enum SessionDiagramLayout {
     #[default]
     Tree,
     Icicle,
 }
 
 #[derive(Debug, Parser)]
-pub struct SessionExportArgs {
+pub struct SessionDiagramArgs {
     /// Session id or prefix. When omitted, uses the default session.
     pub id: Option<String>,
     /// Output format.
-    #[arg(long, value_enum, default_value_t = SessionExportFormat::Svg)]
-    pub format: SessionExportFormat,
+    #[arg(long, value_enum, default_value_t = SessionDiagramFormat::Svg)]
+    pub format: SessionDiagramFormat,
     /// Diagram layout.
-    #[arg(long, value_enum, default_value_t = SessionExportLayout::Tree)]
-    pub layout: SessionExportLayout,
+    #[arg(long, value_enum, default_value_t = SessionDiagramLayout::Tree)]
+    pub layout: SessionDiagramLayout,
     /// Trace tree index within the session document.
     #[arg(long, default_value_t = 0)]
     pub tree_index: usize,
     /// Output file path, or `-` for stdout.
     #[arg(long, short)]
+    pub output: Option<String>,
+}
+
+#[derive(Debug, Parser)]
+pub struct SessionBundleExportArgs {
+    /// Session ids or prefixes to export (order preserved; duplicates export twice).
+    pub ids: Vec<String>,
+    /// Export every stored session.
+    #[arg(long, conflicts_with = "ids")]
+    pub all: bool,
+    /// Output file path instead of stdout.
+    #[arg(long, short = 'o', value_name = "PATH")]
     pub output: Option<String>,
 }
 

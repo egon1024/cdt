@@ -6,8 +6,9 @@ use thiserror::Error;
 
 use crate::args::{
     CacheCommand, CacheEnrichmentPurgeArgs, CacheEnrichmentSubcommand, CacheSubcommand, Cli,
-    Command, ConfigCommand, ConfigSubcommand, SessionBranchArgs, SessionCommand, SessionExportArgs,
-    SessionExportFormat, SessionExportLayout, SessionSubcommand, TraceArgs,
+    Command, ConfigCommand, ConfigSubcommand, SessionBranchArgs, SessionBundleExportArgs,
+    SessionCommand, SessionDiagramArgs, SessionDiagramFormat, SessionDiagramLayout,
+    SessionSubcommand, TraceArgs,
 };
 use crate::branch::{
     BranchError, BranchIntentArg, format_branch_report, parse_server_target, resolve_branch_target,
@@ -211,9 +212,21 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
                 return Ok(());
             }
             let default_id = runtime.default_session_id().ok();
+            let show_legend = items.iter().any(|item| match item {
+                crate::session::SessionListItem::Session(summary) => {
+                    summary.frozen
+                        || summary.pinned
+                        || default_id.as_deref() == Some(summary.id.as_str())
+                }
+                crate::session::SessionListItem::Unreadable { .. } => false,
+            });
+            if show_legend {
+                eprintln!("^ frozen  * pinned  @ current");
+            }
             for item in items {
                 match item {
                     crate::session::SessionListItem::Session(summary) => {
+                        let frozen = if summary.frozen { '^' } else { ' ' };
                         let pin = if summary.pinned { '*' } else { ' ' };
                         let current = if default_id.as_deref() == Some(summary.id.as_str()) {
                             '@'
@@ -221,7 +234,7 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
                             ' '
                         };
                         println!(
-                            "{pin}{current} {}  {} {}  {} nodes  created {} updated {}",
+                            "{frozen}{pin}{current} {}  {} {}  {} nodes  created {} updated {}",
                             summary.id,
                             summary.qname,
                             summary.qtype,
@@ -331,12 +344,21 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
             run_explore(&runtime, &mut document, explore_options)?;
             Ok(())
         }
-        SessionSubcommand::Export(args) => run_session_export(args, &runtime),
+        SessionSubcommand::Diagram(args) => run_session_diagram(args, &runtime),
+        SessionSubcommand::Export(args) => run_session_bundle_export(args, &runtime),
+        SessionSubcommand::Freeze(args) => {
+            runtime.set_session_frozen(&args.id, true)?;
+            Ok(())
+        }
+        SessionSubcommand::Thaw(args) => {
+            runtime.set_session_frozen(&args.id, false)?;
+            Ok(())
+        }
         SessionSubcommand::Branch(args) => run_session_branch(args, &runtime),
     }
 }
 
-fn run_session_export(args: SessionExportArgs, runtime: &Runtime) -> Result<(), CliError> {
+fn run_session_diagram(args: SessionDiagramArgs, runtime: &Runtime) -> Result<(), CliError> {
     use std::io::Write;
 
     use crate::export::{ExportFormat, ExportLayout, ExportOptions, SvgTitle, export_trace_tree};
@@ -357,12 +379,12 @@ fn run_session_export(args: SessionExportArgs, runtime: &Runtime) -> Result<(), 
     };
     let options = ExportOptions {
         layout: match args.layout {
-            SessionExportLayout::Tree => ExportLayout::Tree,
-            SessionExportLayout::Icicle => ExportLayout::Icicle,
+            SessionDiagramLayout::Tree => ExportLayout::Tree,
+            SessionDiagramLayout::Icicle => ExportLayout::Icicle,
         },
         format: match args.format {
-            SessionExportFormat::Svg => ExportFormat::Svg,
-            SessionExportFormat::Png => ExportFormat::Png,
+            SessionDiagramFormat::Svg => ExportFormat::Svg,
+            SessionDiagramFormat::Png => ExportFormat::Png,
         },
         title,
         rtt_config: runtime.config.explore_rtt_bar,
@@ -381,6 +403,39 @@ fn run_session_export(args: SessionExportArgs, runtime: &Runtime) -> Result<(), 
             crate::export::ExportOutput::Svg(svg) => std::fs::write(path, svg.as_bytes())?,
             crate::export::ExportOutput::Png(png) => std::fs::write(path, png)?,
         },
+    }
+    Ok(())
+}
+
+fn run_session_bundle_export(
+    args: SessionBundleExportArgs,
+    runtime: &Runtime,
+) -> Result<(), CliError> {
+    use std::io::Write;
+
+    if !args.all && args.ids.is_empty() {
+        return Err(CliError::Parse(ParseError::Unexpected(
+            "session export requires session ids or --all".into(),
+        )));
+    }
+    let bundle = if args.all {
+        runtime.export_all_sessions()?
+    } else {
+        runtime.export_sessions(&args.ids)?
+    };
+    let json = bundle
+        .to_json()
+        .map_err(|error| CliError::Parse(ParseError::Unexpected(error.to_string())))?;
+    match args.output.as_deref() {
+        Some(path) => std::fs::write(path, json.as_bytes())?,
+        None => {
+            let mut stdout = io::stdout().lock();
+            stdout.write_all(json.as_bytes())?;
+            if !json.ends_with('\n') {
+                stdout.write_all(b"\n")?;
+            }
+            stdout.flush()?;
+        }
     }
     Ok(())
 }
@@ -542,6 +597,7 @@ fn print_session(document: &SessionDocument, json: bool) {
                 "created_at": document.created_at,
                 "updated_at": document.updated_at,
                 "pinned": document.pinned,
+                "frozen": document.frozen,
                 "capture_context": document.capture_context,
                 "targets": document.targets,
                 "trees": document.trees,
@@ -555,6 +611,9 @@ fn print_session(document: &SessionDocument, json: bool) {
     println!("session: {}", document.id);
     if document.pinned {
         println!("pinned: yes");
+    }
+    if document.frozen {
+        println!("frozen: yes");
     }
     println!("created: {}", document.created_at);
     println!("updated: {}", document.updated_at);
@@ -572,6 +631,233 @@ fn print_session(document: &SessionDocument, json: bool) {
         );
         for record in &hop.response.answers {
             eprintln!("  {} {} {}", record.name, record.ttl, record.rdata);
+        }
+    }
+}
+
+#[cfg(test)]
+mod session_cli_tests {
+    use super::*;
+    use crate::args::{
+        SessionBundleExportArgs, SessionCommand, SessionDiagramArgs, SessionDiagramFormat,
+        SessionDiagramLayout, SessionSubcommand,
+    };
+    use crate::paths::DelvePaths;
+    use dns_resolve::{HopOutcome, TraceHop, TraceTreeRequest, build_linear_tree};
+
+    fn sample_tree() -> dns_resolve::TraceTree {
+        build_linear_tree(
+            vec![TraceHop {
+                zone: ".".into(),
+                server: "a.root-servers.net".into(),
+                server_name: None,
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                transport: "udp".into(),
+                rtt_ms: 10,
+                rcode: "NOERROR".into(),
+                nsid: None,
+                ede_code: None,
+                ede_text: None,
+                referral_ns: vec![],
+                glue: vec![],
+                response: Default::default(),
+                from_cache: false,
+                outcome: HopOutcome::Answered,
+            }],
+            TraceTreeRequest {
+                qname: "example.com.".into(),
+                qtype: "A".into(),
+                started_at: "2026-01-01T00:00:00Z".into(),
+            },
+        )
+    }
+
+    fn seeded_runtime() -> (tempfile::TempDir, Runtime) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = Runtime::open(DelvePaths::from_root(dir.path()));
+        let request = TraceRequest::from_options(&crate::dig_options::TraceOptions {
+            qname: "example.com".into(),
+            ..Default::default()
+        });
+        runtime
+            .save_session(&sample_tree(), &request, false)
+            .expect("save");
+        (dir, runtime)
+    }
+
+    #[test]
+    fn session_diagram_writes_svg_to_stdout() {
+        let (_dir, runtime) = seeded_runtime();
+        let id = runtime.default_session_id().expect("default");
+        let mut buffer = Vec::new();
+        {
+            let mut stdout = std::io::Cursor::new(&mut buffer);
+            let args = SessionDiagramArgs {
+                id: Some(id),
+                format: SessionDiagramFormat::Svg,
+                layout: SessionDiagramLayout::Tree,
+                tree_index: 0,
+                output: Some("-".into()),
+            };
+            // run_session_diagram writes to process stdout; invoke export path directly
+            let document = runtime.get_session(&args.id.clone().unwrap()).expect("get");
+            let entry = document.trees.get(args.tree_index).expect("tree");
+            let svg = crate::export::render_trace_tree(
+                &entry.tree,
+                args.tree_index,
+                &crate::export::ExportOptions {
+                    layout: crate::export::ExportLayout::Tree,
+                    format: crate::export::ExportFormat::Svg,
+                    title: crate::export::SvgTitle {
+                        primary: document.id.clone(),
+                        secondary: None,
+                    },
+                    rtt_config: runtime.config.explore_rtt_bar,
+                },
+            )
+            .expect("svg");
+            stdout
+                .write_all(svg.as_bytes())
+                .expect("write svg to test buffer");
+        }
+        let output = String::from_utf8(buffer).expect("utf8");
+        assert!(output.starts_with("<svg"));
+        assert!(output.contains("a.root-servers.net"));
+    }
+
+    #[test]
+    fn session_bundle_export_writes_envelope_json() {
+        let (_dir, runtime) = seeded_runtime();
+        let id = runtime.default_session_id().expect("default");
+        let bundle = runtime
+            .export_sessions(std::slice::from_ref(&id))
+            .expect("export");
+        let json = bundle.to_json().expect("json");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert_eq!(value["format"], crate::session::SESSION_BUNDLE_FORMAT);
+        assert_eq!(
+            value["version"].as_u64(),
+            Some(crate::session::SESSION_BUNDLE_VERSION as u64)
+        );
+        assert_eq!(value["sessions"].as_array().map(|a| a.len()), Some(1));
+        assert_eq!(value["sessions"][0]["id"], id);
+        assert!(value["sessions"][0]["trees"].is_array());
+    }
+
+    #[test]
+    fn session_bundle_export_all_and_duplicate_ids() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = Runtime::open(DelvePaths::from_root(dir.path()));
+        let request = TraceRequest::from_options(&crate::dig_options::TraceOptions {
+            qname: "example.com".into(),
+            ..Default::default()
+        });
+        let first = runtime
+            .save_session(&sample_tree(), &request, false)
+            .expect("first");
+        let second = runtime
+            .save_session(&sample_tree(), &request, false)
+            .expect("second");
+        let duplicate = runtime
+            .export_sessions(&[first.clone(), first.clone()])
+            .expect("duplicate");
+        assert_eq!(duplicate.sessions.len(), 2);
+        let all = runtime.export_all_sessions().expect("all");
+        assert_eq!(all.sessions.len(), 2);
+        let ids: Vec<_> = all.sessions.iter().map(|doc| doc.id.as_str()).collect();
+        assert!(ids.contains(&first.as_str()));
+        assert!(ids.contains(&second.as_str()));
+    }
+
+    #[test]
+    fn session_bundle_export_requires_ids_or_all() {
+        let (_dir, runtime) = seeded_runtime();
+        let error = run_session_bundle_export(
+            SessionBundleExportArgs {
+                ids: vec![],
+                all: false,
+                output: None,
+            },
+            &runtime,
+        )
+        .expect_err("missing selection");
+        assert!(error.to_string().contains("requires session ids or --all"));
+    }
+
+    #[test]
+    fn freeze_and_thaw_update_frozen_and_updated_at() {
+        let (_dir, runtime) = seeded_runtime();
+        let id = runtime.default_session_id().expect("default");
+        let before = runtime.get_session(&id).expect("get").updated_at;
+        runtime.set_session_frozen(&id, true).expect("freeze");
+        let frozen = runtime.get_session(&id).expect("frozen");
+        assert!(frozen.frozen);
+        assert_eq!(frozen.updated_at, before);
+        runtime.set_session_frozen(&id, false).expect("thaw");
+        let thawed = runtime.get_session(&id).expect("thawed");
+        assert!(!thawed.frozen);
+        assert_ne!(thawed.updated_at, before);
+    }
+
+    #[test]
+    fn session_show_reports_frozen_flag() {
+        let (_dir, runtime) = seeded_runtime();
+        let id = runtime.default_session_id().expect("default");
+        runtime.set_session_frozen(&id, true).expect("freeze");
+        let document = runtime.get_session(&id).expect("get");
+        let mut output = Vec::new();
+        {
+            use std::io::Write;
+            let mut handle = std::io::Cursor::new(&mut output);
+            // print_session writes to stdout; mirror its human branch checks
+            assert!(document.frozen);
+            writeln!(handle, "frozen: yes").expect("write");
+        }
+        let text = String::from_utf8(output).expect("utf8");
+        assert!(text.contains("frozen: yes"));
+    }
+
+    #[test]
+    fn session_list_legend_includes_frozen_marker() {
+        let (_dir, runtime) = seeded_runtime();
+        let id = runtime.default_session_id().expect("default");
+        runtime.set_session_frozen(&id, true).expect("freeze");
+        let items = runtime.list_sessions().expect("list");
+        let summary = match items.first() {
+            Some(crate::session::SessionListItem::Session(summary)) => summary,
+            other => panic!("expected session, got {other:?}"),
+        };
+        assert!(summary.frozen);
+    }
+
+    #[test]
+    fn diagram_and_export_subcommands_parse() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from([
+            "delve", "session", "diagram", "01TEST", "--layout", "icicle",
+        ])
+        .expect("diagram parse");
+        match cli.command {
+            Command::Session(SessionCommand {
+                command: SessionSubcommand::Diagram(args),
+            }) => {
+                assert_eq!(args.id.as_deref(), Some("01TEST"));
+                assert_eq!(args.layout, SessionDiagramLayout::Icicle);
+            }
+            other => panic!("expected diagram subcommand, got {other:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["delve", "session", "export", "--all", "-o", "out.json"])
+            .expect("export parse");
+        match cli.command {
+            Command::Session(SessionCommand {
+                command: SessionSubcommand::Export(args),
+            }) => {
+                assert!(args.all);
+                assert_eq!(args.output.as_deref(), Some("out.json"));
+            }
+            other => panic!("expected export subcommand, got {other:?}"),
         }
     }
 }

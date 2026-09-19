@@ -217,6 +217,30 @@ impl Runtime {
             .set_pinned(id, false)
     }
 
+    pub fn set_session_frozen(&self, id: &str, frozen: bool) -> Result<(), SessionError> {
+        self.sessions
+            .lock()
+            .expect("session lock")
+            .set_frozen(id, frozen)
+    }
+
+    pub fn export_sessions(
+        &self,
+        ids: &[String],
+    ) -> Result<crate::session::SessionBundle, SessionError> {
+        self.sessions
+            .lock()
+            .expect("session lock")
+            .export_sessions(ids)
+    }
+
+    pub fn export_all_sessions(&self) -> Result<crate::session::SessionBundle, SessionError> {
+        self.sessions
+            .lock()
+            .expect("session lock")
+            .export_all_sessions()
+    }
+
     pub fn purge_sessions(
         &self,
         id: Option<&str>,
