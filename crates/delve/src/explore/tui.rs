@@ -780,6 +780,15 @@ fn persist_view_state_now(
     if !view.should_persist_now(force) {
         return;
     }
+    if document.frozen {
+        if !*persist_warning_shown {
+            *persist_warning_shown = true;
+            eprintln!(
+                "warning: session {session_id} is frozen; explore view state was not saved (thaw to persist)"
+            );
+        }
+        return;
+    }
     let mut to_save = document.clone();
     if unsaved_refresh {
         if let Ok(saved) = runtime.get_session(session_id) {

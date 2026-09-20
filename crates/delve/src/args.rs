@@ -77,6 +77,8 @@ pub enum SessionSubcommand {
     Diagram(SessionDiagramArgs),
     /// Export stored sessions as a portable JSON bundle.
     Export(SessionBundleExportArgs),
+    /// Import stored sessions from a portable JSON bundle.
+    Import(SessionBundleImportArgs),
     /// Mark a session frozen so trace content cannot be modified.
     Freeze(SessionIdArgs),
     /// Mark a session mutable again after freeze.
@@ -127,6 +129,33 @@ pub struct SessionBundleExportArgs {
     /// Output file path instead of stdout.
     #[arg(long, short = 'o', value_name = "PATH")]
     pub output: Option<String>,
+}
+
+#[derive(Debug, Parser)]
+pub struct SessionBundleImportArgs {
+    /// Bundle file path. Reads from stdin when omitted.
+    pub path: Option<String>,
+    /// Replace existing sessions with the same id.
+    #[arg(long, conflicts_with = "reassign")]
+    pub replace: bool,
+    /// Import every session under a newly generated id.
+    #[arg(long, conflicts_with = "replace")]
+    pub reassign: bool,
+    /// Replace without prompting when the local session is newer or frozen.
+    #[arg(long)]
+    pub force: bool,
+    /// Mark imported sessions pinned so retention purge skips them.
+    #[arg(long)]
+    pub pin: bool,
+    /// Set imported session update timestamps to the import time.
+    #[arg(long)]
+    pub touch: bool,
+    /// Mark imported sessions frozen after import.
+    #[arg(long)]
+    pub frozen: bool,
+    /// Emit a JSON import report instead of a human summary.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Parser)]
