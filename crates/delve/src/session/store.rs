@@ -56,6 +56,7 @@ pub(crate) fn assert_content_mutation_allowed(
 pub trait SessionStore: Send {
     fn save(&mut self, result: &TraceTree, request: &TraceRequest) -> Result<String>;
     fn save_document(&mut self, document: SessionDocument) -> Result<String>;
+    fn upsert_document(&mut self, document: SessionDocument) -> Result<()>;
     fn update(&mut self, document: &SessionDocument) -> Result<()>;
     fn get(&self, id: &str) -> Result<SessionDocument>;
     fn list(&self) -> Result<Vec<SessionListItem>>;
@@ -83,6 +84,10 @@ impl SessionStore for OpenSessionStore {
 
     fn save_document(&mut self, document: SessionDocument) -> Result<String> {
         self.inner.save_document(document)
+    }
+
+    fn upsert_document(&mut self, document: SessionDocument) -> Result<()> {
+        self.inner.upsert_document(document)
     }
 
     fn update(&mut self, document: &SessionDocument) -> Result<()> {
@@ -166,6 +171,19 @@ impl OpenSessionStore {
             sessions.push(self.inner.get(&id)?);
         }
         Ok(SessionBundle::new(sessions))
+    }
+
+    pub fn save_document(&mut self, document: SessionDocument) -> Result<String> {
+        self.inner.save_document(document)
+    }
+
+    pub fn upsert_document(&mut self, document: SessionDocument) -> Result<()> {
+        self.inner.upsert_document(document)
+    }
+
+    #[cfg(test)]
+    pub fn from_inner(inner: Box<dyn SessionStore>) -> Self {
+        Self { inner }
     }
 }
 

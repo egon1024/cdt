@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Read, Write};
 
 use clap::CommandFactory;
 use dns_resolve::{ExpansionPolicy, run_trace};
@@ -7,8 +7,8 @@ use thiserror::Error;
 use crate::args::{
     CacheCommand, CacheEnrichmentPurgeArgs, CacheEnrichmentSubcommand, CacheSubcommand, Cli,
     Command, ConfigCommand, ConfigSubcommand, SessionBranchArgs, SessionBundleExportArgs,
-    SessionCommand, SessionDiagramArgs, SessionDiagramFormat, SessionDiagramLayout,
-    SessionSubcommand, TraceArgs,
+    SessionBundleImportArgs, SessionCommand, SessionDiagramArgs, SessionDiagramFormat,
+    SessionDiagramLayout, SessionSubcommand, TraceArgs,
 };
 use crate::branch::{
     BranchError, BranchIntentArg, format_branch_report, parse_server_target, resolve_branch_target,
@@ -26,7 +26,10 @@ use crate::progress::StderrProgress;
 use crate::replay::{print_final_answer, print_reused_session_notice, replay_session};
 use crate::retention::format_timestamp_for_list;
 use crate::runtime::{Runtime, SessionReuseLookup};
-use crate::session::SessionDocument;
+use crate::session::{
+    ImportPolicy, ImportSessionOptions, ImportSessionStatus, NoReplayNotice, SessionBundle,
+    SessionDocument,
+};
 use crate::trace_config::{TraceConfigError, trace_config_from_request};
 use crate::trace_request::TraceRequest;
 
@@ -346,6 +349,7 @@ fn run_session_command(command: SessionCommand) -> Result<(), CliError> {
         }
         SessionSubcommand::Diagram(args) => run_session_diagram(args, &runtime),
         SessionSubcommand::Export(args) => run_session_bundle_export(args, &runtime),
+        SessionSubcommand::Import(args) => run_session_bundle_import(args, &runtime),
         SessionSubcommand::Freeze(args) => {
             runtime.set_session_frozen(&args.id, true)?;
             Ok(())
@@ -436,6 +440,320 @@ fn run_session_bundle_export(
             }
             stdout.flush()?;
         }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+struct ImportSessionReportEntry {
+    id: String,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    original_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+struct ImportReport {
+    imported: usize,
+    skipped: usize,
+    replaced: usize,
+    reassigned: usize,
+    failed: usize,
+    sessions: Vec<ImportSessionReportEntry>,
+    no_replay: Vec<NoReplayNotice>,
+    retention_warnings: Vec<String>,
+}
+
+fn read_import_bundle_body(path: Option<&str>) -> Result<String, CliError> {
+    match path {
+        Some(path) => std::fs::read_to_string(path).map_err(CliError::Io),
+        None => {
+            if io::stdin().is_terminal() {
+                return Err(CliError::Parse(ParseError::Unexpected(
+                    "session import expects a bundle on stdin or a file path".into(),
+                )));
+            }
+            let mut body = String::new();
+            io::stdin()
+                .read_to_string(&mut body)
+                .map_err(CliError::Io)?;
+            if body.trim().is_empty() {
+                return Err(CliError::Parse(ParseError::Unexpected(
+                    "session import expects a bundle on stdin or a file path".into(),
+                )));
+            }
+            Ok(body)
+        }
+    }
+}
+
+fn import_policy_from_args(args: &SessionBundleImportArgs) -> ImportPolicy {
+    if args.reassign {
+        ImportPolicy::Reassign
+    } else if args.replace {
+        ImportPolicy::Replace
+    } else {
+        ImportPolicy::Skip
+    }
+}
+
+fn is_local_session_newer(local: &SessionDocument, imported: &SessionDocument) -> bool {
+    match (
+        crate::retention::parse_session_timestamp(&local.updated_at),
+        crate::retention::parse_session_timestamp(&imported.updated_at),
+    ) {
+        (Some(local_ts), Some(imported_ts)) => local_ts > imported_ts,
+        _ => false,
+    }
+}
+
+fn confirm_replace_if_newer(
+    local: &SessionDocument,
+    imported: &SessionDocument,
+    force: bool,
+    is_tty: bool,
+    prompt: &mut dyn FnMut(&str) -> io::Result<String>,
+) -> Result<bool, CliError> {
+    if force || !is_local_session_newer(local, imported) {
+        return Ok(true);
+    }
+    if !is_tty {
+        return Err(CliError::Parse(ParseError::Unexpected(format!(
+            "local session {} is newer than imported bundle; use --force with --replace",
+            local.id
+        ))));
+    }
+    eprintln!(
+        "warning: local session {} is newer than imported bundle; replace anyway? [y/N] (--force skips this prompt)",
+        local.id
+    );
+    match prompt("") {
+        Ok(line) => Ok(line.trim().eq_ignore_ascii_case("y")),
+        Err(error) => Err(CliError::Io(error)),
+    }
+}
+
+fn retention_warning_for_import(
+    document: &SessionDocument,
+    retention: crate::config::SessionRetention,
+    pin: bool,
+    touch: bool,
+) -> Option<String> {
+    if pin || touch {
+        return None;
+    }
+    let now = time::OffsetDateTime::now_utc();
+    match crate::retention::is_expired(&document.updated_at, retention, now) {
+        Some(true) => Some(format!(
+            "warning: imported session {} may be purged under local retention ({})",
+            document.id,
+            crate::retention::retention_label(retention)
+        )),
+        _ => None,
+    }
+}
+
+fn collect_no_replay(document: &SessionDocument) -> Option<NoReplayNotice> {
+    let reasons = document.replay_notice_reasons();
+    if reasons.is_empty() {
+        None
+    } else {
+        Some(NoReplayNotice {
+            id: document.id.clone(),
+            reasons,
+        })
+    }
+}
+
+fn print_replay_notice(notices: &[NoReplayNotice]) {
+    if notices.is_empty() {
+        return;
+    }
+    eprintln!(
+        "note: {} imported session(s) will not be used for trace replay; explore and other session commands still work",
+        notices.len()
+    );
+    if notices.len() <= 10 {
+        for notice in notices {
+            eprintln!("  {} ({})", notice.id, notice.reasons.join(", "));
+        }
+    } else {
+        let mut grouped: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        for notice in notices {
+            let key = notice.reasons.join(",");
+            *grouped.entry(key).or_default() += 1;
+        }
+        for (reasons, count) in grouped {
+            eprintln!("  {count} session(s): {reasons}");
+        }
+    }
+}
+
+fn import_status_label(
+    status: &ImportSessionStatus,
+) -> (&str, String, Option<String>, Option<String>) {
+    match status {
+        ImportSessionStatus::Imported { id } => ("imported", id.clone(), None, None),
+        ImportSessionStatus::Replaced { id } => ("replaced", id.clone(), None, None),
+        ImportSessionStatus::Reassigned { original_id, id } => {
+            ("reassigned", id.clone(), Some(original_id.clone()), None)
+        }
+        ImportSessionStatus::Skipped { id, reason } => {
+            ("skipped", id.clone(), None, Some(reason.clone()))
+        }
+        ImportSessionStatus::Failed { id, error } => {
+            ("failed", id.clone(), None, Some(error.clone()))
+        }
+    }
+}
+
+fn run_session_bundle_import(
+    args: SessionBundleImportArgs,
+    runtime: &Runtime,
+) -> Result<(), CliError> {
+    let body = read_import_bundle_body(args.path.as_deref())?;
+    let bundle = SessionBundle::from_json(&body)?;
+    let policy = import_policy_from_args(&args);
+    let options = ImportSessionOptions {
+        policy,
+        force: args.force,
+        pin: args.pin,
+        touch: args.touch,
+        frozen: args.frozen,
+    };
+    let is_tty = io::stdin().is_terminal();
+    let mut prompt = read_tty_line;
+
+    let mut report = ImportReport {
+        imported: 0,
+        skipped: 0,
+        replaced: 0,
+        reassigned: 0,
+        failed: 0,
+        sessions: Vec::new(),
+        no_replay: Vec::new(),
+        retention_warnings: Vec::new(),
+    };
+
+    for document in bundle.sessions {
+        let session_id = document.id.clone();
+        if policy == ImportPolicy::Replace && !args.force {
+            if let Ok(local) = runtime.get_session(&session_id) {
+                if !confirm_replace_if_newer(&local, &document, args.force, is_tty, &mut prompt)? {
+                    report.skipped += 1;
+                    report.sessions.push(ImportSessionReportEntry {
+                        id: session_id.clone(),
+                        status: "skipped".into(),
+                        original_id: None,
+                        reason: Some("local session is newer".into()),
+                        error: None,
+                    });
+                    eprintln!("warning: skipped session {session_id} (local session is newer)");
+                    continue;
+                }
+            }
+        }
+
+        if let Some(warning) = retention_warning_for_import(
+            &document,
+            runtime.config.session_retention,
+            args.pin,
+            args.touch,
+        ) {
+            if !args.json {
+                eprintln!("{warning}");
+            }
+            report.retention_warnings.push(warning);
+        }
+
+        let status = runtime.import_session(document, options.clone())?;
+        if let Some(notice) = match &status {
+            ImportSessionStatus::Imported { id }
+            | ImportSessionStatus::Replaced { id }
+            | ImportSessionStatus::Reassigned { id, .. } => runtime
+                .get_session(id)
+                .ok()
+                .and_then(|stored| collect_no_replay(&stored)),
+            _ => None,
+        } {
+            report.no_replay.push(notice);
+        }
+
+        let (label, id, original_id, detail) = import_status_label(&status);
+        match &status {
+            ImportSessionStatus::Imported { .. } => report.imported += 1,
+            ImportSessionStatus::Replaced { .. } => report.replaced += 1,
+            ImportSessionStatus::Reassigned { .. } => report.reassigned += 1,
+            ImportSessionStatus::Skipped { .. } => {
+                report.skipped += 1;
+                if !args.json {
+                    eprintln!(
+                        "warning: skipped session {id} ({})",
+                        detail.clone().unwrap_or_default()
+                    );
+                }
+            }
+            ImportSessionStatus::Failed { .. } => {
+                report.failed += 1;
+                if !args.json {
+                    eprintln!(
+                        "error: import failed for session {id}: {}",
+                        detail.clone().unwrap_or_default()
+                    );
+                }
+            }
+        }
+        report.sessions.push(ImportSessionReportEntry {
+            id,
+            status: label.into(),
+            original_id,
+            reason: if label == "skipped" {
+                detail.clone()
+            } else {
+                None
+            },
+            error: if label == "failed" { detail } else { None },
+        });
+    }
+
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report)
+                .map_err(|error| { CliError::Parse(ParseError::Unexpected(error.to_string())) })?
+        );
+    } else {
+        let mut parts = Vec::new();
+        if report.imported > 0 {
+            parts.push(format!("imported {}", report.imported));
+        }
+        if report.replaced > 0 {
+            parts.push(format!("replaced {}", report.replaced));
+        }
+        if report.reassigned > 0 {
+            parts.push(format!("reassigned {}", report.reassigned));
+        }
+        if report.skipped > 0 {
+            parts.push(format!("skipped {}", report.skipped));
+        }
+        if report.failed > 0 {
+            parts.push(format!("failed {}", report.failed));
+        }
+        if !parts.is_empty() {
+            println!("{}", parts.join(", "));
+        }
+        print_replay_notice(&report.no_replay);
+    }
+
+    if report.skipped > 0 || report.failed > 0 {
+        return Err(CliError::Parse(ParseError::Unexpected(
+            "one or more sessions were not imported".into(),
+        )));
     }
     Ok(())
 }
@@ -643,6 +961,7 @@ mod session_cli_tests {
         SessionDiagramLayout, SessionSubcommand,
     };
     use crate::paths::DelvePaths;
+    use clap::Parser;
     use dns_resolve::{HopOutcome, TraceHop, TraceTreeRequest, build_linear_tree};
 
     fn sample_tree() -> dns_resolve::TraceTree {
@@ -880,6 +1199,253 @@ mod session_cli_tests {
             }
             other => panic!("expected export subcommand, got {other:?}"),
         }
+
+        let cli = Cli::try_parse_from([
+            "delve",
+            "session",
+            "import",
+            "bundle.json",
+            "--replace",
+            "--force",
+            "--json",
+        ])
+        .expect("import parse");
+        match cli.command {
+            Command::Session(SessionCommand {
+                command: SessionSubcommand::Import(args),
+            }) => {
+                assert_eq!(args.path.as_deref(), Some("bundle.json"));
+                assert!(args.replace);
+                assert!(args.force);
+                assert!(args.json);
+            }
+            other => panic!("expected import subcommand, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_import_reads_bundle_file_and_round_trips() {
+        let (dir, runtime) = seeded_runtime();
+        let id = runtime.default_session_id().expect("default");
+        let bundle = runtime
+            .export_sessions(std::slice::from_ref(&id))
+            .expect("export");
+        let path = dir.path().join("roundtrip.json");
+        std::fs::write(&path, bundle.to_json().expect("json")).expect("write bundle");
+        runtime.remove_session(&id).expect("remove");
+        run_session_bundle_import(
+            SessionBundleImportArgs {
+                path: Some(path.display().to_string()),
+                replace: false,
+                reassign: false,
+                force: false,
+                pin: false,
+                touch: false,
+                frozen: false,
+                json: false,
+            },
+            &runtime,
+        )
+        .expect("import");
+        let restored = runtime.get_session(&id).expect("restored");
+        assert_eq!(restored.id, id);
+    }
+
+    #[test]
+    fn session_import_skips_collision_with_non_zero_exit() {
+        let (dir, runtime) = seeded_runtime();
+        let id = runtime.default_session_id().expect("default");
+        let bundle = runtime
+            .export_sessions(std::slice::from_ref(&id))
+            .expect("export");
+        let path = dir.path().join("collision.json");
+        std::fs::write(&path, bundle.to_json().expect("json")).expect("write bundle");
+        let error = run_session_bundle_import(
+            SessionBundleImportArgs {
+                path: Some(path.display().to_string()),
+                replace: false,
+                reassign: false,
+                force: false,
+                pin: false,
+                touch: false,
+                frozen: false,
+                json: false,
+            },
+            &runtime,
+        )
+        .expect_err("collision");
+        assert!(error.to_string().contains("not imported"));
+    }
+
+    #[test]
+    fn session_import_replace_and_reassign_flags() {
+        let (dir, runtime) = seeded_runtime();
+        let id = runtime.default_session_id().expect("default");
+        let bundle = runtime
+            .export_sessions(std::slice::from_ref(&id))
+            .expect("export");
+        let path = dir.path().join("bundle.json");
+        std::fs::write(&path, bundle.to_json().expect("json")).expect("write bundle");
+
+        run_session_bundle_import(
+            SessionBundleImportArgs {
+                path: Some(path.display().to_string()),
+                replace: true,
+                reassign: false,
+                force: true,
+                pin: false,
+                touch: false,
+                frozen: false,
+                json: false,
+            },
+            &runtime,
+        )
+        .expect("replace");
+
+        run_session_bundle_import(
+            SessionBundleImportArgs {
+                path: Some(path.display().to_string()),
+                replace: false,
+                reassign: true,
+                force: false,
+                pin: false,
+                touch: false,
+                frozen: false,
+                json: false,
+            },
+            &runtime,
+        )
+        .expect("reassign");
+        assert!(runtime.list_sessions().expect("list").len() >= 2);
+
+        let usage_error = Cli::try_parse_from([
+            "delve",
+            "session",
+            "import",
+            "bundle.json",
+            "--replace",
+            "--reassign",
+        ])
+        .expect_err("mutual exclusion");
+        assert!(usage_error.to_string().contains("cannot be used with"));
+    }
+
+    #[test]
+    fn session_import_refuses_replace_on_frozen_local_without_force() {
+        let (dir, runtime) = seeded_runtime();
+        let id = runtime.default_session_id().expect("default");
+        runtime.set_session_frozen(&id, true).expect("freeze");
+        let bundle = runtime
+            .export_sessions(std::slice::from_ref(&id))
+            .expect("export");
+        let path = dir.path().join("frozen.json");
+        std::fs::write(&path, bundle.to_json().expect("json")).expect("write bundle");
+        let error = run_session_bundle_import(
+            SessionBundleImportArgs {
+                path: Some(path.display().to_string()),
+                replace: true,
+                reassign: false,
+                force: false,
+                pin: false,
+                touch: false,
+                frozen: false,
+                json: false,
+            },
+            &runtime,
+        )
+        .expect_err("frozen replace");
+        assert!(error.to_string().contains("not imported"));
+
+        run_session_bundle_import(
+            SessionBundleImportArgs {
+                path: Some(path.display().to_string()),
+                replace: true,
+                reassign: false,
+                force: true,
+                pin: false,
+                touch: false,
+                frozen: false,
+                json: false,
+            },
+            &runtime,
+        )
+        .expect("force replace");
+    }
+
+    #[test]
+    fn session_import_json_includes_no_replay_for_branched_session() {
+        use dns_resolve::{BranchIntent, NodeOrigin, NodePath};
+
+        let (dir, runtime) = seeded_runtime();
+        let id = runtime.default_session_id().expect("default");
+        let mut document = runtime.get_session(&id).expect("get");
+        document.trees[0].tree.root.origin = NodeOrigin::Branch {
+            at: NodePath::root(0),
+            intent: BranchIntent::ExpandCut,
+            at_time: "2026-08-25T01:00:00Z".into(),
+        };
+        runtime.update_session(&document).expect("update");
+        let bundle = runtime
+            .export_sessions(std::slice::from_ref(&id))
+            .expect("export");
+        runtime.remove_session(&id).expect("remove");
+        let path = dir.path().join("branched.json");
+        std::fs::write(&path, bundle.to_json().expect("json")).expect("write bundle");
+
+        let mut output = Vec::new();
+        {
+            let stdout = std::io::Cursor::new(&mut output);
+            let mut guard = stdout;
+            // Exercise the JSON import path through the store layer used by the CLI.
+            let body = std::fs::read_to_string(&path).expect("read");
+            let bundle = SessionBundle::from_json(&body).expect("bundle");
+            let options = ImportSessionOptions {
+                policy: ImportPolicy::Skip,
+                force: false,
+                pin: false,
+                touch: false,
+                frozen: false,
+            };
+            let mut report = ImportReport {
+                imported: 0,
+                skipped: 0,
+                replaced: 0,
+                reassigned: 0,
+                failed: 0,
+                sessions: Vec::new(),
+                no_replay: Vec::new(),
+                retention_warnings: Vec::new(),
+            };
+            for document in bundle.sessions {
+                let status = runtime
+                    .import_session(document, options.clone())
+                    .expect("import");
+                if let ImportSessionStatus::Imported { id } = status {
+                    if let Ok(stored) = runtime.get_session(&id) {
+                        if let Some(notice) = collect_no_replay(&stored) {
+                            report.no_replay.push(notice);
+                        }
+                    }
+                    report.imported += 1;
+                }
+            }
+            use std::io::Write;
+            writeln!(
+                guard,
+                "{}",
+                serde_json::to_string_pretty(&report).expect("json")
+            )
+            .expect("write");
+        }
+        let text = String::from_utf8(output).expect("utf8");
+        assert!(text.contains("no_replay"));
+        assert!(text.contains("branched"));
+    }
+
+    #[test]
+    fn session_import_empty_stdin_fails_on_tty() {
+        let error = read_import_bundle_body(None).expect_err("empty stdin");
+        assert!(error.to_string().contains("expects a bundle"));
     }
 }
 

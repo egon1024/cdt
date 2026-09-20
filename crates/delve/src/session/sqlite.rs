@@ -148,6 +148,40 @@ impl SessionStore for SqliteSessionStore {
         Ok(id)
     }
 
+    fn upsert_document(&mut self, document: SessionDocument) -> Result<()> {
+        let body = serde_json::to_string(&document)
+            .map_err(|error| SessionError::Serialization(error.to_string()))?;
+        let summary = SessionSummary::from_document(&document);
+        let guard = self.conn.lock().expect("sqlite lock");
+        guard
+            .execute(
+                "INSERT INTO sessions (id, created_at, updated_at, qname, qtype, node_count, pinned, frozen, body)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT(id) DO UPDATE SET
+                     created_at = excluded.created_at,
+                     updated_at = excluded.updated_at,
+                     qname = excluded.qname,
+                     qtype = excluded.qtype,
+                     node_count = excluded.node_count,
+                     pinned = excluded.pinned,
+                     frozen = excluded.frozen,
+                     body = excluded.body",
+                params![
+                    summary.id,
+                    summary.created_at,
+                    summary.updated_at,
+                    summary.qname,
+                    summary.qtype,
+                    summary.node_count as i64,
+                    if summary.pinned { 1 } else { 0 },
+                    if summary.frozen { 1 } else { 0 },
+                    body,
+                ],
+            )
+            .map_err(|error| SessionError::Store(error.to_string()))?;
+        Ok(())
+    }
+
     fn update(&mut self, document: &SessionDocument) -> Result<()> {
         let existing = self.get(&document.id)?;
         assert_content_mutation_allowed(&existing, document)?;

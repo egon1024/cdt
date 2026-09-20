@@ -241,6 +241,17 @@ impl Runtime {
             .export_all_sessions()
     }
 
+    pub fn import_session(
+        &self,
+        document: SessionDocument,
+        options: crate::session::ImportSessionOptions,
+    ) -> Result<crate::session::ImportSessionStatus, SessionError> {
+        self.sessions
+            .lock()
+            .expect("session lock")
+            .import_session(document, options)
+    }
+
     pub fn purge_sessions(
         &self,
         id: Option<&str>,
