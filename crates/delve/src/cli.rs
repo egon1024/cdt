@@ -786,6 +786,27 @@ mod session_cli_tests {
     }
 
     #[test]
+    fn branch_on_frozen_session_is_refused() {
+        let (_dir, runtime) = seeded_runtime();
+        let id = runtime.default_session_id().expect("default");
+        runtime.set_session_frozen(&id, true).expect("freeze");
+        let error = crate::branch::branch_session(
+            &runtime,
+            &id,
+            dns_resolve::NodePath {
+                tree: 0,
+                path: vec![0],
+            },
+            crate::branch::BranchIntentArg::ExpandCut,
+            true,
+            &mut crate::progress::StderrProgress::new(false, false),
+            None,
+        )
+        .expect_err("frozen branch");
+        assert!(error.to_string().contains("frozen"));
+    }
+
+    #[test]
     fn freeze_and_thaw_update_frozen_and_updated_at() {
         let (_dir, runtime) = seeded_runtime();
         let id = runtime.default_session_id().expect("default");
