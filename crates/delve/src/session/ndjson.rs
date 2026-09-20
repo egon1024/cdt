@@ -65,6 +65,10 @@ impl SessionStore for NdjsonSessionStore {
         Ok(id)
     }
 
+    fn upsert_document(&mut self, document: SessionDocument) -> Result<()> {
+        self.save_document(document).map(|_| ())
+    }
+
     fn update(&mut self, document: &SessionDocument) -> Result<()> {
         if let Some(reason) = &self.disabled_reason {
             return Err(SessionError::Store(reason.clone()));
