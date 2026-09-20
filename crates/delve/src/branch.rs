@@ -1,4 +1,4 @@
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
 
 use dns_core::name::DomainName;
@@ -788,18 +788,24 @@ fn expand_cut_targets(
             .collect::<Vec<_>>()
             .join(", ");
         if dry_run {
-            warnings.push(format!(
-                "dry run: {count} nameserver(s) at this cut need live resolution (no glue in referral): {names}",
-                count = unresolved_ns.len(),
-            ));
-        } else {
-            warnings.push(format!(
-                "could not resolve nameserver addresses at this cut: {names}"
-            ));
+            return Ok(unresolved_ns
+                .into_iter()
+                .map(|ns_name| unresolved_ns_target(&ns_name))
+                .collect());
         }
+        warnings.push(format!(
+            "could not resolve nameserver addresses at this cut: {names}"
+        ));
         return Ok(Vec::new());
     }
     Ok(targets)
+}
+
+fn unresolved_ns_target(ns_name: &DomainName) -> ServerTarget {
+    ServerTarget {
+        address: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        name: Some(ns_name.to_string()),
+    }
 }
 
 fn referral_ns_names(
@@ -954,7 +960,13 @@ fn format_path(path: &NodePath) -> String {
 
 fn server_label(server: &ServerTarget) -> String {
     match &server.name {
-        Some(name) if !name.is_empty() => format!("{name} ({})", server.address),
+        Some(name) if !name.is_empty() => {
+            if server.address.is_unspecified() {
+                format!("{name} (needs live resolution, no glue in referral)")
+            } else {
+                format!("{name} ({})", server.address)
+            }
+        }
         _ => server.address.to_string(),
     }
 }
@@ -2086,21 +2098,30 @@ mod tests {
             None,
         )
         .expect("branch");
-        let plan = report.plan.expect("plan");
+        let report_text = format_branch_report(&report);
+        let plan = report.plan.as_ref().expect("plan");
         assert_eq!(plan.zone, "org.");
+        assert_eq!(plan.targets.len(), 2);
         assert!(
-            plan.targets.is_empty(),
-            "offline dry run cannot resolve glueless nameservers, got {:?}",
+            plan.targets
+                .iter()
+                .any(|target| target.contains("hydrogen.ns.hetzner.com")),
+            "targets={:?}",
             plan.targets
         );
         assert!(
-            report.warnings.iter().any(|warning| {
-                warning.contains("need live resolution")
-                    && warning.contains("hydrogen.ns.hetzner.com")
-                    && warning.contains("oxygen.ns.hetzner.com")
-            }),
-            "warnings={:?}",
-            report.warnings
+            plan.targets
+                .iter()
+                .any(|target| target.contains("oxygen.ns.hetzner.com")),
+            "targets={:?}",
+            plan.targets
+        );
+        assert!(
+            plan.targets
+                .iter()
+                .all(|target| target.contains("needs live resolution")),
+            "glueless dry-run targets should note live resolution is required: {:?}",
+            plan.targets
         );
         assert!(
             !report
@@ -2109,6 +2130,14 @@ mod tests {
                 .any(|warning| warning.contains("all nameservers at this zone cut already queried")),
             "glueless unqueried NS must not be reported as already queried: {:?}",
             report.warnings
+        );
+        assert!(
+            report_text.contains("would query:"),
+            "report should list pending nameservers, got:\n{report_text}"
+        );
+        assert!(
+            !report_text.contains("nothing to query at this cut"),
+            "report should not claim nothing to query when NS remain:\n{report_text}"
         );
     }
 
