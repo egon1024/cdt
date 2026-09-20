@@ -163,6 +163,12 @@ pub fn branch_session(
     query_overrides: Option<&ExploreQueryOverrides>,
 ) -> Result<BranchReport, BranchError> {
     let mut document = runtime.get_session(session_id)?;
+    if document.frozen {
+        return Err(crate::session::SessionError::Frozen {
+            id: document.id.clone(),
+        }
+        .into());
+    }
     let tree_index = at.tree;
     let mut report = execute_branch(
         &mut document,
@@ -769,13 +775,29 @@ fn expand_cut_targets(
         queried_children,
     ));
     if targets.is_empty() {
-        if unresolved_ns.is_empty() || last_error.is_none() {
+        if unresolved_ns.is_empty() {
             warnings.push("all nameservers at this zone cut already queried".into());
             return Ok(Vec::new());
         }
         if let Some(error) = last_error {
             return Err(error.into());
         }
+        let names = unresolved_ns
+            .iter()
+            .map(|name| name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        if dry_run {
+            warnings.push(format!(
+                "dry run: {count} nameserver(s) at this cut need live resolution (no glue in referral): {names}",
+                count = unresolved_ns.len(),
+            ));
+        } else {
+            warnings.push(format!(
+                "could not resolve nameserver addresses at this cut: {names}"
+            ));
+        }
+        return Ok(Vec::new());
     }
     Ok(targets)
 }
@@ -1951,6 +1973,143 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("dry run: no queries issued"), "{text}");
+    }
+
+    fn linear_www_tuininga_tree() -> TraceTree {
+        TraceTree {
+            request: TraceTreeRequest {
+                qname: "www.tuininga.org.".into(),
+                qtype: "A".into(),
+                started_at: "2026-09-19T00:00:00Z".into(),
+            },
+            root: TraceNode {
+                hop: TraceHop {
+                    zone: ".".into(),
+                    server: "198.41.0.4".into(),
+                    server_name: Some("a.root-servers.net.".into()),
+                    qname: "www.tuininga.org.".into(),
+                    qtype: "A".into(),
+                    transport: "udp".into(),
+                    rtt_ms: 96,
+                    rcode: "NOERROR".into(),
+                    nsid: None,
+                    ede_code: None,
+                    ede_text: None,
+                    referral_ns: vec![
+                        "a2.org.afilias-nst.info.".into(),
+                        "b2.org.afilias-nst.org.".into(),
+                        "d0.org.afilias-nst.org.".into(),
+                    ],
+                    glue: vec![
+                        "199.249.112.1".into(),
+                        "199.249.120.1".into(),
+                        "199.19.57.1".into(),
+                    ],
+                    response: Default::default(),
+                    from_cache: false,
+                    outcome: HopOutcome::Referral,
+                },
+                origin: NodeOrigin::Trace,
+                children: vec![TraceNode {
+                    hop: TraceHop {
+                        zone: "org.".into(),
+                        server: "199.249.112.1".into(),
+                        server_name: Some("a2.org.afilias-nst.info.".into()),
+                        qname: "www.tuininga.org.".into(),
+                        qtype: "A".into(),
+                        transport: "udp".into(),
+                        rtt_ms: 103,
+                        rcode: "NOERROR".into(),
+                        nsid: None,
+                        ede_code: None,
+                        ede_text: None,
+                        referral_ns: vec![
+                            "helium.ns.hetzner.de.".into(),
+                            "hydrogen.ns.hetzner.com.".into(),
+                            "oxygen.ns.hetzner.com.".into(),
+                        ],
+                        glue: vec![],
+                        response: Default::default(),
+                        from_cache: false,
+                        outcome: HopOutcome::Referral,
+                    },
+                    origin: NodeOrigin::Trace,
+                    children: vec![TraceNode {
+                        hop: TraceHop {
+                            zone: "www.tuininga.org.".into(),
+                            server: "193.47.99.5".into(),
+                            server_name: Some("helium.ns.hetzner.de.".into()),
+                            qname: "www.tuininga.org.".into(),
+                            qtype: "A".into(),
+                            transport: "udp".into(),
+                            rtt_ms: 105,
+                            rcode: "NOERROR".into(),
+                            nsid: None,
+                            ede_code: None,
+                            ede_text: None,
+                            referral_ns: vec![],
+                            glue: vec![],
+                            response: Default::default(),
+                            from_cache: false,
+                            outcome: HopOutcome::Answered,
+                        },
+                        origin: NodeOrigin::Trace,
+                        children: vec![],
+                    }],
+                }],
+            },
+            budget_truncated: false,
+        }
+    }
+
+    /// Linear `+expand=last` traces leave sibling nameservers at the org cut
+    /// unqueried; branching at hop 1 should list them.
+    #[test]
+    fn expand_cut_at_org_hop_lists_unqueried_tuininga_nameservers() {
+        let mut document = sample_document(
+            linear_www_tuininga_tree(),
+            TraceRequest::from_options(&TraceOptions {
+                qname: "www.tuininga.org".into(),
+                ..Default::default()
+            }),
+        );
+        let runtime = runtime();
+        let at = resolve_branch_target(&document, Some(1), None).expect("hop 1");
+        let report = execute_branch(
+            &mut document,
+            at,
+            BranchIntentArg::ExpandCut,
+            true,
+            &runtime,
+            &mut SilentProgress,
+            None,
+            None,
+        )
+        .expect("branch");
+        let plan = report.plan.expect("plan");
+        assert_eq!(plan.zone, "org.");
+        assert!(
+            plan.targets.is_empty(),
+            "offline dry run cannot resolve glueless nameservers, got {:?}",
+            plan.targets
+        );
+        assert!(
+            report.warnings.iter().any(|warning| {
+                warning.contains("need live resolution")
+                    && warning.contains("hydrogen.ns.hetzner.com")
+                    && warning.contains("oxygen.ns.hetzner.com")
+            }),
+            "warnings={:?}",
+            report.warnings
+        );
+        assert!(
+            !report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("all nameservers at this zone cut already queried")),
+            "glueless unqueried NS must not be reported as already queried: {:?}",
+            report.warnings
+        );
     }
 
     #[test]
