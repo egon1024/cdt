@@ -10,6 +10,7 @@ Inspect stored traces without network I/O: interactive TUI, one-shot outline, an
 | **`session explore … +icmp`** | Same TUI with one-shot ICMP enabled for unified **`r`** refresh (config ICMP may stay off) |
 | **`session outline`** | `session: <id>` header + indented tree on stdout; `--compare-at-hop` / `--compare-at-path` prints a path comparison |
 | **`session events`** | Structured JSON explore tree on stdout; `--compare-at-hop` / `--compare-at-path` emits `path_comparison` JSON |
+| **`session show`** | Session metadata + hop-by-hop replay on stdout (same hop text as live trace, but no stderr split) |
 | **`session show --json`** | Flat JSON trace snapshot on stdout |
 
 ```bash
