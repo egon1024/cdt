@@ -21,7 +21,7 @@ use crate::explore::{
     run_outline_with_compare,
 };
 use crate::family_notice::format_family_notice;
-use crate::hop_display::{HopDisplayState, print_hop_human};
+use crate::hop_display::{HopDisplayState, format_hop_human};
 use crate::progress::StderrProgress;
 use crate::replay::{print_final_answer, print_reused_session_notice, replay_session};
 use crate::retention::format_timestamp_for_list;
@@ -940,16 +940,17 @@ fn print_session(document: &SessionDocument, json: bool) {
     let mut hop_display = HopDisplayState::new();
     for path in tree.display_order() {
         if let Some(node) = tree.resolve(&path) {
-            print_hop_human(&mut hop_display, &node.hop, &path);
+            print!("{}", format_hop_human(&mut hop_display, &node.hop, &path));
         }
     }
+    let _ = io::stdout().flush();
     if let Some(hop) = tree.answering_hop() {
-        eprintln!(
+        println!(
             "final answer from {} in {}ms ({})",
             hop.server, hop.rtt_ms, hop.rcode
         );
         for record in &hop.response.answers {
-            eprintln!("  {} {} {}", record.name, record.ttl, record.rdata);
+            println!("  {} {} {}", record.name, record.ttl, record.rdata);
         }
     }
 }
