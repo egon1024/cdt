@@ -85,6 +85,9 @@ pub enum CliError {
 
     #[error(transparent)]
     Io(#[from] std::io::Error),
+
+    #[error("import incomplete: one or more sessions were not imported")]
+    ImportIncomplete,
 }
 
 impl Cli {
@@ -751,9 +754,7 @@ fn run_session_bundle_import(
     }
 
     if report.skipped > 0 || report.failed > 0 {
-        return Err(CliError::Parse(ParseError::Unexpected(
-            "one or more sessions were not imported".into(),
-        )));
+        return Err(CliError::ImportIncomplete);
     }
     Ok(())
 }
@@ -1275,6 +1276,10 @@ mod session_cli_tests {
         )
         .expect_err("collision");
         assert!(error.to_string().contains("not imported"));
+        assert!(
+            !error.to_string().contains("unexpected argument"),
+            "collision skip should not look like a CLI parse error: {error}"
+        );
     }
 
     #[test]
