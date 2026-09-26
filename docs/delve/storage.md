@@ -36,12 +36,19 @@ Human progress and the `session: …` line go to stderr.
 
 ### Stored sessions
 
-Sessions use a versioned JSON document containing trace trees, view state, enrichment **`targets`** (resolver IPs with optional ICMP snapshots), optional **`capture_context`**, and metadata (`id`, `created_at`, `updated_at`, `pinned`, and the `TraceRequest` used for reuse matching).
+Sessions use a versioned JSON document containing trace trees, view state, enrichment **`targets`** (resolver IPs with optional ICMP snapshots), optional **`capture_context`**, and metadata (`id`, `created_at`, `updated_at`, `pinned`, `frozen`, and the `TraceRequest` used for reuse matching).
 
 Flat export via `session show --json` emits the primary tree as a `TraceResult`-shaped `complete` event. Hierarchical export via `session events` emits an `explore_tree` event — see [explore](explore.md#show-json-vs-events).
+
+### Portable session bundles
+
+`delve session export` / `import` move full session documents in a versioned JSON
+envelope (`format: "delve-sessions"`, bundle `version: 1`). That is separate from
+diagram images (`session diagram`) and from the flat `show --json` / `events`
+shapes above. See [reference — session bundles](reference.md#session-bundles).
 
 ## See also
 
 - [delve](../delve.md) — hub and quick start
-- [Concepts](concepts.md) — sessions vs cache
+- [Concepts](concepts.md) — sessions vs cache, freeze
 - [Configuration](configuration.md) — config file path

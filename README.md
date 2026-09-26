@@ -18,7 +18,7 @@ a hub page at `docs/<tool>.md`, with deeper pages under `docs/<tool>/` when need
 | Utility | Binary | Documentation |
 |---------|--------|-----------------|
 | Bundle meta | `cdt` | [docs/cdt.md](docs/cdt.md) |
-| Delegation tracer | `delve` | [docs/delve.md](docs/delve.md) ([concepts](docs/delve/concepts.md), [reference](docs/delve/reference.md), …) |
+| Delegation tracer | `delve` | [docs/delve.md](docs/delve.md) ([concepts](docs/delve/concepts.md), [reference](docs/delve/reference.md), …) · [release notes](docs/release-notes/delve.md) |
 
 ```bash
 cargo run -p delve -- trace example.com

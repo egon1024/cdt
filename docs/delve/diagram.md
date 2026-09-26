@@ -83,5 +83,5 @@ select which tree; index `0` is the default.
 ## See also
 
 - [Session explore](explore.md) — interactive TUI and JSON exports
-- [Command reference](reference.md) — full CLI table
-- [Concepts](concepts.md) — sessions, branching, expansion
+- [Command reference](reference.md) — full CLI table, including portable session bundles
+- [Concepts](concepts.md) — sessions, freeze, branching, expansion

@@ -41,7 +41,8 @@ Sessions exist so you can work with a trace **after** the live queries finish, w
 - **Inspect** a trace with `delve session show`, `outline`, or `events`.
 - **Explore** it interactively in the TUI with `delve session explore`.
 - **Extend** it with `delve session branch` or the **`b`** key in explore.
-- **Share or diff** stable JSON (`show --json`, `events`) for automation and review.
+- **Freeze** a finished investigation so content writes are refused while read and explore continue.
+- **Share** full sessions with `delve session export` / `import` (portable JSON bundles), or diff flatter JSON via `show --json` / `events`.
 - **Replay** the same human or NDJSON output later via session reuse (see below).
 
 Each `delve trace` that saves creates a **new** session id. Re-running a trace does not update an existing session; it either reuses a matching snapshot or saves a fresh one.
@@ -85,6 +86,32 @@ With `+events`, reuse replays stored hop events and emits a final `complete` eve
 Unpinned sessions are subject to **retention** only when you set `session.retention` in config (default **unlimited** — sessions are kept until you remove them). Purge runs when the session store is opened (any command that touches sessions). **Pinned** sessions are skipped by automatic retention and by `delve session purge` (but not by explicit `delve session rm <id>`).
 
 Use `delve session pin <id>` to keep a session across retention. Use `delve session purge --all` to remove every unpinned session regardless of age. Use `delve session purge <id>` to remove one unpinned session regardless of age (pinned sessions are skipped).
+
+### Freeze
+
+**Freeze** seals a session so stored trace trees and explore view state cannot
+change. Use it when an investigation is complete and you want to share or archive
+it without accidental branches.
+
+```bash
+delve session freeze <id>
+delve session thaw <id>
+```
+
+| Allowed while frozen | Refused while frozen |
+|----------------------|----------------------|
+| show, outline, events, explore (read), diagram, export | `session branch` and explore **`b`** (before any DNS) |
+| pin / unpin, freeze / thaw, rm, purge | Persisting explore view-state changes (warns; in-memory continues) |
+| `session show` including `frozen: yes` | Other store updates that would rewrite trees or view state |
+
+Freeze does **not** bump `updated_at`; thaw does. List marks frozen sessions with
+`^` in the flag column (alongside `*` pinned and `@` current). Freezing does not
+change whether a session qualifies for [session reuse](#session-reuse) — branched
+sessions still do not match for replay.
+
+Import with `--replace` refuses to overwrite a local frozen session unless you
+also pass `--force`. Import `--frozen` stores each imported session as frozen.
+See [reference — session bundles](reference.md#session-bundles).
 
 ## Branching
 

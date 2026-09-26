@@ -23,3 +23,5 @@ cargo run -p cdt -- version
 ## Related utilities
 
 - [delve](delve.md) — delegation-path tracer (`delve` binary)
+- [delve release notes](release-notes/delve.md) — operator-facing changes
+- [Release notes index](release-notes/README.md) — all utility changelogs
