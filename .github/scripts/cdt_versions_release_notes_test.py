@@ -53,6 +53,24 @@ Intro line.
 
 
 class ReleaseNotesMarkdownTests(unittest.TestCase):
+    def test_delve_major_directive_overrides_auto_patch(self) -> None:
+        manifest = {
+            "components": [
+                {
+                    "name": "delve",
+                    "crate": "delve",
+                    "binary": "delve",
+                    "version": "0.1.1",
+                }
+            ]
+        }
+        versions = cdt_versions.compute_component_versions(
+            manifest,
+            ["crates/delve/src/lib.rs"],
+            {"delve": "major"},
+        )
+        self.assertEqual(versions["delve"], "1.0.0")
+
     def test_extract_version_section(self) -> None:
         section = cdt_versions.extract_version_section(SAMPLE_DELVE, "0.2.0")
         assert section is not None
