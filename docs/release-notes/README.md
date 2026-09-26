@@ -23,7 +23,15 @@ python3 .github/scripts/cdt-versions.py release-notes \
 ```
 
 While features are in flight, add bullets under **`## Unreleased`** in each
-affected utility file. During **release preparation** (`bump-cdt-versions.sh`),
+affected utility file.
+
+**Semver on merge:** the merged PR description can override automatic patch bumps.
+Use a line such as **`#delve:major`** (or `#delve:minor` / `#delve:patch`) so release
+automation bumps the utility accordingly — for example **`#delve:major`** on delve
+**0.1.1** yields **1.0.0**. The CDT bundle version still follows `#cdt:…` or the
+default bundle bump unless you set `#major` / `#minor` / `#patch` for the bundle.
+
+During **release preparation** (`bump-cdt-versions.sh`),
 automation promotes that section for every bumped utility:
 
 1. Renames **`## Unreleased`** → **`## <new-component-version>`** (newest-first)
