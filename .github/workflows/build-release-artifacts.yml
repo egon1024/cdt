@@ -33,8 +33,20 @@ env:
 
 jobs:
   build:
-    name: Build and upload (${{ inputs.version }})
-    runs-on: ubuntu-22.04
+    name: Build and upload (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            rpm_arch: x86_64
+            runner: ubuntu-22.04
+            generate_sbom: "1"
+          - arch: arm64
+            rpm_arch: aarch64
+            runner: ubuntu-24.04-arm
+            generate_sbom: "0"
     steps:
       - name: Validate version
         run: |
@@ -58,6 +70,9 @@ jobs:
             .github/scripts/build-release-artifacts.sh \
             .github/scripts/render-nfpm-config.py \
             .github/scripts/verify-release-artifacts.sh \
+            .github/scripts/check-release-assets-complete.sh \
+            .github/scripts/release-asset-names.sh \
+            .github/scripts/merge-release-sha256sums.sh \
             .github/scripts/cdt-versions.py
           chmod +x .github/scripts/*.sh
 
@@ -66,7 +81,7 @@ jobs:
           set -euo pipefail
           git rev-parse "refs/tags/${RELEASE_TAG}^{commit}" >/dev/null
 
-      - name: Fail if release assets already exist
+      - name: Fail if release assets already exist for this arch
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -75,16 +90,12 @@ jobs:
             echo "::error::GitHub release ${RELEASE_TAG} does not exist yet"
             exit 1
           fi
-          expected=(
-            "cdt-${RELEASE_VERSION}-amd64.tar.gz"
-            "cdt-${RELEASE_VERSION}-amd64-debug.tar.gz"
-            "cdt_${RELEASE_VERSION}_amd64.deb"
-            "cdt-dbg_${RELEASE_VERSION}_amd64.deb"
-            "cdt-${RELEASE_VERSION}-1.x86_64.rpm"
-            "cdt-dbg-${RELEASE_VERSION}-1.x86_64.rpm"
-            "cdt-${RELEASE_VERSION}.spdx.json"
-            "SHA256SUMS"
-          )
+          # shellcheck source=.github/scripts/release-asset-names.sh
+          source .github/scripts/release-asset-names.sh
+          mapfile -t expected < <(release_arch_asset_names "${RELEASE_VERSION}" "${{ matrix.arch }}")
+          if [[ "${{ matrix.generate_sbom }}" == "1" ]]; then
+            expected+=("cdt-${RELEASE_VERSION}.spdx.json")
+          fi
           existing="$(gh release view "${RELEASE_TAG}" --json assets --jq '.assets[].name' || true)"
           for name in "${expected[@]}"; do
             if echo "${existing}" | grep -qx "${name}"; then
@@ -108,15 +119,25 @@ jobs:
         run: |
           set -euo pipefail
           NFPM_VERSION=2.41.2
-          curl -sL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_amd64.deb" -o /tmp/nfpm.deb
+          case "${{ matrix.arch }}" in
+            amd64) nfpm_deb="nfpm_${NFPM_VERSION}_amd64.deb" ;;
+            arm64) nfpm_deb="nfpm_${NFPM_VERSION}_arm64.deb" ;;
+            *) echo "::error::Unknown matrix arch"; exit 1 ;;
+          esac
+          curl -sL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/${nfpm_deb}" -o /tmp/nfpm.deb
           sudo dpkg -i /tmp/nfpm.deb
 
       - name: Install cargo-cyclonedx
+        if: matrix.generate_sbom == '1'
         run: cargo install cargo-cyclonedx --locked
 
       - name: Build release artifacts
         env:
           VERSION: ${{ env.RELEASE_VERSION }}
+          ARCH: ${{ matrix.arch }}
+          RPM_ARCH: ${{ matrix.rpm_arch }}
+          GENERATE_SBOM: ${{ matrix.generate_sbom }}
+          SKIP_SHA256SUMS: "1"
         run: bash .github/scripts/build-release-artifacts.sh
 
       - name: Upload release assets
@@ -126,10 +147,54 @@ jobs:
           set -euo pipefail
           gh release upload "${RELEASE_TAG}" release-artifacts/*
 
-  smoke-test-deb:
-    name: Install .deb on Ubuntu 24.04
+  merge-sha256sums:
+    name: Merge SHA256SUMS
     needs: build
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+
+      - name: Sync merge script from main
+        run: |
+          set -euo pipefail
+          git fetch origin main --depth=1
+          git checkout origin/main -- .github/scripts/merge-release-sha256sums.sh
+          chmod +x .github/scripts/merge-release-sha256sums.sh
+
+      - name: Build merged SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/merge-release-sha256sums.sh "${RELEASE_VERSION}"
+
+      - name: Upload SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "${RELEASE_TAG}" --json assets --jq '.assets[].name' | grep -qx SHA256SUMS; then
+            gh release delete-asset "${RELEASE_TAG}" SHA256SUMS -y
+          fi
+          gh release upload "${RELEASE_TAG}" release-artifacts-merge/SHA256SUMS
+
+  smoke-test-deb:
+    name: Install .deb (${{ matrix.arch }})
+    needs: merge-sha256sums
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            deb_pattern: cdt_${{ inputs.version }}_amd64.deb
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            deb_pattern: cdt_${{ inputs.version }}_arm64.deb
     env:
       RELEASE_TAG: cdt-v${{ inputs.version }}
     steps:
@@ -142,13 +207,14 @@ jobs:
         run: |
           set -euo pipefail
           gh release download "${RELEASE_TAG}" \
-            -p "cdt_${{ inputs.version }}_amd64.deb" \
+            -p "${{ matrix.deb_pattern }}" \
             -D /tmp/deb-test
 
       - name: Install and verify
         run: |
           set -euo pipefail
-          sudo dpkg -i "/tmp/deb-test/cdt_${{ inputs.version }}_amd64.deb" || sudo apt-get -f install -y
+          deb="/tmp/deb-test/${{ matrix.deb_pattern }}"
+          sudo dpkg -i "${deb}" || sudo apt-get -f install -y
           test -x /usr/bin/cdt
           test -x /usr/bin/delve
           cdt version
@@ -156,10 +222,20 @@ jobs:
           dpkg -s cdt | grep -q '^Status: install ok installed'
 
   smoke-test-rpm:
-    name: Install .rpm on Fedora 41
-    needs: build
-    runs-on: ubuntu-24.04
+    name: Install .rpm (${{ matrix.arch }})
+    needs: merge-sha256sums
+    runs-on: ${{ matrix.runner }}
     container: fedora:41
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            rpm_pattern: cdt-${{ inputs.version }}-1.x86_64.rpm
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            rpm_pattern: cdt-${{ inputs.version }}-1.aarch64.rpm
     env:
       RELEASE_TAG: cdt-v${{ inputs.version }}
     steps:
@@ -173,13 +249,13 @@ jobs:
         run: |
           set -euo pipefail
           gh release download "${RELEASE_TAG}" \
-            -p "cdt-${{ inputs.version }}-1.x86_64.rpm" \
+            -p "${{ matrix.rpm_pattern }}" \
             -D /tmp/rpm-test
 
       - name: Install and verify
         run: |
           set -euo pipefail
-          rpm -ivh "/tmp/rpm-test/cdt-${{ inputs.version }}-1.x86_64.rpm"
+          rpm -ivh "/tmp/rpm-test/${{ matrix.rpm_pattern }}"
           test -x /usr/bin/cdt
           test -x /usr/bin/delve
           cdt version
