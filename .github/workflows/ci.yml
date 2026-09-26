@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   ci:
-    name: Format, Clippy, Test
+    name: Format, Clippy, Test (amd64)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
