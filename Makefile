@@ -1,6 +1,6 @@
 # Local checks aligned with .github/workflows/ci.yml
 #
-# make test      — fmt-check, clippy, and unit tests (CI parity)
+# make test      — fmt-check, clippy, unit tests, and script regressions (CI parity)
 # make fmt-check — verify formatting only
 # make clippy    — workspace clippy with warnings denied
 # make unit      — cargo test --workspace
@@ -17,7 +17,7 @@ VERSION ?= $(shell python3 -c 'import tomllib, pathlib; print(tomllib.loads(path
 
 help:
 	@echo "cdt Makefile targets:"
-	@echo "  make test       Run fmt-check, clippy, and unit tests (same order as CI)"
+	@echo "  make test       Run fmt-check, clippy, unit tests, and script tests (same order as CI)"
 	@echo "  make fmt-check  Check formatting (cargo fmt --check)"
 	@echo "  make fmt        Apply rustfmt"
 	@echo "  make clippy     Run clippy (-D warnings)"
@@ -28,7 +28,10 @@ help:
 	@echo "  make release-artifacts  Build local .deb/tarballs (VERSION=0.1.0)"
 	@echo "  make verify-release-artifacts  Verify build outputs and SHA256SUMS"
 
-test: fmt-check clippy unit
+script-test:
+	bash .github/scripts/check_release_assets_complete_test.sh
+
+test: fmt-check clippy unit script-test
 
 fmt-check:
 	$(CARGO) fmt --all -- --check

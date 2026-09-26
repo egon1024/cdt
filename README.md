@@ -39,12 +39,35 @@ cargo run -p cdt -- version
 ## Development
 
 ```bash
-make test    # fmt-check, clippy, unit tests (same as CI)
+make test    # fmt-check, clippy, unit tests, script regressions (same as CI)
 make build
 make help    # list all targets
 ```
 
-CI runs `make test` on pull requests.
+CI runs `make test` on pull requests on **amd64** and **arm64** GitHub-hosted
+runners. Optional CI jobs build and smoke-test native arm64 `.deb` and `.rpm`
+packages on `ubuntu-24.04-arm`.
+
+### arm64 Linux (including 64-bit Raspberry Pi OS)
+
+On hosts where `uname -m` is `aarch64` (64-bit Raspberry Pi OS, cloud ARM VMs,
+Apple Silicon Linux VMs, and similar), use the same entry point as CI:
+
+```bash
+make test
+```
+
+Optional local packaging check (slow):
+
+```bash
+VERSION=0.0.0-local ARCH=arm64 make release-artifacts
+ARCH=arm64 VERSION=0.0.0-local bash .github/scripts/verify-release-artifacts.sh
+```
+
+Shipped Linux packages target **arm64/aarch64** alongside amd64. **32-bit**
+Raspberry Pi OS (`armv7l`, armhf) is not a supported install target for those
+packages; use 64-bit Pi OS or download the amd64 or arm64 artifact that matches
+your CPU.
 
 ## License
 
