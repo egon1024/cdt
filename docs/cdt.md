@@ -52,6 +52,22 @@ cdt version
 Tarballs unpack `bin/cdt`, `bin/delve`, and bundled docs; add `bin` to your
 `PATH` or copy the binaries into a directory already on `PATH`.
 
+## Local development on arm64
+
+Contributors on **64-bit ARM Linux** (`uname -m` → `aarch64`), including
+64-bit Raspberry Pi OS, run the same quality gate as CI:
+
+```bash
+make test
+```
+
+GitHub pull requests run that target on native arm64 runners as well as amd64.
+Shipped `.deb` and `.rpm` files are built for **arm64**, not 32-bit armhf
+(`armv7l`); 32-bit Raspberry Pi OS cannot install the published arm64 packages.
+
+See [README.md](../README.md#arm64-linux-including-64-bit-raspberry-pi-os) for
+optional local packaging commands.
+
 ## Related utilities
 
 - [delve](delve.md) — delegation-path tracer (`delve` binary)
