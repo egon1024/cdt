@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Return 0 when a cdt-v* release has all expected assets; 1 otherwise.
+# Expected amd64 + arm64 asset names: release-asset-names.sh (sourced below).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
