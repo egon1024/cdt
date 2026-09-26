@@ -56,4 +56,4 @@ release-artifacts:
 	VERSION=$(VERSION) bash .github/scripts/build-release-artifacts.sh
 
 verify-release-artifacts:
-	bash .github/scripts/verify-release-artifacts.sh
+	VERSION=$(VERSION) bash .github/scripts/verify-release-artifacts.sh

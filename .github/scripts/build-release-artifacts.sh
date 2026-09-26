@@ -6,7 +6,23 @@ set -euo pipefail
 
 VERSION="${VERSION:?VERSION is required (e.g. 0.1.0)}"
 ARCH="${ARCH:-amd64}"
-RPM_ARCH="${RPM_ARCH:-x86_64}"
+case "$ARCH" in
+  amd64 | arm64) ;;
+  *)
+    echo "::error::Unsupported ARCH=${ARCH} (expected amd64 or arm64)"
+    exit 1
+    ;;
+esac
+if [[ -n "${RPM_ARCH:-}" ]]; then
+  :
+elif [[ "$ARCH" == arm64 ]]; then
+  RPM_ARCH=aarch64
+else
+  RPM_ARCH=x86_64
+fi
+export ARCH
+GENERATE_SBOM="${GENERATE_SBOM:-1}"
+SKIP_SHA256SUMS="${SKIP_SHA256SUMS:-0}"
 OUT_DIR="${OUT_DIR:-release-artifacts}"
 NFPM="${NFPM:-nfpm}"
 
@@ -142,21 +158,27 @@ checksum_files=(
   "$(basename "$RPM_DBG")"
 )
 
-if cargo cyclonedx --version >/dev/null 2>&1; then
+if [[ "$GENERATE_SBOM" == "1" ]] && cargo cyclonedx --version >/dev/null 2>&1; then
   echo "Generating SBOM..."
   cargo cyclonedx --manifest-path crates/delve/Cargo.toml \
     --format json --all-features --describe crate -q
   mv "crates/delve/delve.cdx.json" "$SBOM_PATH"
   checksum_files+=("$(basename "$SBOM_PATH")")
-else
+elif [[ "$GENERATE_SBOM" == "1" ]]; then
   echo "cargo-cyclonedx not installed; skipping SBOM"
+else
+  echo "GENERATE_SBOM=0; skipping SBOM"
 fi
 
-echo "Generating SHA256SUMS..."
-(
-  cd "$OUT_DIR"
-  sha256sum "${checksum_files[@]}" >SHA256SUMS
-)
+if [[ "$SKIP_SHA256SUMS" != "1" ]]; then
+  echo "Generating SHA256SUMS..."
+  (
+    cd "$OUT_DIR"
+    sha256sum "${checksum_files[@]}" >SHA256SUMS
+  )
+else
+  echo "SKIP_SHA256SUMS=1; deferring SHA256SUMS to merge job"
+fi
 
 echo "Release artifacts in ${OUT_DIR}:"
 ls -la "$OUT_DIR"
