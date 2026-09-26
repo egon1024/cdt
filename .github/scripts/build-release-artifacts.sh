@@ -85,6 +85,7 @@ pack_tarball packaging/staging "$TARBALL_PROD"
 pack_tarball packaging/staging-dbg "$TARBALL_DBG"
 
 export VERSION
+export ARCH
 echo "Rendering nfpm configs..."
 python3 .github/scripts/render-nfpm-config.py --variant prod >packaging/nfpm/cdt.generated.yaml
 python3 .github/scripts/render-nfpm-config.py --variant dbg >packaging/nfpm/cdt-dbg.generated.yaml
@@ -118,6 +119,13 @@ for f in "$OUT_DIR"/cdt-dbg_*.deb; do
 done
 if [[ ! -e "$DEB_PROD" || ! -e "$DEB_DBG" ]]; then
   echo "::error::Expected .deb packages were not created"
+  exit 1
+fi
+
+expected_deb_arch="$ARCH"
+actual_deb_arch="$(dpkg-deb -f "$DEB_PROD" Architecture 2>/dev/null || true)"
+if [[ "$actual_deb_arch" != "$expected_deb_arch" ]]; then
+  echo "::error::${DEB_PROD} has Architecture=${actual_deb_arch:-unknown} (expected ${expected_deb_arch}). Check nfpm deb.arch in generated config."
   exit 1
 fi
 

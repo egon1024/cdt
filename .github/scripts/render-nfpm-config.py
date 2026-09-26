@@ -31,10 +31,22 @@ def package_arch() -> str:
     return arch
 
 
+def deb_arch(go_arch: str) -> str:
+    """Debian control Architecture field (nfpm deb.arch)."""
+    return go_arch
+
+
+def rpm_arch(go_arch: str) -> str:
+    """RPM architecture label (nfpm rpm.arch)."""
+    return {"amd64": "x86_64", "arm64": "aarch64"}[go_arch]
+
+
 def render(variant: str) -> str:
     binaries = load_binaries()
     staging = "packaging/staging" if variant == "prod" else "packaging/staging-dbg"
     arch = package_arch()
+    deb = deb_arch(arch)
+    rpm = rpm_arch(arch)
     if variant == "prod":
         name = "cdt"
         section = "net"
@@ -66,8 +78,11 @@ Cole's DNS Tools debug binaries (unstripped) for troubleshooting.
         [
             "license: Apache-2.0",
             "homepage: https://github.com/egon1024/cdt",
+            "deb:",
+            f"  arch: {deb}",
             "rpm:",
             "  group: Applications/Internet",
+            f"  arch: {rpm}",
             "contents:",
         ]
     )
