@@ -1,13 +1,13 @@
-# delve — session export
+# delve — session diagram
 
 Export a stored trace tree as a static image for sharing, documentation, or
-post-mortem review. Export reads the session from disk only — no live DNS
+post-mortem review. Diagram export reads the session from disk only — no live DNS
 queries.
 
 ## Command
 
 ```bash
-delve session export [id] [--format svg|png] [--layout tree|icicle]
+delve session diagram [id] [--format svg|png] [--layout tree|icicle]
                       [--output path|-] [--tree-index N]
 ```
 
@@ -23,16 +23,16 @@ delve session export [id] [--format svg|png] [--layout tree|icicle]
 
 ```bash
 # SVG to stdout (default session, tree layout)
-delve session export
+delve session diagram
 
 # SVG file for a specific session
-delve session export 01J... --output trace.svg
+delve session diagram 01J... --output trace.svg
 
 # Icicle layout — compact rows for wide multipath traces
-delve session export --layout icicle --output trace-icicle.svg
+delve session diagram --layout icicle --output trace-icicle.svg
 
 # PNG rasterization (requires export-png feature — see below)
-delve session export --format png --layout tree --output trace.png
+delve session diagram --format png --layout tree --output trace.png
 ```
 
 Omit `[id]` to use the [default session](concepts.md#default-session).
@@ -77,11 +77,11 @@ an error explaining that PNG export is not enabled in that build.
 ## Multi-tree sessions
 
 When a session document contains more than one trace tree (for example after
-branching), export renders one tree per invocation. Use `--tree-index` to select
-which tree; index `0` is the default.
+branching), diagram export renders one tree per invocation. Use `--tree-index` to
+select which tree; index `0` is the default.
 
 ## See also
 
 - [Session explore](explore.md) — interactive TUI and JSON exports
-- [Command reference](reference.md) — full CLI table
-- [Concepts](concepts.md) — sessions, branching, expansion
+- [Command reference](reference.md) — full CLI table, including portable session bundles
+- [Concepts](concepts.md) — sessions, freeze, branching, expansion

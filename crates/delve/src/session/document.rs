@@ -80,6 +80,8 @@ pub struct SessionDocument {
     #[serde(default)]
     pub pinned: bool,
     #[serde(default)]
+    pub frozen: bool,
+    #[serde(default)]
     pub capture_context: Option<CaptureContext>,
     #[serde(default)]
     pub targets: BTreeMap<IpAddr, TargetEnrichments>,
@@ -97,6 +99,7 @@ impl SessionDocument {
             created_at: timestamp.clone(),
             updated_at: timestamp,
             pinned: false,
+            frozen: false,
             capture_context: None,
             targets: BTreeMap::new(),
             trees: vec![SessionTree {
@@ -154,6 +157,7 @@ pub struct SessionSummary {
     pub updated_at: String,
     pub node_count: usize,
     pub pinned: bool,
+    pub frozen: bool,
 }
 
 impl SessionSummary {
@@ -169,8 +173,16 @@ impl SessionSummary {
             updated_at: document.updated_at.clone(),
             node_count: document.node_count(),
             pinned: document.pinned,
+            frozen: document.frozen,
         }
     }
+}
+
+pub(crate) fn session_content_eq(left: &SessionDocument, right: &SessionDocument) -> bool {
+    left.trees == right.trees
+        && left.view_state == right.view_state
+        && left.targets == right.targets
+        && left.capture_context == right.capture_context
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -257,6 +269,23 @@ mod tests {
         assert_eq!(document, decoded);
         assert_eq!(document.version, 2);
         assert_eq!(document.trees.len(), 1);
+        assert!(!document.frozen);
+    }
+
+    #[test]
+    fn frozen_defaults_false_and_round_trips() {
+        let mut document = SessionDocument::new(
+            "01FRZ".into(),
+            sample_request(),
+            sample_tree("2026-08-25T00:00:00Z"),
+        );
+        assert!(!document.frozen);
+        document.frozen = true;
+        let json = serde_json::to_string(&document).expect("serialize");
+        let decoded: SessionDocument = serde_json::from_str(&json).expect("deserialize");
+        assert!(decoded.frozen);
+        let summary = SessionSummary::from_document(&decoded);
+        assert!(summary.frozen);
     }
 
     #[test]
@@ -331,6 +360,7 @@ mod tests {
             updated_at: "2026-09-06T00:00:00Z".into(),
             node_count: 3,
             pinned: false,
+            frozen: false,
         });
         let json = serde_json::to_string(&vec![item]).expect("serialize");
         let value: serde_json::Value = serde_json::from_str(&json).expect("parse");

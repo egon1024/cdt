@@ -9,7 +9,7 @@ use crate::trace_request::TraceRequest;
 
 use super::document::{SessionDocument, SessionListItem, SessionSummary, parse_session_document};
 use super::id::new_session_id;
-use super::store::{Result, SessionError, SessionStore};
+use super::store::{Result, SessionError, SessionStore, assert_content_mutation_allowed};
 
 pub struct NdjsonSessionStore {
     dir: PathBuf,
@@ -65,10 +65,16 @@ impl SessionStore for NdjsonSessionStore {
         Ok(id)
     }
 
+    fn upsert_document(&mut self, document: SessionDocument) -> Result<()> {
+        self.save_document(document).map(|_| ())
+    }
+
     fn update(&mut self, document: &SessionDocument) -> Result<()> {
         if let Some(reason) = &self.disabled_reason {
             return Err(SessionError::Store(reason.clone()));
         }
+        let existing = self.get(&document.id)?;
+        assert_content_mutation_allowed(&existing, document)?;
         let body = serde_json::to_string_pretty(document)
             .map_err(|error| SessionError::Serialization(error.to_string()))?;
         let path = self.session_path(&document.id);
@@ -182,6 +188,19 @@ impl SessionStore for NdjsonSessionStore {
         let mut document = self.get(id)?;
         document.pinned = pinned;
         document.touch_updated_at();
+        self.update(&document)
+    }
+
+    fn set_frozen(&mut self, id: &str, frozen: bool) -> Result<()> {
+        if let Some(reason) = &self.disabled_reason {
+            return Err(SessionError::Store(reason.clone()));
+        }
+        let mut document = self.get(id)?;
+        let was_frozen = document.frozen;
+        document.frozen = frozen;
+        if !frozen && was_frozen {
+            document.touch_updated_at();
+        }
         self.update(&document)
     }
 
@@ -331,6 +350,20 @@ mod tests {
             .expect("save");
         let loaded = store.get(&id).expect("get");
         assert_eq!(loaded.primary_tree().expect("tree").qname(), "example.com.");
+    }
+
+    #[test]
+    fn set_frozen_and_update_guard_match_sqlite_semantics() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut store = NdjsonSessionStore::open(dir.path()).expect("open");
+        let id = store
+            .save(&sample_result(), &sample_request())
+            .expect("save");
+        store.set_frozen(&id, true).expect("freeze");
+        let mut document = store.get(&id).expect("get");
+        document.trees[0].tree.root.hop.rtt_ms = 999;
+        let error = store.update(&document).expect_err("frozen");
+        assert!(matches!(error, SessionError::Frozen { .. }));
     }
 
     #[test]

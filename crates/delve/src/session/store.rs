@@ -5,7 +5,8 @@ use crate::config::SessionRetention;
 use crate::retention::PurgeReport;
 use crate::trace_request::TraceRequest;
 
-use super::document::{SessionDocument, SessionListItem};
+use super::bundle::SessionBundle;
+use super::document::{SessionDocument, SessionListItem, session_content_eq};
 use super::id::{is_ambiguous_prefix, resolve_prefix};
 use super::ndjson::NdjsonSessionStore;
 use super::sqlite::SqliteSessionStore;
@@ -35,17 +36,34 @@ pub enum SessionError {
 
     #[error("unsupported legacy session store at {path}; remove or migrate the file")]
     UnsupportedLegacyStore { path: String },
+
+    #[error("session {id} is frozen; thaw before modifying trace content")]
+    Frozen { id: String },
+}
+
+pub(crate) fn assert_content_mutation_allowed(
+    existing: &SessionDocument,
+    incoming: &SessionDocument,
+) -> Result<()> {
+    if existing.frozen && !session_content_eq(existing, incoming) {
+        return Err(SessionError::Frozen {
+            id: existing.id.clone(),
+        });
+    }
+    Ok(())
 }
 
 pub trait SessionStore: Send {
     fn save(&mut self, result: &TraceTree, request: &TraceRequest) -> Result<String>;
     fn save_document(&mut self, document: SessionDocument) -> Result<String>;
+    fn upsert_document(&mut self, document: SessionDocument) -> Result<()>;
     fn update(&mut self, document: &SessionDocument) -> Result<()>;
     fn get(&self, id: &str) -> Result<SessionDocument>;
     fn list(&self) -> Result<Vec<SessionListItem>>;
     fn remove(&mut self, id: &str) -> Result<()>;
     fn all_ids(&self) -> Result<Vec<String>>;
     fn set_pinned(&mut self, id: &str, pinned: bool) -> Result<()>;
+    fn set_frozen(&mut self, id: &str, frozen: bool) -> Result<()>;
     fn purge_by_retention(
         &mut self,
         retention: SessionRetention,
@@ -66,6 +84,10 @@ impl SessionStore for OpenSessionStore {
 
     fn save_document(&mut self, document: SessionDocument) -> Result<String> {
         self.inner.save_document(document)
+    }
+
+    fn upsert_document(&mut self, document: SessionDocument) -> Result<()> {
+        self.inner.upsert_document(document)
     }
 
     fn update(&mut self, document: &SessionDocument) -> Result<()> {
@@ -93,6 +115,11 @@ impl SessionStore for OpenSessionStore {
     fn set_pinned(&mut self, id: &str, pinned: bool) -> Result<()> {
         let resolved = self.resolve_lookup_id(id)?;
         self.inner.set_pinned(&resolved, pinned)
+    }
+
+    fn set_frozen(&mut self, id: &str, frozen: bool) -> Result<()> {
+        let resolved = self.resolve_lookup_id(id)?;
+        self.inner.set_frozen(&resolved, frozen)
     }
 
     fn purge_by_retention(
@@ -127,6 +154,36 @@ impl OpenSessionStore {
         resolve_prefix(prefix, &ids).ok_or_else(|| SessionError::NotFound {
             id: prefix.to_string(),
         })
+    }
+
+    pub fn export_sessions(&self, ids: &[String]) -> Result<SessionBundle> {
+        let mut sessions = Vec::with_capacity(ids.len());
+        for id in ids {
+            sessions.push(self.get(id)?);
+        }
+        Ok(SessionBundle::new(sessions))
+    }
+
+    pub fn export_all_sessions(&self) -> Result<SessionBundle> {
+        let ids = self.all_ids()?;
+        let mut sessions = Vec::with_capacity(ids.len());
+        for id in ids {
+            sessions.push(self.inner.get(&id)?);
+        }
+        Ok(SessionBundle::new(sessions))
+    }
+
+    pub fn save_document(&mut self, document: SessionDocument) -> Result<String> {
+        self.inner.save_document(document)
+    }
+
+    pub fn upsert_document(&mut self, document: SessionDocument) -> Result<()> {
+        self.inner.upsert_document(document)
+    }
+
+    #[cfg(test)]
+    pub fn from_inner(inner: Box<dyn SessionStore>) -> Self {
+        Self { inner }
     }
 }
 

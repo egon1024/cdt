@@ -7,7 +7,7 @@ Command synopsis and trace options. For concepts (sessions, branching, expansion
 | Command | Purpose |
 |---------|---------|
 | `delve trace …` | Run a delegation trace |
-| `delve session list` | List stored sessions (`*` pinned, `@` current default) |
+| `delve session list` | List stored sessions (`^` frozen, `*` pinned, `@` current default) |
 | `delve session current` | Print the current default session id |
 | `delve session show [id]` | Show a stored session (no network); omit id for the default |
 | `delve session show [id] --json` | Same session as flat JSON (`event: complete`) |
@@ -21,7 +21,11 @@ Command synopsis and trace options. For concepts (sessions, branching, expansion
 | `delve session explore [id] [+icmp]` | Interactive tree explorer (TUI); `+icmp` enables one-shot ICMP refresh for this process |
 | `delve session outline [id]` | Indented resolution tree on stdout; omit id for the default session |
 | `delve session events [id]` | Structured JSON explore tree on stdout; omit id for the default session |
-| `delve session export [id]` | Export trace tree as SVG or PNG; omit id for the default session |
+| `delve session diagram [id]` | Export trace tree as SVG or PNG; omit id for the default session |
+| `delve session export [<id>…]` | Export session documents as a JSON bundle (`--all`, `-o PATH`) |
+| `delve session import [PATH]` | Import a session bundle from a file or stdin |
+| `delve session freeze <id>` | Mark a session frozen (content writes refused) |
+| `delve session thaw <id>` | Unfreeze a session for branching and explore persist |
 | `delve session branch [id]` | Extend a stored trace at a node (live queries) |
 | `delve cache stats` | DNS response cache statistics |
 | `delve cache purge` | Remove expired DNS cache entries |
@@ -113,13 +117,87 @@ delve trace example.com +events > trace.ndjson
 
 Installed packages also ship `man delve` and `man delve-trace` for a CLI synopsis.
 
-## Session export
+## Session diagram
 
-Export a stored trace tree as SVG or PNG. See [export](export.md) for layouts
-and formats.
+Export a stored trace tree as SVG or PNG. See [diagram](diagram.md) for layouts
+and formats. Diagram export is **`delve session diagram`** — not `session export`.
+
+## Session bundles
+
+Portable JSON envelopes move full session documents between machines without
+copying the session store database.
+
+### Export
+
+```bash
+delve session export <id> [<id> …]     # stdout; id order preserved
+delve session export <id> -o path.json
+delve session export --all             # every session in the store
+```
+
+`--all` and an id list are mutually exclusive. Each exported document includes
+trees, view state, `frozen`, and other persisted fields.
+
+Envelope shape:
+
+```json
+{
+  "format": "delve-sessions",
+  "version": 1,
+  "exported_at": "2026-09-05T19:00:00Z",
+  "sessions": [ /* full session documents */ ]
+}
+```
+
+The envelope `version` is the **bundle** format, not the per-session document
+field. See [storage — format versions](storage.md#format-versions).
+
+### Import
+
+```bash
+delve session import path.json
+delve session import < path.json       # stdin when PATH is omitted
+delve session import --replace path.json
+delve session import --reassign path.json
+delve session import --pin --touch --frozen path.json
+delve session import --json path.json  # machine-readable report
+```
+
+| Flag | Effect |
+|------|--------|
+| (default) | Skip sessions whose id already exists; leave the local copy unchanged; exit non-zero if any were skipped |
+| `--replace` | Upsert over the same id (prompts when the local session is newer; refused for local **frozen** sessions unless `--force`) |
+| `--reassign` | Mint a new id for every session in the bundle (`--replace` and `--reassign` cannot combine) |
+| `--force` | With `--replace`, skip newer-local prompts and allow overwriting a frozen local session |
+| `--pin` | Store imported sessions as pinned |
+| `--touch` | Set `updated_at` to import time (`--pin` and `--touch` may both be set) |
+| `--frozen` | Store each imported session as frozen |
+| `--json` | Print a JSON report (counts, per-session outcomes, `no_replay` metadata) instead of the human summary |
+
+Empty TTY stdin with no file path fails fast. Unsupported envelope `format` /
+`version` fails before any store write. Session documents that this delve build
+cannot read are reported and skipped; other sessions in the bundle continue;
+exit status is non-zero. Details: [storage — format versions](storage.md#format-versions).
+
+After import, branched or multi-tree sessions may trigger an informational
+**replay notice**: they remain valid for explore and session commands, but will
+not match for automatic trace replay. That is not corruption or an import error.
+
+## Freeze and thaw
+
+```bash
+delve session freeze <id>   # seal: content writes refused; updated_at unchanged
+delve session thaw <id>     # reopen: branching and explore persist allowed again
+```
+
+Frozen sessions still support pin/unpin, freeze/thaw, remove, purge, show,
+outline, events, explore (read), diagram, and bundle export. Branch CLI and
+explore **`b`** refuse before DNS. Explore view-state persist warns and skips
+the write. See [concepts — freeze](concepts.md#freeze).
 
 ## See also
 
 - [delve](../delve.md) — hub and quick start
-- [Concepts](concepts.md) — traces, sessions, branching
+- [Concepts](concepts.md) — traces, sessions, freeze, branching
 - [Configuration](configuration.md) — YAML keys
+- [Release notes](../release-notes/delve.md) — operator-facing changes

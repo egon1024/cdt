@@ -11,7 +11,7 @@ use crate::retention::{PurgeReport, is_expired};
 
 use super::document::{SessionDocument, SessionListItem, SessionSummary, parse_session_document};
 use super::id::new_session_id;
-use super::store::{Result, SessionError, SessionStore};
+use super::store::{Result, SessionError, SessionStore, assert_content_mutation_allowed};
 
 pub struct SqliteSessionStore {
     conn: Mutex<Connection>,
@@ -39,13 +39,26 @@ impl SqliteSessionStore {
                 qtype TEXT NOT NULL,
                 node_count INTEGER NOT NULL,
                 pinned INTEGER NOT NULL DEFAULT 0,
+                frozen INTEGER NOT NULL DEFAULT 0,
                 body TEXT NOT NULL
             );",
         )
         .map_err(|error| SessionError::Store(error.to_string()))?;
+        Self::ensure_frozen_column(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+
+    fn ensure_frozen_column(conn: &Connection) -> Result<()> {
+        if conn.prepare("SELECT frozen FROM sessions LIMIT 0").is_err() {
+            conn.execute(
+                "ALTER TABLE sessions ADD COLUMN frozen INTEGER NOT NULL DEFAULT 0",
+                [],
+            )
+            .map_err(|error| SessionError::Store(error.to_string()))?;
+        }
+        Ok(())
     }
 
     fn has_v2_columns(conn: &Connection, path: &Path) -> Result<bool> {
@@ -78,8 +91,8 @@ impl SqliteSessionStore {
             .execute(
                 "UPDATE sessions
                  SET created_at = ?1, updated_at = ?2, qname = ?3, qtype = ?4,
-                     node_count = ?5, pinned = ?6, body = ?7
-                 WHERE id = ?8",
+                     node_count = ?5, pinned = ?6, frozen = ?7, body = ?8
+                 WHERE id = ?9",
                 params![
                     summary.created_at,
                     summary.updated_at,
@@ -87,6 +100,7 @@ impl SqliteSessionStore {
                     summary.qtype,
                     summary.node_count as i64,
                     if summary.pinned { 1 } else { 0 },
+                    if summary.frozen { 1 } else { 0 },
                     body,
                     summary.id,
                 ],
@@ -116,8 +130,8 @@ impl SessionStore for SqliteSessionStore {
         let guard = self.conn.lock().expect("sqlite lock");
         guard
             .execute(
-                "INSERT INTO sessions (id, created_at, updated_at, qname, qtype, node_count, pinned, body)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO sessions (id, created_at, updated_at, qname, qtype, node_count, pinned, frozen, body)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     summary.id,
                     summary.created_at,
@@ -126,6 +140,7 @@ impl SessionStore for SqliteSessionStore {
                     summary.qtype,
                     summary.node_count as i64,
                     if summary.pinned { 1 } else { 0 },
+                    if summary.frozen { 1 } else { 0 },
                     body,
                 ],
             )
@@ -133,7 +148,43 @@ impl SessionStore for SqliteSessionStore {
         Ok(id)
     }
 
+    fn upsert_document(&mut self, document: SessionDocument) -> Result<()> {
+        let body = serde_json::to_string(&document)
+            .map_err(|error| SessionError::Serialization(error.to_string()))?;
+        let summary = SessionSummary::from_document(&document);
+        let guard = self.conn.lock().expect("sqlite lock");
+        guard
+            .execute(
+                "INSERT INTO sessions (id, created_at, updated_at, qname, qtype, node_count, pinned, frozen, body)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT(id) DO UPDATE SET
+                     created_at = excluded.created_at,
+                     updated_at = excluded.updated_at,
+                     qname = excluded.qname,
+                     qtype = excluded.qtype,
+                     node_count = excluded.node_count,
+                     pinned = excluded.pinned,
+                     frozen = excluded.frozen,
+                     body = excluded.body",
+                params![
+                    summary.id,
+                    summary.created_at,
+                    summary.updated_at,
+                    summary.qname,
+                    summary.qtype,
+                    summary.node_count as i64,
+                    if summary.pinned { 1 } else { 0 },
+                    if summary.frozen { 1 } else { 0 },
+                    body,
+                ],
+            )
+            .map_err(|error| SessionError::Store(error.to_string()))?;
+        Ok(())
+    }
+
     fn update(&mut self, document: &SessionDocument) -> Result<()> {
+        let existing = self.get(&document.id)?;
+        assert_content_mutation_allowed(&existing, document)?;
         let guard = self.conn.lock().expect("sqlite lock");
         guard
             .execute_batch("BEGIN IMMEDIATE")
@@ -167,7 +218,7 @@ impl SessionStore for SqliteSessionStore {
         let guard = self.conn.lock().expect("sqlite lock");
         let mut stmt = guard
             .prepare(
-                "SELECT id, created_at, updated_at, qname, qtype, node_count, pinned, body
+                "SELECT id, created_at, updated_at, qname, qtype, node_count, pinned, frozen, body
                  FROM sessions ORDER BY updated_at DESC",
             )
             .map_err(|error| SessionError::Store(error.to_string()))?;
@@ -181,23 +232,25 @@ impl SessionStore for SqliteSessionStore {
                     row.get::<_, String>(4)?,
                     row.get::<_, i64>(5)?,
                     row.get::<_, i64>(6)?,
-                    row.get::<_, String>(7)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, String>(8)?,
                 ))
             })
             .map_err(|error| SessionError::Store(error.to_string()))?;
         let mut items = Vec::new();
         for row in rows {
-            let (id, created_at, updated_at, qname, qtype, node_count, pinned, body) =
+            let (id, created_at, updated_at, qname, qtype, node_count, pinned, frozen, body) =
                 row.map_err(|error| SessionError::Store(error.to_string()))?;
             match parse_session_document(&id, &body) {
-                Ok(document) => items.push(SessionListItem::Session(SessionSummary {
-                    id: document.id,
+                Ok(_) => items.push(SessionListItem::Session(SessionSummary {
+                    id,
                     qname,
                     qtype,
                     created_at,
                     updated_at,
                     node_count: node_count as usize,
                     pinned: pinned != 0,
+                    frozen: frozen != 0,
                 })),
                 Err(error) => items.push(SessionListItem::Unreadable {
                     id,
@@ -235,6 +288,16 @@ impl SessionStore for SqliteSessionStore {
         let mut document = self.get(id)?;
         document.pinned = pinned;
         document.touch_updated_at();
+        self.update(&document)
+    }
+
+    fn set_frozen(&mut self, id: &str, frozen: bool) -> Result<()> {
+        let mut document = self.get(id)?;
+        let was_frozen = document.frozen;
+        document.frozen = frozen;
+        if !frozen && was_frozen {
+            document.touch_updated_at();
+        }
         self.update(&document)
     }
 
@@ -442,8 +505,8 @@ mod tests {
         let guard = store.conn.lock().expect("lock");
         guard
             .execute(
-                "INSERT INTO sessions (id, created_at, updated_at, qname, qtype, node_count, pinned, body)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO sessions (id, created_at, updated_at, qname, qtype, node_count, pinned, frozen, body)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     "01BAD",
                     "2026-01-01T00:00:00Z",
@@ -451,6 +514,7 @@ mod tests {
                     "example.com.",
                     "A",
                     1,
+                    0,
                     0,
                     r#"{"version":1,"id":"01BAD"}"#,
                 ],
@@ -589,6 +653,136 @@ mod tests {
     }
 
     #[test]
+    fn frozen_column_migrates_on_existing_v2_db() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("sessions.sqlite");
+        let conn = Connection::open(&path).expect("open");
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                qname TEXT NOT NULL,
+                qtype TEXT NOT NULL,
+                node_count INTEGER NOT NULL,
+                pinned INTEGER NOT NULL DEFAULT 0,
+                body TEXT NOT NULL
+            );",
+        )
+        .expect("schema");
+        drop(conn);
+        let store = SqliteSessionStore::open(&path).expect("open migrated");
+        assert!(
+            store
+                .conn
+                .lock()
+                .expect("lock")
+                .prepare("SELECT frozen FROM sessions LIMIT 0")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn set_frozen_does_not_bump_updated_at() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("sessions.sqlite");
+        let mut store = SqliteSessionStore::open(&path).expect("open");
+        let id = store
+            .save(&sample_result("2026-08-25T00:00:00Z"), &sample_request())
+            .expect("save");
+        let before = store.get(&id).expect("get").updated_at;
+        store.set_frozen(&id, true).expect("freeze");
+        let after = store.get(&id).expect("get");
+        assert!(after.frozen);
+        assert_eq!(after.updated_at, before);
+    }
+
+    #[test]
+    fn thaw_bumps_updated_at() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("sessions.sqlite");
+        let mut store = SqliteSessionStore::open(&path).expect("open");
+        let id = store
+            .save(&sample_result("2026-08-25T00:00:00Z"), &sample_request())
+            .expect("save");
+        store.set_frozen(&id, true).expect("freeze");
+        let before = store.get(&id).expect("get").updated_at;
+        store.set_frozen(&id, false).expect("thaw");
+        let after = store.get(&id).expect("get");
+        assert!(!after.frozen);
+        assert_ne!(before, after.updated_at);
+    }
+
+    #[test]
+    fn update_refuses_content_mutation_on_frozen_session() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("sessions.sqlite");
+        let mut store = SqliteSessionStore::open(&path).expect("open");
+        let id = store
+            .save(&sample_result("2026-08-25T00:00:00Z"), &sample_request())
+            .expect("save");
+        store.set_frozen(&id, true).expect("freeze");
+        let mut document = store.get(&id).expect("get");
+        document.trees[0].tree.root.hop.rtt_ms = 999;
+        let error = store.update(&document).expect_err("frozen update");
+        assert!(matches!(error, SessionError::Frozen { .. }));
+        let reloaded = store.get(&id).expect("reload");
+        assert_eq!(reloaded.trees[0].tree.root.hop.rtt_ms, 10);
+    }
+
+    #[test]
+    fn list_returns_frozen_from_column_without_body_field() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("sessions.sqlite");
+        let mut store = SqliteSessionStore::open(&path).expect("open");
+        let id = store
+            .save(&sample_result("2026-08-25T00:00:00Z"), &sample_request())
+            .expect("save");
+        store.set_frozen(&id, true).expect("freeze");
+        let guard = store.conn.lock().expect("lock");
+        guard
+            .execute(
+                "UPDATE sessions SET body = json_set(body, '$.frozen', json('false')) WHERE id = ?1",
+                params![id],
+            )
+            .expect("strip frozen from body");
+        drop(guard);
+        let items = store.list().expect("list");
+        let summary = match items.first() {
+            Some(SessionListItem::Session(summary)) => summary,
+            other => panic!("expected session summary, got {other:?}"),
+        };
+        assert!(summary.frozen);
+    }
+
+    #[test]
+    fn export_sessions_matches_get_for_each_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = crate::paths::DelvePaths::from_root(dir.path());
+        let mut store =
+            crate::session::open_session_store(&paths, crate::config::SessionRetention::Never)
+                .store;
+        let first = store
+            .save(&sample_result("2026-08-25T00:00:00Z"), &sample_request())
+            .expect("first");
+        let second = store
+            .save(&sample_result("2026-08-26T00:00:00Z"), &sample_request())
+            .expect("second");
+        let bundle = store
+            .export_sessions(&[first.clone(), second.clone(), first.clone()])
+            .expect("export");
+        assert_eq!(bundle.sessions.len(), 3);
+        assert_eq!(bundle.sessions[0], store.get(&first).expect("get first"));
+        assert_eq!(bundle.sessions[1], store.get(&second).expect("get second"));
+        assert_eq!(
+            bundle.sessions[2],
+            store.get(&first).expect("get first again")
+        );
+        let all = store.export_all_sessions().expect("all");
+        assert_eq!(all.sessions.len(), 2);
+    }
+
+    #[test]
     fn remove_unsupported_session_succeeds() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("sessions.sqlite");
@@ -596,8 +790,8 @@ mod tests {
         let guard = store.conn.lock().expect("lock");
         guard
             .execute(
-                "INSERT INTO sessions (id, created_at, updated_at, qname, qtype, node_count, pinned, body)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO sessions (id, created_at, updated_at, qname, qtype, node_count, pinned, frozen, body)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     "01BAD",
                     "2026-01-01T00:00:00Z",
@@ -605,6 +799,7 @@ mod tests {
                     "example.com.",
                     "A",
                     1,
+                    0,
                     0,
                     r#"{"version":1,"id":"01BAD"}"#,
                 ],

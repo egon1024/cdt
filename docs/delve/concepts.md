@@ -34,14 +34,15 @@ delve trace example.com +expand=all+force   # non-interactive full expansion
 
 ## Sessions
 
-A **session** is a saved snapshot of one or more completed trace trees. When `+save` is enabled (the default), delve writes the full result — every hop, response section, and timing — to local storage as a versioned JSON document keyed by a ULID.
+A **session** is a saved snapshot of one or more completed trace trees. When `+save` is enabled (the default), delve writes the full result — every hop, response section, and timing — to local storage as a JSON document keyed by a ULID.
 
 Sessions exist so you can work with a trace **after** the live queries finish, without touching the network again:
 
 - **Inspect** a trace with `delve session show`, `outline`, or `events`.
 - **Explore** it interactively in the TUI with `delve session explore`.
 - **Extend** it with `delve session branch` or the **`b`** key in explore.
-- **Share or diff** stable JSON (`show --json`, `events`) for automation and review.
+- **Freeze** a finished investigation so content writes are refused while read and explore continue.
+- **Share** full sessions with `delve session export` / `import` (portable JSON bundles), or diff flatter JSON via `show --json` / `events`.
 - **Replay** the same human or NDJSON output later via session reuse (see below).
 
 Each `delve trace` that saves creates a **new** session id. Re-running a trace does not update an existing session; it either reuses a matching snapshot or saves a fresh one.
@@ -54,7 +55,7 @@ The **default session** is resolved in order:
 2. The `DELVE_SESSION` environment variable, when set (non-empty after trimming) and the session still exists
 3. The most recently modified stored session (as determined by `updated_at`)
 
-Commands that accept an optional `[id]` (`show`, `outline`, `events`, `explore`, `branch`) use the default when you omit the id. `delve session current` prints that resolved id; `delve session list` marks it with `@` in the first column (`*` means pinned).
+Commands that accept an optional `[id]` (`show`, `outline`, `events`, `explore`, `branch`, `diagram`) use the default when you omit the id. `delve session current` prints that resolved id; `delve session list` marks it with `@` in the first column (`^` means frozen, `*` means pinned).
 
 `DELVE_SESSION` is an override for scripts and scoped shells — delve does not set it. If it points at a removed session, delve prints a warning to stderr and falls through to the most recently modified session.
 
@@ -85,6 +86,32 @@ With `+events`, reuse replays stored hop events and emits a final `complete` eve
 Unpinned sessions are subject to **retention** only when you set `session.retention` in config (default **unlimited** — sessions are kept until you remove them). Purge runs when the session store is opened (any command that touches sessions). **Pinned** sessions are skipped by automatic retention and by `delve session purge` (but not by explicit `delve session rm <id>`).
 
 Use `delve session pin <id>` to keep a session across retention. Use `delve session purge --all` to remove every unpinned session regardless of age. Use `delve session purge <id>` to remove one unpinned session regardless of age (pinned sessions are skipped).
+
+### Freeze
+
+**Freeze** seals a session so stored trace trees and explore view state cannot
+change. Use it when an investigation is complete and you want to share or archive
+it without accidental branches.
+
+```bash
+delve session freeze <id>
+delve session thaw <id>
+```
+
+| Allowed while frozen | Refused while frozen |
+|----------------------|----------------------|
+| show, outline, events, explore (read), diagram, export | `session branch` and explore **`b`** (before any DNS) |
+| pin / unpin, freeze / thaw, rm, purge | Persisting explore view-state changes (warns; in-memory continues) |
+| `session show` including `frozen: yes` | Other store updates that would rewrite trees or view state |
+
+Freeze does **not** bump `updated_at`; thaw does. List marks frozen sessions with
+`^` in the flag column (alongside `*` pinned and `@` current). Freezing does not
+change whether a session qualifies for [session reuse](#session-reuse) — branched
+sessions still do not match for replay.
+
+Import with `--replace` refuses to overwrite a local frozen session unless you
+also pass `--force`. Import `--frozen` stores each imported session as frozen.
+See [reference — session bundles](reference.md#session-bundles).
 
 ## Branching
 

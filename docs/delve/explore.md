@@ -10,6 +10,7 @@ Inspect stored traces without network I/O: interactive TUI, one-shot outline, an
 | **`session explore … +icmp`** | Same TUI with one-shot ICMP enabled for unified **`r`** refresh (config ICMP may stay off) |
 | **`session outline`** | `session: <id>` header + indented tree on stdout; `--compare-at-hop` / `--compare-at-path` prints a path comparison |
 | **`session events`** | Structured JSON explore tree on stdout; `--compare-at-hop` / `--compare-at-path` emits `path_comparison` JSON |
+| **`session show`** | Session metadata + hop-by-hop replay on stdout (same hop text as live trace, but no stderr split) |
 | **`session show --json`** | Flat JSON trace snapshot on stdout |
 
 ```bash
@@ -44,7 +45,7 @@ Two-pane layout: resolution tree on one side, dig-style detail for the selected 
 | `?` | Screen-scoped help |
 | `q` | Quit |
 
-**View state** (expanded nodes, selection, active screen) persists in the session document. Reopening explore restores your place; view-state-only changes do not bump `updated_at`.
+**View state** (expanded nodes, selection, active screen) persists in the session document when the session is not frozen. Reopening explore restores your place; view-state-only changes do not bump `updated_at`. On a **frozen** session, delve warns and skips the persist write — browsing continues with in-memory state only. Branching with **`b`** is refused before any DNS while frozen; see [concepts — freeze](concepts.md#freeze).
 
 ## Compare screen
 
