@@ -36,13 +36,13 @@ Installed packages also ship `man delve` (CLI synopsis) and this guide at `/usr/
 | [Configuration](delve/configuration.md) | `delve.yaml`, retention, parallelism, RTT bars |
 | [Session explore](delve/explore.md) | TUI, outline, JSON exports, Compare analytics |
 | [Session diagram](delve/diagram.md) | SVG/PNG trace diagrams (`session diagram`) |
-| [Storage and output](delve/storage.md) | File paths, session document shapes, NDJSON |
+| [Storage and output](delve/storage.md) | File paths, session shapes, format versions, NDJSON |
 | [Release notes](release-notes/delve.md) | Operator-facing New / Changed / Removed / Fixed |
 
 ## At a glance
 
 - **Trace** — live delegation walk from root hints (or `@server`) to an answer; progress on stderr, optional NDJSON on stdout. Address family defaults to **auto** (IPv6 reachability probe, then v4-only or dual-stack).
-- **Session (v2)** — saved snapshot of one or more trace trees with `created_at`, **`updated_at`** (bumped by branch/pin/thaw mutations, not by freeze or read-only inspect), optional **view state**, optional **`frozen`**, and reuse metadata. See [storage](delve/storage.md).
+- **Session** — saved snapshot of one or more trace trees with `created_at`, **`updated_at`** (bumped by branch/pin/thaw mutations, not by freeze or read-only inspect), optional **view state**, optional **`frozen`**, and reuse metadata. See [storage](delve/storage.md).
 - **Freeze** — `delve session freeze <id>` seals an investigation so branch and explore persist cannot change stored content; `thaw` reopens it. List marks frozen rows with `^`. See [concepts — freeze](delve/concepts.md#freeze).
 - **Portable bundles** — `delve session export` writes a JSON envelope of full session documents; `delve session import` reads that envelope from a file or stdin. Diagrams use **`session diagram`**, not export. See [reference — session bundles](delve/reference.md#session-bundles).
 - **Expansion** — `+expand=last|all|none` controls how many nameservers are queried at each zone cut during a live trace. Default **`last`** expands only the terminal cut. See [concepts — expansion](delve/concepts.md#expansion-at-trace-time).

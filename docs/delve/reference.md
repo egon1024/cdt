@@ -124,8 +124,8 @@ and formats. Diagram export is **`delve session diagram`** — not `session expo
 
 ## Session bundles
 
-Portable JSON envelopes move full version 2 session documents between machines
-without copying the session store database.
+Portable JSON envelopes move full session documents between machines without
+copying the session store database.
 
 ### Export
 
@@ -145,9 +145,12 @@ Envelope shape:
   "format": "delve-sessions",
   "version": 1,
   "exported_at": "2026-09-05T19:00:00Z",
-  "sessions": [ /* full v2 SessionDocument objects */ ]
+  "sessions": [ /* full session documents */ ]
 }
 ```
+
+The envelope `version` is the **bundle** format, not the per-session document
+field. See [storage — format versions](storage.md#format-versions).
 
 ### Import
 
@@ -172,8 +175,9 @@ delve session import --json path.json  # machine-readable report
 | `--json` | Print a JSON report (counts, per-session outcomes, `no_replay` metadata) instead of the human summary |
 
 Empty TTY stdin with no file path fails fast. Unsupported envelope `format` /
-`version` fails before any store write. Non-v2 session documents in a bundle are
-reported and skipped; other sessions continue; exit status is non-zero.
+`version` fails before any store write. Session documents that this delve build
+cannot read are reported and skipped; other sessions in the bundle continue;
+exit status is non-zero. Details: [storage — format versions](storage.md#format-versions).
 
 After import, branched or multi-tree sessions may trigger an informational
 **replay notice**: they remain valid for explore and session commands, but will
