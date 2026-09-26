@@ -18,6 +18,10 @@ python3 "${ROOT_DIR}/.github/scripts/cdt-versions.py" apply \
   --bundle-version "$BUNDLE_VERSION" \
   --component-versions "$COMPONENT_VERSIONS"
 
+python3 "${ROOT_DIR}/.github/scripts/cdt-versions.py" promote-release-notes \
+  --bundle-version "$BUNDLE_VERSION" \
+  --component-versions "$COMPONENT_VERSIONS"
+
 if ! command -v cargo >/dev/null 2>&1; then
   echo "::error::cargo not found; cannot regenerate Cargo.lock"
   exit 1

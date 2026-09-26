@@ -22,7 +22,21 @@ python3 .github/scripts/cdt-versions.py release-notes \
   --component-versions "$(python3 .github/scripts/cdt-versions.py component-versions-json)"
 ```
 
-For each utility whose component version **bumps** in the release, ensure
-`docs/release-notes/<utility>.md` has a matching `## <version>` section with
-operator-facing **New / Changed / Removed / Fixed** bullets. The GitHub release
-body pulls those sections and links to the full file in this directory.
+While features are in flight, add bullets under **`## Unreleased`** in each
+affected utility file. During **release preparation** (`bump-cdt-versions.sh`),
+automation promotes that section for every bumped utility:
+
+1. Renames **`## Unreleased`** → **`## <new-component-version>`** (newest-first)
+2. Inserts a fresh empty **`## Unreleased`** at the top for the next cycle
+3. Commits the updated files with the manifest bump PR
+
+You can run the same step locally:
+
+```bash
+python3 .github/scripts/cdt-versions.py promote-release-notes \
+  --bundle-version 0.8.0 \
+  --component-versions '{"delve":"0.1.2"}'
+```
+
+The GitHub release body (`release-notes` subcommand) pulls the **`## <version>`**
+sections for bumped utilities and links to the full file in this directory.
