@@ -4,6 +4,19 @@ Operator-facing changes for the `delve` utility. Newest version first.
 
 For the full guide, see [docs/delve.md](../delve.md).
 
+## 0.1.1
+
+### New
+
+- **`delve trace`** walks the DNS delegation path with structured per-hop metadata
+  (NSID, EDE, RTT), optional NDJSON on stdout, and configurable expansion at zone
+  cuts.
+- **Sessions** persist trace snapshots for reuse; **`delve session explore`** opens
+  the TUI; **branch** adds alternate paths from a delegation hop without re-tracing
+  from the root.
+- **Address family policy** defaults to auto (IPv6 reachability probe, then v4-only
+  or dual-stack); override with `+family=` and related trace flags.
+
 ## Unreleased
 
 ### New

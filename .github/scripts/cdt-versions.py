@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,12 @@ except ModuleNotFoundError:
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_PATH = ROOT / "cdt-manifest.toml"
 ROOT_CARGO = ROOT / "Cargo.toml"
+RELEASE_NOTES_DIR = ROOT / "docs" / "release-notes"
+
+VERSION_HEADING_RE = re.compile(
+    r"^##\s+(?P<label>Unreleased|\d+\.\d+\.\d+)(?:\s+\([^)]*\))?\s*$",
+    re.MULTILINE,
+)
 
 
 @dataclass
@@ -288,13 +295,136 @@ def cmd_component_versions_json(_: argparse.Namespace) -> int:
     return 0
 
 
+def semver_tuple(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
+def list_release_tags() -> list[str]:
+    result = subprocess.run(
+        ["git", "tag", "--list", "cdt-v*"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    tags: list[str] = []
+    for line in result.stdout.splitlines():
+        tag = line.strip()
+        if tag.startswith("cdt-v"):
+            tags.append(tag)
+    return sorted(tags, key=lambda tag: semver_tuple(tag.removeprefix("cdt-v")))
+
+
+def previous_release_tag(bundle_version: str) -> str | None:
+    current = semver_tuple(bundle_version)
+    previous: str | None = None
+    for tag in list_release_tags():
+        tag_version = semver_tuple(tag.removeprefix("cdt-v"))
+        if tag_version >= current:
+            break
+        previous = tag
+    return previous
+
+
+def component_versions_at_git_ref(ref: str) -> dict[str, str]:
+    result = subprocess.run(
+        ["git", "show", f"{ref}:cdt-manifest.toml"],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return {}
+    raw = result.stdout
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8")
+    manifest = tomllib.loads(raw)
+    return {entry["name"]: entry["version"] for entry in manifest.get("components", [])}
+
+
+def bumped_component_names(
+    new_versions: dict[str, str], bundle_version: str
+) -> set[str]:
+    current_tag = f"cdt-v{bundle_version}"
+    tags = list_release_tags()
+    if current_tag in tags:
+        baseline_tag = current_tag
+    else:
+        baseline_tag = previous_release_tag(bundle_version)
+    if not baseline_tag:
+        return set(new_versions)
+    baseline = component_versions_at_git_ref(baseline_tag)
+    if not baseline:
+        return set(new_versions)
+    return {
+        name
+        for name, version in new_versions.items()
+        if baseline.get(name) != version
+    }
+
+
+def extract_version_section(markdown: str, version: str) -> str | None:
+    """Return markdown body under ## <version> until the next ## heading."""
+    label = version.strip()
+    start_pattern = re.compile(
+        rf"^##\s+{re.escape(label)}(?:\s+\([^)]*\))?\s*$",
+        re.MULTILINE,
+    )
+    start = start_pattern.search(markdown)
+    if not start:
+        return None
+    rest = markdown[start.end() :]
+    next_heading = VERSION_HEADING_RE.search(rest)
+    body = rest[: next_heading.start()] if next_heading else rest
+    body = body.strip()
+    return body or None
+
+
+def release_notes_path_for_utility(name: str) -> Path:
+    return RELEASE_NOTES_DIR / f"{name}.md"
+
+
+def format_utility_release_section(name: str, version: str) -> list[str]:
+    path = release_notes_path_for_utility(name)
+    rel_link = f"docs/release-notes/{name}.md"
+    lines = [f"### {name} `{version}`", ""]
+    if path.is_file():
+        section = extract_version_section(path.read_text(encoding="utf-8"), version)
+        if section:
+            lines.append(section)
+            lines.append("")
+        else:
+            lines.append(f"See [{name} release notes]({rel_link}) for details.")
+            lines.append("")
+    else:
+        lines.append(f"See [{name} release notes]({rel_link}) for details.")
+        lines.append("")
+    lines.append(f"Full history: [{rel_link}]({rel_link})")
+    return lines
+
+
+def render_release_notes(bundle_version: str, component_versions: dict[str, str]) -> str:
+    bumped = bumped_component_names(component_versions, bundle_version)
+    lines = [f"## CDT bundle {bundle_version}", ""]
+
+    if bumped:
+        for name in sorted(bumped):
+            version = component_versions[name]
+            lines.extend(format_utility_release_section(name, version))
+            lines.append("")
+    else:
+        lines.append("### Utilities")
+        lines.append("")
+        for name in sorted(component_versions):
+            lines.append(f"- **{name}**: `{component_versions[name]}`")
+        lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def cmd_release_notes(args: argparse.Namespace) -> int:
     versions = json.loads(args.component_versions)
-    print(f"## CDT bundle {args.version}")
-    print()
-    print("### Utilities")
-    for name in sorted(versions):
-        print(f"- **{name}**: `{versions[name]}`")
+    print(render_release_notes(args.version, versions), end="")
     return 0
 
 
