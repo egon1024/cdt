@@ -3,6 +3,10 @@
 Per-utility, operator-facing changelogs. Each file lists versions newest-first
 with **New**, **Changed**, **Removed**, and **Fixed** subsections as needed.
 
+In-flight work stays under **`## Unreleased`**. Do not add a **`## x.y.z`** heading
+for the next release by hand — release prep promotes **Unreleased** to the new
+component version (see below).
+
 | Utility | Release notes |
 |---------|---------------|
 | `cdt` (bundle) | [cdt.md](cdt.md) |
