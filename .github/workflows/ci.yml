@@ -44,7 +44,7 @@ jobs:
         run: make test
 
   packaging:
-    name: Build and verify packages
+    name: Build and verify packages (amd64)
     runs-on: ubuntu-22.04
     env:
       PACKAGE_VERSION: 0.0.0-ci
