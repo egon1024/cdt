@@ -45,7 +45,7 @@ Two-pane layout: resolution tree on one side, dig-style detail for the selected 
 | `?` | Screen-scoped help |
 | `q` | Quit |
 
-**View state** (expanded nodes, selection, active screen) persists in the session document. Reopening explore restores your place; view-state-only changes do not bump `updated_at`.
+**View state** (expanded nodes, selection, active screen) persists in the session document when the session is not frozen. Reopening explore restores your place; view-state-only changes do not bump `updated_at`. On a **frozen** session, delve warns and skips the persist write — browsing continues with in-memory state only. Branching with **`b`** is refused before any DNS while frozen; see [concepts — freeze](concepts.md#freeze).
 
 ## Compare screen
 
