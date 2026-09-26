@@ -3,6 +3,21 @@
 Per-utility, operator-facing changelogs. Each file lists versions newest-first
 with **New**, **Changed**, **Removed**, and **Fixed** subsections as needed.
 
+### File format
+
+- Top-level **`## <version>`** headings (newest first). Use **`## Unreleased`**
+  for work not yet tagged.
+- Under each version, optional **`### New`**, **`### Changed`**, **`### Removed`**,
+  and **`### Fixed`** sections with bullet lists.
+- Describe **operator-visible** behavior (commands, flags, outcomes), not
+  internal refactors or crate layout.
+
+### When to update
+
+Add or extend bullets under **`## Unreleased`** in every affected utility file
+in the same change that ships user-facing behavior. If a PR touches multiple
+utilities, update each corresponding `docs/release-notes/<utility>.md`.
+
 In-flight work stays under **`## Unreleased`**. Do not add a **`## x.y.z`** heading
 for the next release by hand — release prep promotes **Unreleased** to the new
 component version (see below).
@@ -35,8 +50,9 @@ automation bumps the utility accordingly — for example **`#delve:major`** on d
 **0.1.1** yields **1.0.0**. The CDT bundle version still follows `#cdt:…` or the
 default bundle bump unless you set `#major` / `#minor` / `#patch` for the bundle.
 
-During **release preparation** (`bump-cdt-versions.sh`),
-automation promotes that section for every bumped utility:
+During **release preparation**, `bump-cdt-versions.sh` (invoked from
+`.github/workflows/release.yml`) bumps manifest and crate versions, then
+promotes release notes for every bumped utility:
 
 1. Renames **`## Unreleased`** → **`## <new-component-version>`** (newest-first)
 2. Inserts a fresh empty **`## Unreleased`** at the top for the next cycle
@@ -50,5 +66,7 @@ python3 .github/scripts/cdt-versions.py promote-release-notes \
   --component-versions '{"delve":"0.1.2"}'
 ```
 
-The GitHub release body (`release-notes` subcommand) pulls the **`## <version>`**
-sections for bumped utilities and links to the full file in this directory.
+When the release is published, `.github/scripts/publish-cdt-release.sh` runs
+`release-notes` and passes the Markdown to `gh release create`. That subcommand
+pulls the **`## <version>`** sections for bumped utilities and links to the
+full file in this directory (for example `docs/release-notes/delve.md`).
