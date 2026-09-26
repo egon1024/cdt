@@ -4,10 +4,6 @@ Operator-facing changes for the `delve` utility. Newest version first.
 
 For the full guide, see [docs/delve.md](../delve.md).
 
-Shipped versions appear as `## x.y.z` headings after release automation runs
-(`promote-release-notes` during the manifest bump). Until then, list changes under
-**`## Unreleased`** only.
-
 ## Unreleased
 
 ### New
