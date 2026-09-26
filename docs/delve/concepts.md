@@ -34,7 +34,7 @@ delve trace example.com +expand=all+force   # non-interactive full expansion
 
 ## Sessions
 
-A **session** is a saved snapshot of one or more completed trace trees. When `+save` is enabled (the default), delve writes the full result — every hop, response section, and timing — to local storage as a versioned JSON document keyed by a ULID.
+A **session** is a saved snapshot of one or more completed trace trees. When `+save` is enabled (the default), delve writes the full result — every hop, response section, and timing — to local storage as a JSON document keyed by a ULID.
 
 Sessions exist so you can work with a trace **after** the live queries finish, without touching the network again:
 

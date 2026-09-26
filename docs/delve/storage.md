@@ -36,16 +36,40 @@ Human progress and the `session: …` line go to stderr.
 
 ### Stored sessions
 
-Sessions use a versioned JSON document containing trace trees, view state, enrichment **`targets`** (resolver IPs with optional ICMP snapshots), optional **`capture_context`**, and metadata (`id`, `created_at`, `updated_at`, `pinned`, `frozen`, and the `TraceRequest` used for reuse matching).
+Sessions use a JSON document containing trace trees, view state, enrichment
+**`targets`** (resolver IPs with optional ICMP snapshots), optional
+**`capture_context`**, and metadata (`id`, `created_at`, `updated_at`, `pinned`,
+`frozen`, and the `TraceRequest` used for reuse matching).
 
 Flat export via `session show --json` emits the primary tree as a `TraceResult`-shaped `complete` event. Hierarchical export via `session events` emits an `explore_tree` event — see [explore](explore.md#show-json-vs-events).
 
 ### Portable session bundles
 
-`delve session export` / `import` move full session documents in a versioned JSON
-envelope (`format: "delve-sessions"`, bundle `version: 1`). That is separate from
-diagram images (`session diagram`) and from the flat `show --json` / `events`
-shapes above. See [reference — session bundles](reference.md#session-bundles).
+`delve session export` / `import` move full session documents in a JSON envelope
+(`format: "delve-sessions"`). That is separate from diagram images
+(`session diagram`) and from the flat `show --json` / `events` shapes above.
+See [reference — session bundles](reference.md#session-bundles).
+
+## Format versions
+
+Most operators can ignore the numbers below. They matter when reading raw JSON
+on disk, writing importers, or diagnosing an import that skipped a session.
+
+| Layer | Field | Current | Role |
+|-------|-------|---------|------|
+| **Session document** | `version` inside each stored session | `2` | Shape of one session (trees, view state, freeze, …) |
+| **Portable bundle** | envelope `format` + `version` | `delve-sessions` / `1` | Wrapper around one or more session documents |
+
+These version spaces are independent. A bundle with envelope `version: 1` still
+carries session documents whose own `version` is `2`.
+
+**History (session documents):** early delve builds stored a flatter session
+shape (`version: 1`). Current builds write and import only the current document
+shape. Import reports and skips documents it cannot read; it does not convert
+older shapes in place.
+
+**Bundles:** unsupported envelope `format` or `version` fails before any store
+write. That check is separate from per-session document acceptance.
 
 ## See also
 
