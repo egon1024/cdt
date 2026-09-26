@@ -59,7 +59,7 @@ Installed packages also ship `man delve` (CLI synopsis) and this guide at `/usr/
 Typical multipath investigation:
 
 ```bash
-delve trace tuininga.org +expand=last +save
+delve trace example.com +expand=last +save
 export DELVE_SESSION=$(delve session current)
 delve session branch --at-hop=0 --expand --dry-run
 delve session explore          # Browse → Compare (Tab), branch (b), quit
