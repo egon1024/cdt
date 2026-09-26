@@ -170,7 +170,7 @@ jobs:
             exit 1
           fi
 
-          git add cdt-manifest.toml Cargo.toml Cargo.lock crates/
+          git add cdt-manifest.toml Cargo.toml Cargo.lock crates/ docs/release-notes/
           if git diff --cached --quiet; then
             echo "committed=false" >>"$GITHUB_OUTPUT"
             echo "Release preparation already on ${RELEASE_BRANCH} for ${NEXT_VERSION}; skipping commit."

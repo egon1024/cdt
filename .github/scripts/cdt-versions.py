@@ -27,6 +27,10 @@ VERSION_HEADING_RE = re.compile(
     r"^##\s+(?P<label>Unreleased|\d+\.\d+\.\d+)(?:\s+\([^)]*\))?\s*$",
     re.MULTILINE,
 )
+UNRELEASED_HEADING_RE = re.compile(
+    r"^##\s+Unreleased(?:\s+\([^)]*\))?\s*$",
+    re.MULTILINE,
+)
 
 
 @dataclass
@@ -384,6 +388,53 @@ def release_notes_path_for_utility(name: str) -> Path:
     return RELEASE_NOTES_DIR / f"{name}.md"
 
 
+def promote_unreleased_section(markdown: str, version: str) -> tuple[str, bool]:
+    """Move ## Unreleased content to ## <version> and leave an empty ## Unreleased."""
+    if extract_version_section(markdown, version):
+        return markdown, False
+    match = UNRELEASED_HEADING_RE.search(markdown)
+    if not match:
+        return markdown, False
+    rest_after_heading = markdown[match.end() :]
+    next_heading = VERSION_HEADING_RE.search(rest_after_heading)
+    unreleased_body = (
+        rest_after_heading[: next_heading.start()]
+        if next_heading
+        else rest_after_heading
+    )
+    remove_end = match.end() + (
+        next_heading.start() if next_heading else len(rest_after_heading)
+    )
+    without = markdown[: match.start()] + markdown[remove_end:]
+    promoted_block = f"## {version}\n{unreleased_body}".rstrip() + "\n\n"
+    fresh_unreleased = "## Unreleased\n\n"
+    insertion = fresh_unreleased + promoted_block
+    first_heading = VERSION_HEADING_RE.search(without)
+    if first_heading:
+        new_md = without[: first_heading.start()] + insertion + without[first_heading.start() :]
+    else:
+        new_md = without.rstrip() + "\n\n" + insertion
+    return new_md, True
+
+
+def promote_release_notes_files(
+    bundle_version: str, component_versions: dict[str, str]
+) -> list[str]:
+    bumped = bumped_component_names(component_versions, bundle_version)
+    updated: list[str] = []
+    for name in sorted(bumped):
+        version = component_versions[name]
+        path = release_notes_path_for_utility(name)
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        new_text, changed = promote_unreleased_section(text, version)
+        if changed:
+            path.write_text(new_text, encoding="utf-8")
+            updated.append(f"docs/release-notes/{path.name}")
+    return updated
+
+
 def format_utility_release_section(name: str, version: str) -> list[str]:
     path = release_notes_path_for_utility(name)
     rel_link = f"docs/release-notes/{name}.md"
@@ -428,6 +479,14 @@ def cmd_release_notes(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_promote_release_notes(args: argparse.Namespace) -> int:
+    versions = json.loads(args.component_versions)
+    updated = promote_release_notes_files(args.bundle_version, versions)
+    for path in updated:
+        print(path)
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -461,6 +520,11 @@ def main() -> int:
     release_notes.add_argument("--version", required=True)
     release_notes.add_argument("--component-versions", required=True)
     release_notes.set_defaults(func=cmd_release_notes)
+
+    promote_release_notes = sub.add_parser("promote-release-notes")
+    promote_release_notes.add_argument("--bundle-version", required=True)
+    promote_release_notes.add_argument("--component-versions", required=True)
+    promote_release_notes.set_defaults(func=cmd_promote_release_notes)
 
     args = parser.parse_args()
     return args.func(args)
