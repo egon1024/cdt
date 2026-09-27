@@ -72,6 +72,7 @@ jobs:
             .github/scripts/verify-release-artifacts.sh \
             .github/scripts/check-release-assets-complete.sh \
             .github/scripts/release-asset-names.sh \
+            .github/scripts/release-arch-build-needed.sh \
             .github/scripts/merge-release-sha256sums.sh \
             .github/scripts/cdt-versions.py
           chmod +x .github/scripts/*.sh
@@ -81,41 +82,31 @@ jobs:
           set -euo pipefail
           git rev-parse "refs/tags/${RELEASE_TAG}^{commit}" >/dev/null
 
-      - name: Fail if release assets already exist for this arch
+      - name: Check whether this arch needs a build
+        id: arch_build
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
-          if ! gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
-            echo "::error::GitHub release ${RELEASE_TAG} does not exist yet"
-            exit 1
-          fi
-          # shellcheck source=.github/scripts/release-asset-names.sh
-          source .github/scripts/release-asset-names.sh
-          mapfile -t expected < <(release_arch_asset_names "${RELEASE_VERSION}" "${{ matrix.arch }}")
-          if [[ "${{ matrix.generate_sbom }}" == "1" ]]; then
-            expected+=("cdt-${RELEASE_VERSION}.spdx.json")
-          fi
-          existing="$(gh release view "${RELEASE_TAG}" --json assets --jq '.assets[].name' || true)"
-          for name in "${expected[@]}"; do
-            if echo "${existing}" | grep -qx "${name}"; then
-              echo "::error::Release asset already exists: ${name}. Delete it before rebuilding."
-              exit 1
-            fi
-          done
+          chmod +x .github/scripts/release-arch-build-needed.sh
+          bash .github/scripts/release-arch-build-needed.sh \
+            "${RELEASE_VERSION}" "${{ matrix.arch }}" "${{ matrix.generate_sbom }}"
 
       - name: Install Rust toolchain
+        if: steps.arch_build.outputs.skip_build != 'true'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Set up Python
+        if: steps.arch_build.outputs.skip_build != 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Install Python dependencies
+        if: steps.arch_build.outputs.skip_build != 'true'
         run: pip install tomli
 
       - name: Install nfpm
+        if: steps.arch_build.outputs.skip_build != 'true'
         run: |
           set -euo pipefail
           NFPM_VERSION=2.41.2
@@ -128,10 +119,11 @@ jobs:
           sudo dpkg -i /tmp/nfpm.deb
 
       - name: Install cargo-cyclonedx
-        if: matrix.generate_sbom == '1'
+        if: steps.arch_build.outputs.skip_build != 'true' && matrix.generate_sbom == '1'
         run: cargo install cargo-cyclonedx --locked
 
       - name: Build release artifacts
+        if: steps.arch_build.outputs.skip_build != 'true'
         env:
           VERSION: ${{ env.RELEASE_VERSION }}
           ARCH: ${{ matrix.arch }}
@@ -141,6 +133,7 @@ jobs:
         run: bash .github/scripts/build-release-artifacts.sh
 
       - name: Upload release assets
+        if: steps.arch_build.outputs.skip_build != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

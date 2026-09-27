@@ -263,6 +263,12 @@ jobs:
           COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: bash .github/scripts/resolve-publish-version.sh
 
+      - name: Sync to release branch tip
+        run: |
+          set -euo pipefail
+          git fetch origin "${RELEASE_BRANCH}"
+          git checkout -B "${RELEASE_BRANCH}" "origin/${RELEASE_BRANCH}"
+
       - name: Skip if release already exists
         id: exists
         env:

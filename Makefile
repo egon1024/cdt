@@ -30,6 +30,7 @@ help:
 
 script-test:
 	bash .github/scripts/check_release_assets_complete_test.sh
+	bash .github/scripts/release_arch_build_needed_test.sh
 
 test: fmt-check clippy unit script-test
 
