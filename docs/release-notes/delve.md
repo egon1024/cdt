@@ -6,6 +6,8 @@ For the full guide, see [docs/delve.md](../delve.md).
 
 ## Unreleased
 
+## 1.0.0
+
 ### New
 
 - **`delve session export`** writes a portable JSON session bundle (envelope
@@ -33,3 +35,4 @@ For the full guide, see [docs/delve.md](../delve.md).
 
 - **`delve session export`** no longer produces SVG/PNG diagrams. Use
   **`delve session diagram`** instead (breaking rename; no CLI alias).
+
