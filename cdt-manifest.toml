@@ -3,11 +3,11 @@
 
 [bundle]
 name = "cdt"
-version = "0.7.0"
+version = "0.8.0"
 
 [[components]]
 name = "delve"
 crate = "delve"
 binary = "delve"
-version = "0.1.1"
+version = "1.0.0"
 description = "DNS delegation-path tracer"
