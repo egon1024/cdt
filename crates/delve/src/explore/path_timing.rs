@@ -47,13 +47,6 @@ pub fn format_path_chain(path: &[usize]) -> String {
     chain
 }
 
-pub fn path_on_highlight(hop_path: &[usize], highlight: &[usize]) -> bool {
-    if hop_path.len() > highlight.len() {
-        return false;
-    }
-    hop_path == &highlight[..hop_path.len()]
-}
-
 pub fn whole_tree_summary_lines(
     context: &CompareTimingContext,
     theme: &Theme,

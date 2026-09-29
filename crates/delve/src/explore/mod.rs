@@ -1,6 +1,4 @@
 mod compare;
-#[allow(dead_code)] // fork-scoped projection; interactive Compare uses the full-tree renderer
-mod compare_screen;
 mod detail;
 mod dig_view;
 mod flags;
@@ -597,8 +595,9 @@ mod tests {
     }
 
     #[test]
-    fn compare_screen_text_and_json_agree() {
-        use super::compare_screen::{CompareScreenModel, path_scale_ms, summary_row_line};
+    fn compare_surfaces_agree_on_fork_fixture() {
+        use super::compare::SilentIcmpProber;
+        use super::compare::{ForkCompareModel, fork_compare_row_line, fork_compare_scale_ms};
         use super::path_summary::summarize_fork;
         use super::theme::Theme;
         use dns_resolve::NodePath;
@@ -611,9 +610,16 @@ mod tests {
         let json =
             render_events_comparison(&document, Some(0), None, &SilentProber, true).expect("json");
         let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
-        let model = CompareScreenModel::from_tree(&tree, &NodePath::root(0)).expect("screen");
+        let model = ForkCompareModel::from_tree(
+            &tree,
+            &NodePath::root(0),
+            &document.targets,
+            &SilentIcmpProber,
+            false,
+        )
+        .expect("compare model");
         let theme = Theme::from_env();
-        let path_scale = path_scale_ms(&model.comparison);
+        let path_scale = fork_compare_scale_ms(&model.comparison);
         let rtt_config = crate::config::RttBarConfig::default();
 
         assert_eq!(projection.paths.len(), 2);
@@ -630,7 +636,7 @@ mod tests {
             assert_eq!(path.outcome, model.rows()[index].outcome);
             assert!(text.contains(&path.label));
             assert!(text.contains(&format!("{}ms", path.dns_rtt_total_ms)));
-            let row = summary_row_line(
+            let row = fork_compare_row_line(
                 path,
                 false,
                 model.comparison.referral.agree,
