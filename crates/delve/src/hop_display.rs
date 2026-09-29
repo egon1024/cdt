@@ -1,6 +1,6 @@
 use dns_resolve::{NodePath, TraceHop};
 
-use crate::explore::{cache_source_symbol, ui_symbols};
+use crate::display::{cache_source_symbol, ui_symbols};
 
 /// Tracks query numbering and repeated query fields across a trace or session replay.
 #[derive(Debug, Default)]

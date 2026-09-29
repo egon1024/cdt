@@ -27,6 +27,7 @@ use crate::paths::DelvePaths;
 use crate::runtime::Runtime;
 use crate::session::{SessionDocument, TargetEnrichments};
 
+use super::ExploreError;
 use super::compare::{CompareColumns, compare_row};
 use super::detail::hop_failure_line;
 use super::dig_view::hop_detail_styled;
@@ -41,7 +42,7 @@ use super::refresh::{RefreshScope, UnifiedRefreshReport, refresh_document};
 use super::rtt_bar::max_rtt_ms_for_visible;
 use super::terminal::{ColorCapability, cache_source_legend, cache_source_symbol};
 use super::theme::Theme;
-use super::tree::{ExploreTree, VisibleNode};
+use super::tree::{ExploreTree, VisibleNode, explore_tree_from_session};
 use super::view_state::{ActiveScreen, BrowsePane, ViewStateController, apply_view_state};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,7 +137,7 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
     let explore_plus_icmp = ctx.plus_icmp;
     let query_overrides = ctx.query_overrides;
     let effective_icmp = runtime.config.effective_icmp_enabled(explore_plus_icmp);
-    let mut tree = explore_tree_from_document(document)?;
+    let mut tree = explore_tree_from_session(document).map_err(explore_tree_io_error)?;
     let session_id = document.id.clone();
     let paths = runtime.paths.clone();
 
@@ -179,7 +180,8 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                                 if report.nodes_added > 0 {
                                     if let Ok(updated) = runtime.get_session(&session_id) {
                                         *document = updated;
-                                        tree = explore_tree_from_document(document)?;
+                                        tree = explore_tree_from_session(document)
+                                            .map_err(explore_tree_io_error)?;
                                         if !view
                                             .expanded_paths
                                             .iter()
@@ -242,7 +244,8 @@ pub fn run_tui(ctx: ExploreContext<'_>) -> io::Result<()> {
                         match report {
                             Ok((updated, report)) => {
                                 *document = *updated;
-                                tree = explore_tree_from_document(document)?;
+                                tree = explore_tree_from_session(document)
+                                    .map_err(explore_tree_io_error)?;
                                 if report.has_unsaved_changes() {
                                     unsaved_refresh = true;
                                 }
@@ -752,15 +755,14 @@ fn restore_terminal_session() {
     let _ = execute!(io::stdout(), LeaveAlternateScreen);
 }
 
-fn explore_tree_from_document(document: &SessionDocument) -> io::Result<ExploreTree> {
-    let trace = document
-        .primary_tree()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "session has no trace tree"))?;
-    Ok(if let Some(request) = document.primary_request() {
-        super::tree::build_explore_tree_with_qname(trace, 0, Some(&request.qname))
-    } else {
-        super::tree::build_explore_tree(trace)
-    })
+fn explore_tree_io_error(error: ExploreError) -> io::Error {
+    match error {
+        ExploreError::NoTraceTree => {
+            io::Error::new(io::ErrorKind::InvalidData, "session has no trace tree")
+        }
+        ExploreError::Io(error) => error,
+        other => io::Error::other(other.to_string()),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

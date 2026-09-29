@@ -21,14 +21,14 @@ mod tree;
 mod tui;
 mod view_state;
 
+pub(crate) use crate::display::ui_symbols;
 pub use json::render_tree_json;
 pub use options::{
     ExploreOptions, ExploreParseError, ExploreQueryOverrides, apply_explore_query_overrides,
     parse_explore_args,
 };
 pub use outline::render_outline;
-pub(crate) use terminal::{cache_source_symbol, ui_symbols};
-pub use tree::{build_explore_tree, build_explore_tree_with_qname};
+pub use tree::{build_explore_tree, build_explore_tree_with_qname, explore_tree_from_session};
 pub use tui::{ExploreContext, run_tui};
 
 use crate::branch::resolve_branch_target;
@@ -37,17 +37,6 @@ use crate::session::SessionDocument;
 use dns_resolve::{DatagramIcmpProber, IcmpProber};
 use path_summary::{comparison_at, render_comparison_json, render_comparison_text};
 use std::io::{self, IsTerminal, Write};
-
-fn explore_tree_for_document(
-    document: &SessionDocument,
-) -> Result<tree::ExploreTree, ExploreError> {
-    let trace = document.primary_tree().ok_or(ExploreError::NoTraceTree)?;
-    Ok(if let Some(request) = document.primary_request() {
-        build_explore_tree_with_qname(trace, 0, Some(&request.qname))
-    } else {
-        build_explore_tree(trace)
-    })
-}
 
 pub fn run_outline(document: &SessionDocument) -> Result<(), ExploreError> {
     run_outline_with_compare(document, None, None, &DatagramIcmpProber::default(), true)
@@ -75,7 +64,7 @@ pub fn run_outline_with_compare(
         stdout.flush().map_err(ExploreError::Io)?;
         return Ok(());
     }
-    let tree = explore_tree_for_document(document)?;
+    let tree = tree::explore_tree_from_session(document)?;
     let mut output = format!("session: {}\n", document.id);
     output.push_str(&render_outline(&tree, ui_symbols()));
     let mut stdout = io::stdout().lock();
@@ -108,7 +97,7 @@ pub fn run_events_with_compare(
         println!("{output}");
         return Ok(());
     }
-    let tree = explore_tree_for_document(document)?;
+    let tree = tree::explore_tree_from_session(document)?;
     println!("{}", render_tree_json(&tree, &document.id));
     Ok(())
 }
@@ -188,7 +177,7 @@ pub fn run_explore(
     if !io::stdout().is_terminal() || !io::stdin().is_terminal() {
         return Err(ExploreError::NotTerminal);
     }
-    explore_tree_for_document(document)?;
+    tree::explore_tree_from_session(document)?;
 
     run_tui(ExploreContext {
         runtime,
@@ -282,7 +271,7 @@ mod tests {
             ),
         );
 
-        let tree = explore_tree_for_document(&document).expect("tree");
+        let tree = explore_tree_from_session(&document).expect("tree");
         let outline = render_outline(&tree, ui_symbols());
         assert!(outline.contains("example.com. A"));
         assert!(outline.contains("rtt: 11 ms"));
@@ -331,29 +320,9 @@ mod tests {
                 },
             ),
         );
-        let tree = explore_tree_for_document(&document).expect("tree");
+        let tree = explore_tree_from_session(&document).expect("tree");
         let outline = render_outline(&tree, ui_symbols());
         assert!(outline.contains("failure: timeout: no response"));
-    }
-
-    #[test]
-    fn explore_tree_for_document_errors_without_tree() {
-        let document = SessionDocument {
-            version: 2,
-            id: "01EMPTY".into(),
-            created_at: "2026-08-25T12:00:00Z".into(),
-            updated_at: "2026-08-25T12:00:00Z".into(),
-            pinned: false,
-            frozen: false,
-            capture_context: None,
-            targets: Default::default(),
-            trees: vec![],
-            view_state: None,
-        };
-        assert!(matches!(
-            explore_tree_for_document(&document),
-            Err(ExploreError::NoTraceTree)
-        ));
     }
 
     fn fork_document() -> SessionDocument {
@@ -635,7 +604,7 @@ mod tests {
         use dns_resolve::NodePath;
 
         let document = fork_document();
-        let tree = explore_tree_for_document(&document).expect("tree");
+        let tree = explore_tree_from_session(&document).expect("tree");
         let projection = summarize_fork(tree.trace(), &NodePath::root(0)).expect("projection");
         let text =
             render_outline_comparison(&document, Some(0), None, &SilentProber, true).expect("text");
