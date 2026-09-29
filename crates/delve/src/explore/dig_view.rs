@@ -363,7 +363,7 @@ mod tests {
         }
     }
 
-    use crate::explore::terminal::UNICODE;
+    use crate::display::UNICODE;
 
     #[test]
     fn dig_plain_includes_icmp_when_enriched() {

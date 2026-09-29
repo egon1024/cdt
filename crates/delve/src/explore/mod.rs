@@ -1,6 +1,4 @@
 mod compare;
-#[allow(dead_code)] // fork-scoped projection; interactive Compare uses the full-tree renderer
-mod compare_screen;
 mod detail;
 mod dig_view;
 mod flags;
@@ -21,14 +19,14 @@ mod tree;
 mod tui;
 mod view_state;
 
+pub(crate) use crate::display::ui_symbols;
 pub use json::render_tree_json;
 pub use options::{
     ExploreOptions, ExploreParseError, ExploreQueryOverrides, apply_explore_query_overrides,
     parse_explore_args,
 };
 pub use outline::render_outline;
-pub(crate) use terminal::{cache_source_symbol, ui_symbols};
-pub use tree::{build_explore_tree, build_explore_tree_with_qname};
+pub use tree::{build_explore_tree, build_explore_tree_with_qname, explore_tree_from_session};
 pub use tui::{ExploreContext, run_tui};
 
 use crate::branch::resolve_branch_target;
@@ -37,17 +35,6 @@ use crate::session::SessionDocument;
 use dns_resolve::{DatagramIcmpProber, IcmpProber};
 use path_summary::{comparison_at, render_comparison_json, render_comparison_text};
 use std::io::{self, IsTerminal, Write};
-
-fn explore_tree_for_document(
-    document: &SessionDocument,
-) -> Result<tree::ExploreTree, ExploreError> {
-    let trace = document.primary_tree().ok_or(ExploreError::NoTraceTree)?;
-    Ok(if let Some(request) = document.primary_request() {
-        build_explore_tree_with_qname(trace, 0, Some(&request.qname))
-    } else {
-        build_explore_tree(trace)
-    })
-}
 
 pub fn run_outline(document: &SessionDocument) -> Result<(), ExploreError> {
     run_outline_with_compare(document, None, None, &DatagramIcmpProber::default(), true)
@@ -75,7 +62,7 @@ pub fn run_outline_with_compare(
         stdout.flush().map_err(ExploreError::Io)?;
         return Ok(());
     }
-    let tree = explore_tree_for_document(document)?;
+    let tree = tree::explore_tree_from_session(document)?;
     let mut output = format!("session: {}\n", document.id);
     output.push_str(&render_outline(&tree, ui_symbols()));
     let mut stdout = io::stdout().lock();
@@ -108,7 +95,7 @@ pub fn run_events_with_compare(
         println!("{output}");
         return Ok(());
     }
-    let tree = explore_tree_for_document(document)?;
+    let tree = tree::explore_tree_from_session(document)?;
     println!("{}", render_tree_json(&tree, &document.id));
     Ok(())
 }
@@ -188,7 +175,7 @@ pub fn run_explore(
     if !io::stdout().is_terminal() || !io::stdin().is_terminal() {
         return Err(ExploreError::NotTerminal);
     }
-    explore_tree_for_document(document)?;
+    tree::explore_tree_from_session(document)?;
 
     run_tui(ExploreContext {
         runtime,
@@ -282,7 +269,7 @@ mod tests {
             ),
         );
 
-        let tree = explore_tree_for_document(&document).expect("tree");
+        let tree = explore_tree_from_session(&document).expect("tree");
         let outline = render_outline(&tree, ui_symbols());
         assert!(outline.contains("example.com. A"));
         assert!(outline.contains("rtt: 11 ms"));
@@ -331,29 +318,9 @@ mod tests {
                 },
             ),
         );
-        let tree = explore_tree_for_document(&document).expect("tree");
+        let tree = explore_tree_from_session(&document).expect("tree");
         let outline = render_outline(&tree, ui_symbols());
         assert!(outline.contains("failure: timeout: no response"));
-    }
-
-    #[test]
-    fn explore_tree_for_document_errors_without_tree() {
-        let document = SessionDocument {
-            version: 2,
-            id: "01EMPTY".into(),
-            created_at: "2026-08-25T12:00:00Z".into(),
-            updated_at: "2026-08-25T12:00:00Z".into(),
-            pinned: false,
-            frozen: false,
-            capture_context: None,
-            targets: Default::default(),
-            trees: vec![],
-            view_state: None,
-        };
-        assert!(matches!(
-            explore_tree_for_document(&document),
-            Err(ExploreError::NoTraceTree)
-        ));
     }
 
     fn fork_document() -> SessionDocument {
@@ -628,23 +595,31 @@ mod tests {
     }
 
     #[test]
-    fn compare_screen_text_and_json_agree() {
-        use super::compare_screen::{CompareScreenModel, path_scale_ms, summary_row_line};
+    fn compare_surfaces_agree_on_fork_fixture() {
+        use super::compare::SilentIcmpProber;
+        use super::compare::{ForkCompareModel, fork_compare_row_line, fork_compare_scale_ms};
         use super::path_summary::summarize_fork;
         use super::theme::Theme;
         use dns_resolve::NodePath;
 
         let document = fork_document();
-        let tree = explore_tree_for_document(&document).expect("tree");
+        let tree = explore_tree_from_session(&document).expect("tree");
         let projection = summarize_fork(tree.trace(), &NodePath::root(0)).expect("projection");
         let text =
             render_outline_comparison(&document, Some(0), None, &SilentProber, true).expect("text");
         let json =
             render_events_comparison(&document, Some(0), None, &SilentProber, true).expect("json");
         let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
-        let model = CompareScreenModel::from_tree(&tree, &NodePath::root(0)).expect("screen");
+        let model = ForkCompareModel::from_tree(
+            &tree,
+            &NodePath::root(0),
+            &document.targets,
+            &SilentIcmpProber,
+            false,
+        )
+        .expect("compare model");
         let theme = Theme::from_env();
-        let path_scale = path_scale_ms(&model.comparison);
+        let path_scale = fork_compare_scale_ms(&model.comparison);
         let rtt_config = crate::config::RttBarConfig::default();
 
         assert_eq!(projection.paths.len(), 2);
@@ -661,7 +636,7 @@ mod tests {
             assert_eq!(path.outcome, model.rows()[index].outcome);
             assert!(text.contains(&path.label));
             assert!(text.contains(&format!("{}ms", path.dns_rtt_total_ms)));
-            let row = summary_row_line(
+            let row = fork_compare_row_line(
                 path,
                 false,
                 model.comparison.referral.agree,

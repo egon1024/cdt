@@ -9,7 +9,9 @@ use super::theme::Theme;
 
 /// Generous cap for tree/compare rows; detail pane passes `None` for no truncation.
 pub const DEFAULT_IDENTITY_MAX_WIDTH: usize = 52;
+#[cfg(test)]
 pub const MAX_IDENTITY_COLUMN_WIDTH: usize = 56;
+#[cfg(test)]
 pub const MIN_IDENTITY_COLUMN_WIDTH: usize = 16;
 
 /// Zone cut shown in tree/compare/detail. Answer hops queried at a parent cut
@@ -26,6 +28,7 @@ pub fn hop_display_zone(hop: &TraceHop) -> String {
     hop.zone.clone()
 }
 
+#[cfg(test)]
 pub fn format_hop_identity(hop: &TraceHop, max_width: Option<usize>) -> String {
     let body = hop_identity_body(hop);
     let full = format!("[{}] {body}", hop_display_zone(hop));
@@ -35,6 +38,7 @@ pub fn format_hop_identity(hop: &TraceHop, max_width: Option<usize>) -> String {
     }
 }
 
+#[cfg(test)]
 pub fn hop_identity_display_width(hop: &TraceHop, max_width: Option<usize>) -> usize {
     display_width(format_hop_identity(hop, max_width).as_str())
 }

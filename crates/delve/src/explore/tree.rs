@@ -1,5 +1,8 @@
 use dns_resolve::{NodePath, TraceHop, TraceNode, TraceTree};
 
+use crate::session::SessionDocument;
+
+use super::ExploreError;
 use super::path_summary::{fork_for_compare, nearest_fork as nearest_fork_in_tree};
 
 #[derive(Debug, Clone)]
@@ -137,6 +140,15 @@ impl ExploreTree {
             .map(|node| node.path.clone())
             .unwrap_or_else(|| NodePath::root(selection.tree))
     }
+}
+
+pub fn explore_tree_from_session(document: &SessionDocument) -> Result<ExploreTree, ExploreError> {
+    let trace = document.primary_tree().ok_or(ExploreError::NoTraceTree)?;
+    Ok(if let Some(request) = document.primary_request() {
+        build_explore_tree_with_qname(trace, 0, Some(&request.qname))
+    } else {
+        build_explore_tree(trace)
+    })
 }
 
 pub fn build_explore_tree(trace: &TraceTree) -> ExploreTree {
@@ -402,6 +414,62 @@ mod tests {
             Some("www.example.com."),
         );
         assert_eq!(tree.qname, "www.example.com.");
+    }
+
+    #[test]
+    fn explore_tree_from_session_errors_without_tree() {
+        let document = SessionDocument {
+            version: 2,
+            id: "01EMPTY".into(),
+            created_at: "2026-08-25T12:00:00Z".into(),
+            updated_at: "2026-08-25T12:00:00Z".into(),
+            pinned: false,
+            frozen: false,
+            capture_context: None,
+            targets: Default::default(),
+            trees: vec![],
+            view_state: None,
+        };
+        assert!(matches!(
+            explore_tree_from_session(&document),
+            Err(ExploreError::NoTraceTree)
+        ));
+    }
+
+    #[test]
+    fn explore_tree_from_session_uses_stored_request_qname_when_present() {
+        use crate::trace_request::TraceRequest;
+
+        let trace = trace_with_hops("example.com.", vec![hop(".", "example.com.", "198.41.0.4")]);
+        let document = SessionDocument::new(
+            "01TEST".into(),
+            TraceRequest::from_options(&crate::dig_options::TraceOptions {
+                qname: "example.com".into(),
+                ..Default::default()
+            }),
+            trace,
+        );
+        let tree = explore_tree_from_session(&document).expect("tree");
+        assert_eq!(tree.qname, "example.com");
+    }
+
+    #[test]
+    fn explore_tree_from_session_uses_primary_request_qname() {
+        use crate::trace_request::TraceRequest;
+
+        let document = SessionDocument::new(
+            "01TEST".into(),
+            TraceRequest::from_options(&crate::dig_options::TraceOptions {
+                qname: "www.example.com".into(),
+                ..Default::default()
+            }),
+            trace_with_hops(
+                "cdn.example.com.",
+                vec![hop(".", "cdn.example.com.", "198.41.0.4")],
+            ),
+        );
+        let tree = explore_tree_from_session(&document).expect("tree");
+        assert_eq!(tree.qname, "www.example.com");
     }
 
     #[test]

@@ -168,7 +168,7 @@ fn append_yaml_list_lines(lines: &mut Vec<String>, key: &str, values: &[String])
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::explore::terminal::UNICODE;
+    use crate::display::UNICODE;
     use dns_resolve::HopOutcome;
 
     #[test]

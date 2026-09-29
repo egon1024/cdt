@@ -72,7 +72,7 @@ pub fn render_outline(tree: &ExploreTree, symbols: UiSymbols) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::explore::terminal::UNICODE;
+    use crate::display::UNICODE;
     use crate::explore::tree::build_explore_tree;
     use dns_resolve::{HopOutcome, TraceHop, TraceTreeRequest, build_linear_tree};
 

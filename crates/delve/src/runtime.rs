@@ -471,6 +471,7 @@ mod degradation_tests {
 
     #[test]
     fn default_session_prefers_delve_session_env() {
+        let _lock = crate::default_session::test_env_lock();
         let dir = tempfile::tempdir().expect("tempdir");
         let paths = DelvePaths::from_root(dir.path());
         let runtime = Runtime::open(paths);
@@ -488,14 +489,11 @@ mod degradation_tests {
 
         assert_eq!(runtime.default_session_id().expect("default"), older);
         assert_ne!(runtime.default_session_id().expect("default"), newer);
-
-        unsafe {
-            std::env::remove_var(crate::default_session::DELVE_SESSION_ENV);
-        }
     }
 
     #[test]
     fn stale_delve_session_falls_through_to_most_recently_modified() {
+        let _lock = crate::default_session::test_env_lock();
         let dir = tempfile::tempdir().expect("tempdir");
         let paths = DelvePaths::from_root(dir.path());
         let runtime = Runtime::open(paths);
@@ -512,14 +510,11 @@ mod degradation_tests {
         }
 
         assert_eq!(runtime.default_session_id().expect("default"), id);
-
-        unsafe {
-            std::env::remove_var(crate::default_session::DELVE_SESSION_ENV);
-        }
     }
 
     #[test]
     fn stale_delve_session_without_sessions_errors() {
+        let _lock = crate::default_session::test_env_lock();
         let dir = tempfile::tempdir().expect("tempdir");
         let paths = DelvePaths::from_root(dir.path());
         let runtime = Runtime::open(paths);
@@ -535,10 +530,6 @@ mod degradation_tests {
             runtime.default_session_id(),
             Err(SessionError::NoSessions)
         ));
-
-        unsafe {
-            std::env::remove_var(crate::default_session::DELVE_SESSION_ENV);
-        }
     }
 
     #[test]

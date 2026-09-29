@@ -274,6 +274,7 @@ mod integration_tests {
 
     #[test]
     fn export_uses_delve_session_default_resolution() {
+        let _lock = crate::default_session::test_env_lock();
         let dir = tempfile::tempdir().expect("tempdir");
         let runtime = Runtime::open(DelvePaths::from_root(dir.path()));
         let older = save_sample_session(&runtime);
@@ -302,9 +303,6 @@ mod integration_tests {
         )
         .expect("svg");
         assert!(svg.contains("a.root-servers.net"));
-        unsafe {
-            std::env::remove_var(DELVE_SESSION_ENV);
-        }
     }
 
     #[cfg(not(feature = "export-png"))]

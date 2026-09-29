@@ -54,6 +54,7 @@ pub fn format_rtt_plain_line(rtt_ms: u64) -> String {
 }
 
 /// Slowest hop among visible Compare rows; bars scale relative to this value.
+#[cfg(test)]
 pub fn max_rtt_ms_for_visible(
     tree: &super::tree::ExploreTree,
     visible: &[super::tree::VisibleNode],
