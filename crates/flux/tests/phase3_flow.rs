@@ -24,7 +24,7 @@ fn fragmented_defrag_on_counts_response() {
             "-r",
             pcap.to_str().unwrap(),
             "+preset=fragmented",
-            "+qr=response",
+            "+qr=both",
             "+views=src",
         ])
         .output()
@@ -75,7 +75,10 @@ fn tcp_modes_split_fixture() {
         ])
         .output()
         .unwrap();
-    assert!(String::from_utf8_lossy(&full.stdout).contains("tcp"));
+    let full_s = String::from_utf8_lossy(&full.stdout);
+    assert!(full_s.contains("qr=both"), "{full_s}");
+    assert!(full_s.contains("Transport (1 messages)"), "{full_s}");
+    assert!(full_s.contains("tcp"));
     let simple = Command::new(bin)
         .args([
             "watch",
@@ -87,7 +90,12 @@ fn tcp_modes_split_fixture() {
         ])
         .output()
         .unwrap();
-    assert!(String::from_utf8_lossy(&simple.stdout).contains("tcp_unparsed"));
+    let simple_s = String::from_utf8_lossy(&simple.stdout);
+    assert!(simple_s.contains("tcp_unparsed"), "{simple_s}");
+    assert!(
+        simple_s.contains("Transport (0 messages)"),
+        "simple must not count split TCP: {simple_s}"
+    );
     let off = Command::new(bin)
         .args([
             "watch",

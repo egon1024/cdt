@@ -477,6 +477,7 @@ fn is_flow_option_token(rest: &str) -> bool {
         "tcp" => matches!(value, Some("off" | "simple" | "full")),
         "pairing" => matches!(value, Some("on" | "off" | "true" | "false" | "0" | "1")),
         "pair-timeout" | "pair-max" => value.is_some(),
+        "qr" => value.is_some_and(|v| parse_qr(v).is_ok()),
         _ => false,
     }
 }
@@ -675,6 +676,19 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(o.filter_files, vec!["/tmp/flux-g2/leaks.yaml".to_string()]);
+        assert!(o.filter_tokens.is_empty());
+    }
+
+    #[test]
+    fn qr_selection_not_treated_as_filter_token() {
+        use crate::filter::QrSelection;
+        let o = FluxOptions::parse(&[
+            "+tcp=full".into(),
+            "+qr=both".into(),
+            "+views=transport".into(),
+        ])
+        .unwrap();
+        assert_eq!(o.qr, Some(QrSelection::Both));
         assert!(o.filter_tokens.is_empty());
     }
 }

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use hickory_proto::op::Message;
+
 use super::config::TcpMode;
 use super::counters::FlowCounters;
 use super::keys::FlowKey;
@@ -93,7 +95,7 @@ impl TcpState {
         let mut rest = segment;
         while rest.len() >= 2 {
             let len = u16::from_be_bytes([rest[0], rest[1]]) as usize;
-            if len == 0 || len > 65535 {
+            if len == 0 || len > 65535 || !dns_length_sane(len) {
                 counters.tcp_resync_failed += 1;
                 break;
             }
@@ -101,8 +103,13 @@ impl TcpState {
                 counters.tcp_unparsed += 1;
                 break;
             }
+            let payload = &rest[2..2 + len];
+            if Message::from_vec(payload).is_err() {
+                counters.tcp_unparsed += 1;
+                break;
+            }
             out.push(TcpDnsMessage {
-                payload: rest[2..2 + len].to_vec(),
+                payload: payload.to_vec(),
                 segment_count: 1,
             });
             rest = &rest[2 + len..];
