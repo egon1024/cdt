@@ -25,11 +25,9 @@ pub fn replay_file(path: &str, options: &FluxOptions) -> Result<String, Pipeline
     let (buckets, _) = options.effective_flow_buckets();
     let _fb = FlowBuckets::new(buckets);
     let seed: u64 = 0;
-    let mut packets = 0u64;
 
     for pkt in iter_packets(&mut source, "replay") {
         let pkt = pkt?;
-        packets += 1;
         ingest_packet(&mut agg, &mut worker, &pkt, options, buckets, seed);
     }
 
@@ -48,7 +46,7 @@ pub fn replay_file(path: &str, options: &FluxOptions) -> Result<String, Pipeline
         &snap.counts,
         &options.batch_views,
         options.batch_limit,
-        snap.total_messages.max(packets),
+        snap.total_messages,
         options.key_cap,
         options.ede_show_no_ede,
     );

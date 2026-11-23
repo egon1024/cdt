@@ -69,7 +69,8 @@ pub fn run_live(cap: LiveCapture, options: FluxOptions) -> Result<(), TuiError> 
         agg.tick(now);
 
         let snap = agg.snapshot();
-        let total = snap.total_messages.max(agg.counters.packets);
+        // Header and row shares use windowed, filter-matched totals — not lifetime packet count.
+        let total = snap.total_messages;
         term.draw(|f| {
             let title = if drained > 0 {
                 format!("flux watch {iface} (+{drained} pkts)")
