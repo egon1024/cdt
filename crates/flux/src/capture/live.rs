@@ -28,7 +28,7 @@ impl LiveCapture {
         let fd = unsafe { libc::socket(libc::AF_PACKET, libc::SOCK_RAW, libc::ETH_P_ALL.to_be()) };
         if fd < 0 {
             let err = io::Error::last_os_error();
-            if err.raw_os_error() == Some(libc::EPERM) {
+            if is_privilege_os_error(err.raw_os_error()) {
                 return Err(LiveCaptureError::Privilege);
             }
             return Err(LiveCaptureError::Io(err));
@@ -48,7 +48,7 @@ impl LiveCapture {
         if ret != 0 {
             let err = io::Error::last_os_error();
             unsafe { libc::close(fd) };
-            if err.raw_os_error() == Some(libc::EPERM) {
+            if is_privilege_os_error(err.raw_os_error()) {
                 return Err(LiveCaptureError::Privilege);
             }
             return Err(LiveCaptureError::Io(err));
@@ -82,6 +82,10 @@ impl LiveCapture {
 
 pub fn open_live(iface: &str) -> Result<LiveCapture, LiveCaptureError> {
     LiveCapture::open(iface)
+}
+
+fn is_privilege_os_error(code: Option<i32>) -> bool {
+    matches!(code, Some(libc::EPERM) | Some(libc::EACCES))
 }
 
 fn iface_ifindex(iface: &str) -> Result<i32, LiveCaptureError> {
