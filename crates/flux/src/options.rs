@@ -2,6 +2,11 @@ use std::time::Duration;
 
 use thiserror::Error;
 
+use crate::filter::QrSelection;
+
+#[path = "options_filter.rs"]
+mod options_filter;
+
 #[derive(Debug, Clone)]
 pub struct FluxOptions {
     pub family: AddressFamily,
@@ -14,6 +19,21 @@ pub struct FluxOptions {
     pub batch_views: Vec<ViewId>,
     pub batch_limit: usize,
     pub events: EventsMode,
+    pub filter_tokens: Vec<String>,
+    pub preset: Option<String>,
+    pub saved_filter: Option<String>,
+    pub filter_files: Vec<String>,
+    pub qr: Option<QrSelection>,
+    pub initiator: Vec<String>,
+    pub responder: Vec<String>,
+    pub src: Vec<String>,
+    pub dst: Vec<String>,
+    pub start_bound: Option<f64>,
+    pub end_bound: Option<f64>,
+    pub key_cap: usize,
+    pub tld_list_path: Option<String>,
+    pub ede_show_no_ede: bool,
+    pub ede_split_extra: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +65,10 @@ pub enum ViewId {
     Opcode,
     QnameLevel(u8),
     SrcXQname(u8),
+    Ede,
+    SrcXEde,
+    Interface,
+    Transport,
 }
 
 #[derive(Debug, Clone)]
@@ -79,6 +103,21 @@ impl Default for FluxOptions {
             batch_views: vec![ViewId::Sources, ViewId::Qtype, ViewId::QnameLevel(2)],
             batch_limit: 50,
             events: EventsMode::Off,
+            filter_tokens: Vec::new(),
+            preset: None,
+            saved_filter: None,
+            filter_files: Vec::new(),
+            qr: None,
+            initiator: Vec::new(),
+            responder: Vec::new(),
+            src: Vec::new(),
+            dst: Vec::new(),
+            start_bound: None,
+            end_bound: None,
+            key_cap: 50,
+            tld_list_path: None,
+            ede_show_no_ede: false,
+            ede_split_extra: false,
         }
     }
 }
@@ -87,6 +126,7 @@ impl FluxOptions {
     pub fn parse(tokens: &[String]) -> Result<Self, OptionsError> {
         let mut opts = Self::default();
         let mut from_file = false;
+        let mut passthrough_filters: Vec<String> = Vec::new();
         for tok in tokens {
             if tok == "-4" {
                 opts.family = AddressFamily::V4;
@@ -97,6 +137,9 @@ impl FluxOptions {
                 continue;
             }
             if let Some(rest) = tok.strip_prefix('+') {
+                if is_filter_token(rest) {
+                    passthrough_filters.push(tok.clone());
+                }
                 parse_plus_option(rest, &mut opts, &mut from_file)?;
             } else if !tok.is_empty() {
                 return Err(OptionsError::Unknown(tok.clone()));
@@ -105,7 +148,22 @@ impl FluxOptions {
         if from_file {
             opts.window = WindowMode::All;
         }
+        opts.filter_tokens = passthrough_filters;
         Ok(opts)
+    }
+
+    pub fn within_time_bounds(&self, ts_secs: f64) -> bool {
+        if let Some(start) = self.start_bound {
+            if ts_secs < start {
+                return false;
+            }
+        }
+        if let Some(end) = self.end_bound {
+            if ts_secs > end {
+                return false;
+            }
+        }
+        true
     }
 
     pub fn events_to_stdout(&self) -> bool {
@@ -245,6 +303,54 @@ fn parse_plus_option(
             Some("") | Some("-") => opts.events = EventsMode::Stdout,
             Some(path) => opts.events = EventsMode::File(path.to_string()),
         },
+        "preset" => {
+            let v = require_value(key, value)?;
+            opts.preset = Some(v.into());
+        }
+        "filter" => {
+            let v = require_value(key, value)?;
+            opts.saved_filter = Some(v.into());
+        }
+        "filter-file" => {
+            let v = require_value(key, value)?;
+            opts.filter_files.push(v.into());
+        }
+        "qr" => {
+            let v = require_value(key, value)?;
+            opts.qr = Some(parse_qr(v)?);
+        }
+        "initiator" | "responder" | "src" | "dst" => {
+            let v = require_value(key, value)?;
+            let target = match key {
+                "initiator" => &mut opts.initiator,
+                "responder" => &mut opts.responder,
+                "src" => &mut opts.src,
+                "dst" => &mut opts.dst,
+                _ => unreachable!(),
+            };
+            target.extend(split_csv(v));
+        }
+        "start" | "end" => {
+            let v = require_value(key, value)?;
+            let ts = parse_time_bound(v)?;
+            if key == "start" {
+                opts.start_bound = Some(ts);
+            } else {
+                opts.end_bound = Some(ts);
+            }
+        }
+        "key-cap" => {
+            let v = require_value(key, value)?;
+            opts.key_cap = v.parse().map_err(|_| OptionsError::InvalidValue {
+                name: key.into(),
+                detail: v.into(),
+            })?;
+        }
+        "tld-list" => {
+            let v = require_value(key, value)?;
+            opts.tld_list_path = Some(v.into());
+        }
+        _ if filter_field_key(key) || key.starts_with("no") => {}
         _ if key.is_empty() && matches!(value, None | Some("") | Some("-")) => {
             opts.events = EventsMode::Stdout;
         }
@@ -254,6 +360,70 @@ fn parse_plus_option(
         let _ = from_file;
     }
     Ok(())
+}
+
+fn is_filter_token(rest: &str) -> bool {
+    let (key, _) = split_key_value(rest);
+    filter_field_key(key) || key.starts_with("no")
+}
+
+fn filter_field_key(key: &str) -> bool {
+    matches!(
+        key,
+        "qname"
+            | "qtype"
+            | "rcode"
+            | "opcode"
+            | "qr"
+            | "aa"
+            | "tc"
+            | "rd"
+            | "ra"
+            | "ad"
+            | "cd"
+            | "malformed"
+            | "edns"
+            | "edns-version"
+            | "do"
+            | "opt"
+            | "edns-opt"
+            | "ede"
+            | "size"
+            | "wire-len"
+            | "latency"
+            | "family"
+            | "transport"
+            | "udp"
+            | "tcp"
+            | "iface"
+            | "vlan"
+    )
+}
+
+fn parse_qr(s: &str) -> Result<QrSelection, OptionsError> {
+    match s.to_ascii_lowercase().as_str() {
+        "query" | "q" => Ok(QrSelection::Query),
+        "response" | "r" => Ok(QrSelection::Response),
+        "both" => Ok(QrSelection::Both),
+        _ => Err(OptionsError::InvalidValue {
+            name: "+qr".into(),
+            detail: s.into(),
+        }),
+    }
+}
+
+fn split_csv(s: &str) -> Vec<String> {
+    s.split(',')
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect()
+}
+
+fn parse_time_bound(s: &str) -> Result<f64, OptionsError> {
+    s.parse::<f64>().map_err(|_| OptionsError::InvalidValue {
+        name: "+start/+end".into(),
+        detail: s.into(),
+    })
 }
 
 fn parse_view_list(s: &str) -> Result<Vec<ViewId>, OptionsError> {
@@ -269,6 +439,10 @@ fn parse_view_list(s: &str) -> Result<Vec<ViewId>, OptionsError> {
             "qtype" => ViewId::Qtype,
             "rcode" => ViewId::Rcode,
             "opcode" => ViewId::Opcode,
+            "ede" => ViewId::Ede,
+            "src-x-ede" | "src×ede" => ViewId::SrcXEde,
+            "iface" | "interface" => ViewId::Interface,
+            "transport" => ViewId::Transport,
             _ if part.chars().all(|c| c.is_ascii_digit()) => {
                 let level: u8 = part.parse().map_err(|_| OptionsError::InvalidValue {
                     name: "views".into(),

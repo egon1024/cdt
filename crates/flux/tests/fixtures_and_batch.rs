@@ -23,9 +23,11 @@ fn fixtures_are_byte_identical_across_runs() {
     let d2 = tempdir().unwrap();
     regenerate_fixtures(d1.path());
     regenerate_fixtures(d2.path());
-    let a = std::fs::read(d1.path().join("udp-basic.pcap")).unwrap();
-    let b = std::fs::read(d2.path().join("udp-basic.pcap")).unwrap();
-    assert_eq!(a, b);
+    for name in ["udp-basic.pcap", "edns-ede.pcap", "large.pcap"] {
+        let a = std::fs::read(d1.path().join(name)).unwrap();
+        let b = std::fs::read(d2.path().join(name)).unwrap();
+        assert_eq!(a, b, "{name}");
+    }
 }
 
 #[test]

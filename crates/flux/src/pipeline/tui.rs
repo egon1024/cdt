@@ -13,6 +13,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use thiserror::Error;
 
 use crate::capture::LiveCapture;
+use crate::filter::NoopResolver;
 use crate::options::{FluxOptions, ViewId};
 use crate::parse::ParseWorker;
 use crate::view::format_batch_tables;
@@ -28,6 +29,9 @@ pub enum TuiError {
 
     #[error(transparent)]
     Live(#[from] crate::capture::LiveCaptureError),
+
+    #[error(transparent)]
+    Options(#[from] crate::options::OptionsError),
 }
 
 pub fn run_live(cap: LiveCapture, options: FluxOptions) -> Result<(), TuiError> {
@@ -36,10 +40,14 @@ pub fn run_live(cap: LiveCapture, options: FluxOptions) -> Result<(), TuiError> 
     let (buckets, _) = options.effective_flow_buckets();
     let seed: u64 = 0;
 
+    let filter = options.compile_filter(&NoopResolver)?;
+    let eval_ctx = options.build_eval_context(&NoopResolver);
     let mut agg = Aggregator::new(
         options.window.clone(),
         options.late_grace,
         options.late_policy,
+        filter,
+        eval_ctx,
     );
     let mut worker = ParseWorker::default();
 
@@ -69,7 +77,14 @@ pub fn run_live(cap: LiveCapture, options: FluxOptions) -> Result<(), TuiError> 
                 format!("flux watch {iface}")
             };
             let block = Block::default().title(title).borders(Borders::ALL);
-            let mut text = format_batch_tables(&snap.counts, &[view], options.batch_limit, total);
+            let mut text = format_batch_tables(
+                &snap.counts,
+                &[view],
+                options.batch_limit,
+                total,
+                options.key_cap,
+                options.ede_show_no_ede,
+            );
             let status = StatusLine {
                 packets: agg.counters.packets,
                 drops: agg.counters.capture_drops,
@@ -109,6 +124,10 @@ pub fn run_live(cap: LiveCapture, options: FluxOptions) -> Result<(), TuiError> 
                     KeyCode::Char('2') => view = ViewId::QnameLevel(2),
                     KeyCode::Char('3') => view = ViewId::QnameLevel(3),
                     KeyCode::Char('?') => show_help = !show_help,
+                    KeyCode::Char('f') => {
+                        let mut picker = crate::filter::PickerState::Closed;
+                        let _ = crate::filter::picker_key(&mut picker, 'f');
+                    }
                     _ => {}
                 }
             }

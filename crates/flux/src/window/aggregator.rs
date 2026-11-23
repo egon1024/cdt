@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use crate::filter::{CompiledFilter, EvalContext, MatchStats};
 use crate::options::{LatePolicy, WindowMode};
-use crate::parse::ObservationRecord;
-use crate::view::{ViewCounts, build_counts};
+use crate::parse::{ObservationRecord, ParsedObservation};
+use crate::view::{ViewCounts, build_counts_from_slices};
 
 use super::slice::{SliceId, TimeSlice};
 
@@ -19,6 +20,7 @@ pub struct PipelineCounters {
 pub struct WindowTotals {
     pub counts: ViewCounts,
     pub total_messages: u64,
+    pub match_stats: MatchStats,
     pub effective_window_secs: Option<u64>,
 }
 
@@ -30,12 +32,22 @@ pub struct Aggregator {
     pub now_sec: u64,
     pub window_totals: ViewCounts,
     pub total_in_window: u64,
+    pub match_stats: MatchStats,
     pub counters: PipelineCounters,
     pub last_pass: Instant,
+    pub filter: CompiledFilter,
+    pub eval_ctx: EvalContext,
+    pub filter_generation: u64,
 }
 
 impl Aggregator {
-    pub fn new(window: WindowMode, late_grace: Duration, late_policy: LatePolicy) -> Self {
+    pub fn new(
+        window: WindowMode,
+        late_grace: Duration,
+        late_policy: LatePolicy,
+        filter: CompiledFilter,
+        eval_ctx: EvalContext,
+    ) -> Self {
         Self {
             slices: HashMap::new(),
             window,
@@ -44,13 +56,33 @@ impl Aggregator {
             now_sec: 0,
             window_totals: ViewCounts::default(),
             total_in_window: 0,
+            match_stats: MatchStats::default(),
             counters: PipelineCounters::default(),
             last_pass: Instant::now(),
+            filter,
+            eval_ctx,
+            filter_generation: 1,
         }
     }
 
-    pub fn ingest(&mut self, rec: ObservationRecord) {
+    pub fn set_filter(&mut self, filter: CompiledFilter, eval_ctx: EvalContext) {
+        self.filter = filter;
+        self.eval_ctx = eval_ctx;
+        self.filter_generation += 1;
+        self.recompute_window();
+    }
+
+    pub fn recompute_window(&mut self) {
+        let (counts, stats) =
+            build_counts_from_slices(self.slices.values(), &self.filter, &self.eval_ctx);
+        self.window_totals = counts;
+        self.match_stats = stats;
+        self.total_in_window = stats.matched;
+    }
+
+    pub fn ingest(&mut self, parsed: ParsedObservation) {
         self.counters.packets += 1;
+        let mut rec = parsed.record;
         let sec = rec.slice_sec;
         self.now_sec = self.now_sec.max(sec);
         let id = SliceId(sec);
@@ -58,6 +90,11 @@ impl Aggregator {
             .slices
             .entry(id)
             .or_insert_with(|| TimeSlice::open(sec));
+        if !parsed.ede_blob.is_empty() {
+            let (off, len) = slice.append_ede_blob(&parsed.ede_blob);
+            rec.ede_off = off;
+            rec.ede_len = len;
+        }
         if slice.sealed {
             self.counters.late_records += 1;
             match self.late_policy {
@@ -84,9 +121,11 @@ impl Aggregator {
             if !slice.sealed && slice.second < now {
                 slice.sealed = true;
                 slice.grace_until = Some(Instant::now() + grace);
-                let partial = build_counts(&slice.records);
-                self.window_totals.merge_add(&partial);
-                self.total_in_window += slice.records.len() as u64;
+                let partial = build_counts_from_slice_filtered(slice, &self.filter, &self.eval_ctx);
+                self.window_totals.merge_add(&partial.0);
+                self.match_stats.matched += partial.1.matched;
+                self.match_stats.total_observed += partial.1.total_observed;
+                self.total_in_window += partial.1.matched;
             }
         }
     }
@@ -105,11 +144,16 @@ impl Aggregator {
             .collect();
         for id in expired {
             if let Some(slice) = self.slices.remove(&id) {
-                let partial = build_counts(&slice.records);
-                self.window_totals.merge_sub(&partial);
-                self.total_in_window = self
-                    .total_in_window
-                    .saturating_sub(slice.records.len() as u64);
+                let partial =
+                    build_counts_from_slice_filtered(&slice, &self.filter, &self.eval_ctx);
+                self.window_totals.merge_sub(&partial.0);
+                self.match_stats.matched =
+                    self.match_stats.matched.saturating_sub(partial.1.matched);
+                self.match_stats.total_observed = self
+                    .match_stats
+                    .total_observed
+                    .saturating_sub(partial.1.total_observed);
+                self.total_in_window = self.total_in_window.saturating_sub(partial.1.matched);
             }
         }
     }
@@ -124,6 +168,7 @@ impl Aggregator {
         WindowTotals {
             counts: self.window_totals.clone(),
             total_messages: self.total_in_window,
+            match_stats: self.match_stats,
             effective_window_secs: match self.window {
                 WindowMode::All => None,
                 WindowMode::Seconds(s) => Some(s),
@@ -145,56 +190,105 @@ impl Aggregator {
     }
 }
 
+fn build_counts_from_slice_filtered(
+    slice: &TimeSlice,
+    filter: &CompiledFilter,
+    ctx: &EvalContext,
+) -> (ViewCounts, MatchStats) {
+    crate::view::build_counts_filtered(&slice.records, &slice.arena, filter, ctx)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse::ObservationRecord;
+    use crate::filter::QrSelection;
+    use crate::filter::{Predicate, build_compiled};
+    use crate::options::AddressFamily;
+    use crate::parse::{DnsFlags, EdnsSummary, QnameHash, TransportProto};
 
-    fn sample_rec(sec: u64) -> ObservationRecord {
-        ObservationRecord {
-            slice_sec: sec,
-            iface: "t".into(),
-            src_ip: [10, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            src_len: 4,
-            dst_ip: [10, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            dst_len: 4,
-            src_port: 1000,
-            dst_port: 53,
-            wire_len: 40,
-            malformed: false,
-            id: 1,
-            qr: false,
-            opcode: 0,
-            rcode: 0,
-            qname: "a.example.com.".into(),
-            qname_hash: crate::parse::QnameHash(1),
-            qtype: 1,
-            qclass: 1,
+    fn sample_rec(sec: u64) -> ParsedObservation {
+        ParsedObservation {
+            record: ObservationRecord {
+                slice_sec: sec,
+                iface: "eth0".into(),
+                vlan: None,
+                family: AddressFamily::V4,
+                transport: TransportProto::Udp,
+                src_ip: [1, 2, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                src_len: 4,
+                dst_ip: [5, 6, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                dst_len: 4,
+                src_port: 1234,
+                dst_port: 53,
+                wire_len: 64,
+                malformed: false,
+                id: 1,
+                qr: false,
+                opcode: 0,
+                rcode: 0,
+                flags: DnsFlags::default(),
+                qdcount: 1,
+                ancount: 0,
+                nscount: 0,
+                arcount: 0,
+                qname: "example.com.".into(),
+                qname_hash: QnameHash(9),
+                qtype: 1,
+                qclass: 1,
+                edns: EdnsSummary::default(),
+                ede_off: 0,
+                ede_len: 0,
+                latency_ms: 0,
+            },
+            ede_blob: Vec::new(),
         }
     }
 
     #[test]
-    fn expiry_subtracts_window_totals() {
+    fn window_expiry_subtracts() {
+        let filter = build_compiled(Predicate::True, "", QrSelection::Both);
         let mut agg = Aggregator::new(
-            WindowMode::Seconds(5),
-            Duration::from_millis(0),
+            WindowMode::Seconds(1),
+            Duration::from_millis(1),
             LatePolicy::Correct,
+            filter,
+            EvalContext::default(),
         );
-        for sec in 0..10 {
-            agg.ingest(sample_rec(sec));
-        }
-        agg.tick(10);
-        assert!(agg.total_in_window <= 5);
+        agg.ingest(sample_rec(10));
+        agg.tick(11);
+        assert_eq!(agg.total_in_window, 1);
+        agg.catch_up_stall(20);
+        assert_eq!(agg.total_in_window, 0);
     }
 
     #[test]
-    fn late_drop_ignored() {
-        let mut agg = Aggregator::new(WindowMode::All, Duration::from_millis(0), LatePolicy::Drop);
+    fn filter_swap_recomputes() {
+        let filter = build_compiled(Predicate::True, "", QrSelection::Both);
+        let mut agg = Aggregator::new(
+            WindowMode::All,
+            Duration::from_millis(1),
+            LatePolicy::Correct,
+            filter,
+            EvalContext::default(),
+        );
+        let mut bad = sample_rec(1);
+        bad.record.malformed = true;
         agg.ingest(sample_rec(1));
-        agg.tick(3);
-        let mut late = sample_rec(1);
-        late.id = 2;
-        agg.ingest(late);
-        assert_eq!(agg.counters.late_records, 1);
+        agg.ingest(bad);
+        agg.tick(2);
+        assert_eq!(agg.total_in_window, 2);
+        let only_ok = build_compiled(
+            Predicate::Field(crate::filter::FieldCond {
+                field: crate::filter::FieldId::Malformed,
+                negate: true,
+                op: crate::filter::CompareOp::Eq,
+                values: Vec::new(),
+                regex: None,
+            }),
+            "no-malformed",
+            QrSelection::Both,
+        );
+        agg.set_filter(only_ok, EvalContext::default());
+        assert_eq!(agg.total_in_window, 1);
     }
 }

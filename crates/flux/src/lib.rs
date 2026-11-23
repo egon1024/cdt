@@ -3,6 +3,7 @@
 pub mod args;
 pub mod capture;
 pub mod cli;
+pub mod filter;
 pub mod flow;
 pub mod options;
 pub mod parse;

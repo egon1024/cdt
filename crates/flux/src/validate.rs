@@ -2,6 +2,8 @@ use std::path::Path;
 
 use thiserror::Error;
 
+use crate::filter::{SavedFilterError, validate_filter_yaml};
+
 #[derive(Debug, Error)]
 pub enum ValidateError {
     #[error("{file}:{line}: {message}")]
@@ -15,7 +17,6 @@ pub enum ValidateError {
     Io(String, #[source] std::io::Error),
 }
 
-/// Phase 1 stub: no saved-filter compiler yet; reject obviously invalid YAML roots.
 pub fn validate_files(paths: &[String]) -> Result<(), ValidateError> {
     for path in paths {
         validate_one(path)?;
@@ -33,7 +34,54 @@ fn validate_one(path: &str) -> Result<(), ValidateError> {
             message: "empty file".into(),
         });
     }
-    // Accept any non-empty file in phase 1; full compiler arrives in phase 2.
+    validate_filter_yaml(&content, path).map_err(map_saved_err)?;
     let _ = Path::new(path);
     Ok(())
+}
+
+fn map_saved_err(err: SavedFilterError) -> ValidateError {
+    match err {
+        SavedFilterError::FileLine {
+            file,
+            line,
+            message,
+        } => ValidateError::FileLine {
+            file,
+            line,
+            message,
+        },
+        SavedFilterError::UnknownField(f) => ValidateError::FileLine {
+            file: "filter".into(),
+            line: 1,
+            message: format!("unknown field {f}"),
+        },
+        SavedFilterError::Io(e) => ValidateError::Io("filter".into(), e),
+        SavedFilterError::Yaml(e) => ValidateError::FileLine {
+            file: "filter".into(),
+            line: e.location().map(|l| l.line() as u32).unwrap_or(1),
+            message: e.to_string(),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn valid_yaml_accepted() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "qtype: A").unwrap();
+        validate_files(&[f.path().to_string_lossy().into()]).unwrap();
+    }
+
+    #[test]
+    fn unknown_field_rejects() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "answer: foo").unwrap();
+        let err = validate_files(&[f.path().to_string_lossy().into()]).unwrap_err();
+        assert!(err.to_string().contains("unknown field"));
+    }
 }

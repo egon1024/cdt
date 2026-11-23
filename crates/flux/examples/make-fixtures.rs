@@ -8,6 +8,7 @@ use etherparse::PacketBuilder;
 use flux::capture::write_pcap_file;
 use hickory_proto::op::{Message, MessageType, ResponseCode};
 use hickory_proto::rr::RecordType;
+use hickory_proto::rr::rdata::opt::EdnsOption;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dir: PathBuf = env::args()
@@ -61,7 +62,61 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     frames.push(ether_udp_dns_v6_frame(&v6_client, &v6_server, 42_000, wire));
 
     write_pcap_file(&dir.join("udp-basic.pcap"), &frames)?;
+
+    let mut ede_frames = Vec::new();
+    let opts = QueryOptions::new(DomainName::parse("ede.test.")?, RecordType::A);
+    let qwire = fix_query_id(build_query(&opts)?, 0x3000);
+    ede_frames.push(ether_udp_dns_frame(
+        &clients[0],
+        &server,
+        43_000,
+        qwire.clone(),
+    ));
+    let mut resp = Message::from_vec(&qwire)?;
+    resp.metadata.message_type = MessageType::Response;
+    resp.metadata.response_code = ResponseCode::NoError;
+    attach_edes(
+        &mut resp,
+        &[
+            (22, "No Reachable Authority"),
+            (23, "Network Error"),
+            (22, "duplicate ignored"),
+        ],
+    );
+    ede_frames.push(ether_udp_dns_frame(
+        &server,
+        &clients[0],
+        53,
+        resp.to_vec()?,
+    ));
+
+    write_pcap_file(&dir.join("edns-ede.pcap"), &ede_frames)?;
+
+    let mut large_frames = Vec::new();
+    for i in 0..12_000 {
+        let qname = format!("host{i}.bulk.example.");
+        let opts = QueryOptions::new(DomainName::parse(&qname)?, RecordType::A);
+        let wire = fix_query_id(build_query(&opts)?, 0x4000 + (i % 60000) as u16);
+        large_frames.push(ether_udp_dns_frame(
+            &clients[i % clients.len()],
+            &server,
+            50_000 + (i % 1000) as u16,
+            wire,
+        ));
+    }
+    write_pcap_file(&dir.join("large.pcap"), &large_frames)?;
     Ok(())
+}
+
+fn attach_edes(resp: &mut Message, pairs: &[(u16, &str)]) {
+    let mut edns = resp.edns.take().unwrap_or_default();
+    edns.set_max_payload(1232);
+    for (code, text) in pairs {
+        let mut raw = vec![(code >> 8) as u8, (code & 0xff) as u8];
+        raw.extend_from_slice(text.as_bytes());
+        edns.options_mut().insert(EdnsOption::Unknown(17, raw));
+    }
+    resp.set_edns(edns);
 }
 
 fn fix_query_id(wire: Vec<u8>, id: u16) -> Vec<u8> {

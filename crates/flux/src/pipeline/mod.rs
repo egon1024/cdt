@@ -21,6 +21,9 @@ pub enum PipelineError {
 
     #[error("{0}")]
     Config(String),
+
+    #[error(transparent)]
+    Options(#[from] crate::options::OptionsError),
 }
 
 pub fn run_watch(
@@ -84,6 +87,7 @@ fn run_live_tui(
         tui::run_live(cap, options).map_err(|e| match e {
             tui::TuiError::Live(l) => PipelineError::Live(l),
             tui::TuiError::Io(io) => PipelineError::Config(io.to_string()),
+            tui::TuiError::Options(o) => PipelineError::Options(o),
         })
     }
     #[cfg(not(feature = "tui"))]

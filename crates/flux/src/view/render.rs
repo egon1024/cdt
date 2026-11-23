@@ -10,12 +10,14 @@ pub fn format_batch_tables(
     views: &[ViewId],
     limit: usize,
     total: u64,
+    key_cap: usize,
+    show_no_ede: bool,
 ) -> String {
     let mut out = String::new();
     for view in views {
         let title = view_title(*view);
         out.push_str(&render_table_header(&title, total));
-        let rows = counts_for_view(counts, *view);
+        let rows = counts_for_view(counts, *view, key_cap, show_no_ede);
         let denom = total.max(1);
         for (key, count) in rows.iter().take(limit) {
             let pct = (count.saturating_mul(10000) / denom) as f64 / 100.0;
@@ -35,6 +37,10 @@ fn view_title(view: ViewId) -> String {
         ViewId::Opcode => "Opcode".into(),
         ViewId::QnameLevel(n) => format!("QName level {n}"),
         ViewId::SrcXQname(n) => format!("Source × qname level {n}"),
+        ViewId::Ede => "EDE codes".into(),
+        ViewId::SrcXEde => "Source × EDE".into(),
+        ViewId::Interface => "Interfaces".into(),
+        ViewId::Transport => "Transport".into(),
     }
 }
 
@@ -46,8 +52,8 @@ mod tests {
     #[test]
     fn batch_output_stable() {
         let c = ViewCounts::default();
-        let a = format_batch_tables(&c, &[ViewId::Sources], 10, 0);
-        let b = format_batch_tables(&c, &[ViewId::Sources], 10, 0);
+        let a = format_batch_tables(&c, &[ViewId::Sources], 10, 0, 50, false);
+        let b = format_batch_tables(&c, &[ViewId::Sources], 10, 0, 50, false);
         assert_eq!(a, b);
     }
 }

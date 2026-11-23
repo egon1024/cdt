@@ -32,6 +32,10 @@ rand = { workspace = true }
 ratatui = "0.29"
 thiserror.workspace = true
 time.workspace = true
+regex = "1.11"
+serde.workspace = true
+serde_yaml = { workspace = true }
+ipnet = "2.10"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
