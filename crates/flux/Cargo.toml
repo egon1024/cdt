@@ -1,0 +1,44 @@
+[package]
+name = "flux"
+description = "Live DNS traffic observer"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "flux"
+path = "src/lib.rs"
+
+[[bin]]
+name = "flux"
+path = "src/main.rs"
+
+[[example]]
+name = "make-fixtures"
+path = "examples/make-fixtures.rs"
+
+[dependencies]
+clap.workspace = true
+crossterm = "0.28"
+crossbeam-channel.workspace = true
+dns-core = { path = "../dns-core" }
+hickory-proto.workspace = true
+mimalloc.workspace = true
+pcap-file.workspace = true
+etherparse.workspace = true
+ahash.workspace = true
+rand = { workspace = true }
+ratatui = "0.29"
+thiserror.workspace = true
+time.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[features]
+default = ["tui"]
+tui = []
+
+[dev-dependencies]
+tempfile = "3.14"
