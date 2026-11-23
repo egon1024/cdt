@@ -47,11 +47,28 @@ pub fn validate_filter_yaml(content: &str, file: &str) -> Result<Predicate, Save
     parse_yaml_filter(content).map_err(|e| match e {
         SavedFilterError::UnknownField(f) => SavedFilterError::FileLine {
             file: file.into(),
-            line: 1,
+            line: line_for_yaml_field_key(content, &f),
             message: format!("unknown field {f}"),
         },
         other => other,
     })
+}
+
+/// Best-effort source line for a YAML filter field key (1-based).
+fn line_for_yaml_field_key(content: &str, key: &str) -> u32 {
+    let marker = format!("{key}:");
+    for (i, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with(&marker) {
+            return (i + 1) as u32;
+        }
+        if let Some(rest) = trimmed.strip_prefix("- ") {
+            if rest.starts_with(&marker) {
+                return (i + 1) as u32;
+            }
+        }
+    }
+    1
 }
 
 pub fn compile_saved_filter(content: &str) -> Result<Predicate, SavedFilterError> {
@@ -218,5 +235,18 @@ all:
     fn unknown_field_errors() {
         let err = compile_saved_filter("answer: foo").unwrap_err();
         assert!(matches!(err, SavedFilterError::UnknownField(_)));
+    }
+
+    #[test]
+    fn validate_unknown_field_line_in_group() {
+        let yaml = "all:\n  - qtype: A\n  - answer_rdata: 192.0.2.1\n";
+        let err = validate_filter_yaml(yaml, "bad.yaml").unwrap_err();
+        match err {
+            SavedFilterError::FileLine { line, message, .. } => {
+                assert_eq!(line, 3);
+                assert!(message.contains("answer_rdata"));
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }

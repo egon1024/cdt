@@ -84,4 +84,17 @@ mod tests {
         let err = validate_files(&[f.path().to_string_lossy().into()]).unwrap_err();
         assert!(err.to_string().contains("unknown field"));
     }
+
+    #[test]
+    fn unknown_field_reports_yaml_line() {
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, "all:\n  - qtype: A\n  - answer_rdata: 192.0.2.1\n").unwrap();
+        let err = validate_files(&[f.path().to_string_lossy().into()]).unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("answer_rdata"), "{text}");
+        assert!(
+            text.contains(":3:"),
+            "expected line 3 in diagnostic, got {text}"
+        );
+    }
 }
