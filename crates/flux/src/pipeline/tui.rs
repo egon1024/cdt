@@ -8,8 +8,9 @@ use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use thiserror::Error;
 
 use crate::capture::LiveCapture;
@@ -77,15 +78,6 @@ pub fn run_live(cap: LiveCapture, options: FluxOptions) -> Result<(), TuiError> 
             } else {
                 format!("flux watch {iface}")
             };
-            let block = Block::default().title(title).borders(Borders::ALL);
-            let mut text = format_batch_tables(
-                &snap.counts,
-                &[view],
-                options.batch_limit,
-                total,
-                options.key_cap,
-                options.ede_show_no_ede,
-            );
             let status = StatusBar {
                 input: WatchInput::Live {
                     interfaces: vec![iface.clone()],
@@ -103,16 +95,39 @@ pub fn run_live(cap: LiveCapture, options: FluxOptions) -> Result<(), TuiError> 
                 },
                 elapsed_secs: Some(start.elapsed().as_secs_f32()),
             };
-            text.push_str(&status.format());
+
+            let footer_text = status.format().trim_end().to_string();
+            // Pin status to the last rows; tables + hints stay in the main pane.
+            let footer_lines: u16 = if footer_text.len() > 100 { 3 } else { 2 };
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(4), Constraint::Length(footer_lines)])
+                .split(f.area());
+
+            let main_block = Block::default().title(title).borders(Borders::ALL);
+            let mut main_text = format_batch_tables(
+                &snap.counts,
+                &[view],
+                options.batch_limit,
+                total,
+                options.key_cap,
+                options.ede_show_no_ede,
+            );
             if show_help {
-                text.push_str(
+                main_text.push_str(
                     "\nkeys: s src d dst t qtype r rcode o opcode 1-3 qname ? help q quit\n",
                 );
             } else {
-                text.push_str("\n? for help, q to quit\n");
+                main_text.push_str("\n? for help, q to quit\n");
             }
-            let para = Paragraph::new(text).block(block);
-            f.render_widget(para, f.area());
+            f.render_widget(Paragraph::new(main_text).block(main_block), chunks[0]);
+
+            f.render_widget(
+                Paragraph::new(footer_text)
+                    .block(Block::default().borders(Borders::TOP))
+                    .wrap(Wrap { trim: true }),
+                chunks[1],
+            );
         })?;
 
         if event::poll(Duration::from_millis(80))? {
