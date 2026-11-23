@@ -16,6 +16,6 @@ pub use name::DomainName;
 pub use query::{
     QueryOptions, SUPPORTED_RECORD_TYPE_NAMES, build_query, parse_record_type, record_type_name,
 };
-pub use response::{DnsRecord, DnsResponse, QueryResult, Transport};
+pub use response::{DnsRecord, DnsResponse, QueryResult, Transport, parse_rcode, rcode_name};
 pub use reverse::{ip_to_ptr_name, parse_reverse_target};
 pub use transport::exchange;

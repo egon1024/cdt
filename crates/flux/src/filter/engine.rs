@@ -272,12 +272,10 @@ fn eval_qname(cond: &FieldCond, qname: &str) -> bool {
 }
 
 fn eval_rcode(cond: &FieldCond, code: u8) -> bool {
-    let label = format!("RCODE{code}");
-    let matches = cond.values.iter().any(|v| {
-        v.eq_ignore_ascii_case(&label)
-            || v.parse::<u8>().ok() == Some(code)
-            || v.eq_ignore_ascii_case("NXDOMAIN") && code == 3
-    });
+    let matches = cond
+        .values
+        .iter()
+        .any(|v| crate::rcode::rcode_token_matches(code, v));
     match cond.op {
         CompareOp::Ne => !matches,
         _ => matches,

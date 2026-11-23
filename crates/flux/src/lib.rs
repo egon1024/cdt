@@ -9,6 +9,7 @@ pub mod options;
 pub mod parse;
 pub mod pipeline;
 pub mod qtype;
+pub mod rcode;
 pub mod validate;
 pub mod view;
 pub mod window;

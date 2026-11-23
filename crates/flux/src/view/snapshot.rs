@@ -220,7 +220,7 @@ pub fn counts_for_view(
         ViewId::Rcode => counts
             .rcodes
             .iter()
-            .map(|(k, v)| (format!("RCODE{}", k), *v))
+            .map(|(k, v)| (crate::rcode::rcode_label(*k), *v))
             .collect(),
         ViewId::Opcode => counts
             .opcodes
