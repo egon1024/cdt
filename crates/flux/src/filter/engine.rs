@@ -285,11 +285,10 @@ fn eval_rcode(cond: &FieldCond, code: u8) -> bool {
 }
 
 fn eval_qtype(cond: &FieldCond, code: u16) -> bool {
-    let name = record_type_name(code);
     let matches = cond
         .values
         .iter()
-        .any(|v| v.eq_ignore_ascii_case(&name) || v.parse::<u16>().ok() == Some(code));
+        .any(|v| crate::qtype::qtype_token_matches(code, v));
     match cond.op {
         CompareOp::Ne => !matches,
         _ => matches,
@@ -384,16 +383,6 @@ fn eval_transport(cond: &FieldCond, transport: TransportProto) -> bool {
             "tcp" => transport == TransportProto::Tcp,
             _ => false,
         })
-}
-
-fn record_type_name(code: u16) -> String {
-    match code {
-        1 => "A".into(),
-        28 => "AAAA".into(),
-        255 => "ANY".into(),
-        12 => "PTR".into(),
-        _ => format!("TYPE{code}"),
-    }
 }
 
 pub fn predicate_requires_response(root: &Predicate) -> bool {

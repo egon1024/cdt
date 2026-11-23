@@ -215,7 +215,7 @@ pub fn counts_for_view(
         ViewId::Qtype => counts
             .qtypes
             .iter()
-            .map(|(k, v)| (record_type_name(*k), *v))
+            .map(|(k, v)| (crate::qtype::qtype_label(*k), *v))
             .collect(),
         ViewId::Rcode => counts
             .rcodes
@@ -307,16 +307,5 @@ fn format_ip(ip: &[u8]) -> String {
 mod hex {
     pub fn const_encode(bytes: &[u8]) -> String {
         bytes.iter().map(|b| format!("{b:02x}")).collect()
-    }
-}
-
-fn record_type_name(code: u16) -> String {
-    match code {
-        1 => "A".into(),
-        28 => "AAAA".into(),
-        15 => "MX".into(),
-        16 => "TXT".into(),
-        5 => "CNAME".into(),
-        _ => format!("TYPE{code}"),
     }
 }

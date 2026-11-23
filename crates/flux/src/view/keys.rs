@@ -25,7 +25,7 @@ pub struct QtypeKey;
 
 impl ViewKey for QtypeKey {
     fn key_for(&self, record: &ObservationRecord, _arena: &[u8]) -> Option<String> {
-        Some(record_type_name(record.qtype))
+        Some(crate::qtype::qtype_label(record.qtype))
     }
 }
 
@@ -59,12 +59,4 @@ fn format_ip(ip: &[u8]) -> String {
 
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-fn record_type_name(code: u16) -> String {
-    match code {
-        1 => "A".into(),
-        28 => "AAAA".into(),
-        _ => format!("TYPE{code}"),
-    }
 }

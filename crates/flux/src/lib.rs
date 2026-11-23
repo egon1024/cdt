@@ -8,6 +8,7 @@ pub mod flow;
 pub mod options;
 pub mod parse;
 pub mod pipeline;
+pub mod qtype;
 pub mod validate;
 pub mod view;
 pub mod window;
