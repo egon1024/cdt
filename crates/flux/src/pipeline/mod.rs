@@ -5,7 +5,7 @@ mod stats;
 mod tui;
 
 pub use replay::replay_file;
-pub use stats::StatusLine;
+pub use stats::{StatusBar, StatusLine, WatchInput};
 
 use crate::options::{FluxOptions, WindowMode};
 use thiserror::Error;

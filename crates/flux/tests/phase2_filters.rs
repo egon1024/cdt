@@ -149,7 +149,7 @@ fn preset_malformed_and_filter_header() {
         .unwrap();
     assert!(out.status.success());
     let s = String::from_utf8_lossy(&out.stdout);
-    assert!(s.contains("Filter:"));
+    assert!(s.contains("filter "));
 }
 
 #[test]

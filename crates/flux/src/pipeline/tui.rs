@@ -20,7 +20,7 @@ use crate::view::format_batch_tables;
 use crate::window::Aggregator;
 
 use super::ingest::{ingest_packet, worker_busy_percent};
-use super::stats::StatusLine;
+use super::stats::{StatusBar, StatusLine, WatchInput};
 
 #[derive(Debug, Error)]
 pub enum TuiError {
@@ -86,11 +86,22 @@ pub fn run_live(cap: LiveCapture, options: FluxOptions) -> Result<(), TuiError> 
                 options.key_cap,
                 options.ede_show_no_ede,
             );
-            let status = StatusLine {
-                packets: agg.counters.packets,
-                drops: agg.counters.capture_drops,
-                parse_busy_pct: worker_busy_percent(&worker),
-                queue_depth: worker.stats.queue_depth,
+            let status = StatusBar {
+                input: WatchInput::Live {
+                    interfaces: vec![iface.clone()],
+                },
+                window: options.window.clone(),
+                effective_window_secs: snap.effective_window_secs,
+                filter: agg.filter.header.clone(),
+                match_stats: snap.match_stats,
+                counted_in_window: snap.total_messages,
+                counters: StatusLine {
+                    packets: agg.counters.packets,
+                    drops: agg.counters.capture_drops,
+                    parse_busy_pct: worker_busy_percent(&worker),
+                    queue_depth: worker.stats.queue_depth,
+                },
+                elapsed_secs: Some(start.elapsed().as_secs_f32()),
             };
             text.push_str(&status.format());
             if show_help {
@@ -100,11 +111,6 @@ pub fn run_live(cap: LiveCapture, options: FluxOptions) -> Result<(), TuiError> 
             } else {
                 text.push_str("\n? for help, q to quit\n");
             }
-            text.push_str(&format!(
-                "elapsed: {:.1}s window: {:?}\n",
-                start.elapsed().as_secs_f32(),
-                options.window
-            ));
             let para = Paragraph::new(text).block(block);
             f.render_widget(para, f.area());
         })?;
