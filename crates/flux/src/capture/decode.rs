@@ -30,9 +30,21 @@ pub enum FrameError {
 }
 
 pub fn decode_frame(packet: &RawPacket, family: AddressFamily) -> Result<DecodedDns, FrameError> {
-    let sliced = SlicedPacket::from_ethernet(packet.data.as_slice())
-        .map_err(|e| FrameError::Parse(e.to_string()))?;
+    if let Ok(sliced) = SlicedPacket::from_ethernet(packet.data.as_slice()) {
+        return decode_sliced(&sliced, family);
+    }
+    if let Ok(sliced) = SlicedPacket::from_ip(packet.data.as_slice()) {
+        return decode_sliced(&sliced, family);
+    }
+    Err(FrameError::Parse(
+        "unable to parse link or network header".into(),
+    ))
+}
 
+fn decode_sliced(
+    sliced: &SlicedPacket<'_>,
+    family: AddressFamily,
+) -> Result<DecodedDns, FrameError> {
     let vlan = sliced.vlan.as_ref().map(|v| match v {
         etherparse::VlanSlice::SingleVlan(s) => u16::from(s.vlan_identifier()),
         etherparse::VlanSlice::DoubleVlan(d) => u16::from(d.outer().vlan_identifier()),

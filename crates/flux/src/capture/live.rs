@@ -78,6 +78,42 @@ impl LiveCapture {
         }
         Ok(n as usize)
     }
+
+    pub fn set_nonblocking(&self) -> Result<(), LiveCaptureError> {
+        let fd = self.fd.as_raw_fd();
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL, 0) };
+        if flags < 0 {
+            return Err(LiveCaptureError::Io(io::Error::last_os_error()));
+        }
+        if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return Err(LiveCaptureError::Io(io::Error::last_os_error()));
+        }
+        Ok(())
+    }
+
+    pub fn try_recv_packet(&self) -> Result<Option<super::RawPacket>, LiveCaptureError> {
+        let mut buf = [0u8; 65_535];
+        match self.recv_one(&mut buf) {
+            Ok(n) => {
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default();
+                Ok(Some(super::RawPacket {
+                    data: buf[..n].to_vec(),
+                    timestamp_secs: ts.as_secs(),
+                    timestamp_subsec_ns: ts.subsec_nanos(),
+                    iface: self.iface.clone(),
+                }))
+            }
+            Err(LiveCaptureError::Io(e))
+                if e.kind() == io::ErrorKind::WouldBlock
+                    || e.raw_os_error() == Some(libc::EAGAIN) =>
+            {
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
+    }
 }
 
 pub fn open_live(iface: &str) -> Result<LiveCapture, LiveCaptureError> {

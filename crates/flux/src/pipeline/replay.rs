@@ -1,11 +1,12 @@
-use crate::capture::{FrameError, decode_frame, iter_packets, open_packet_source};
-use crate::flow::{FlowBuckets, FlowKey, hash_to_bucket};
+use crate::capture::{iter_packets, open_packet_source};
+use crate::flow::FlowBuckets;
 use crate::options::FluxOptions;
-use crate::parse::{ParseWorker, parse_dns_payload};
+use crate::parse::ParseWorker;
 use crate::view::format_batch_tables;
 use crate::window::Aggregator;
 
 use super::PipelineError;
+use super::ingest::{ingest_packet, worker_busy_percent};
 use super::stats::StatusLine;
 
 pub fn replay_file(path: &str, options: &FluxOptions) -> Result<String, PipelineError> {
@@ -24,21 +25,7 @@ pub fn replay_file(path: &str, options: &FluxOptions) -> Result<String, Pipeline
     for pkt in iter_packets(&mut source, "replay") {
         let pkt = pkt?;
         packets += 1;
-        agg.counters.listener_packets += 1;
-        let decoded = match decode_frame(&pkt, options.family) {
-            Ok(d) => d,
-            Err(FrameError::NotDns) | Err(FrameError::FamilyFiltered) => continue,
-            Err(FrameError::Parse(_)) => continue,
-        };
-        let src = &decoded.src_ip[..decoded.src_ip_len as usize];
-        let dst = &decoded.dst_ip[..decoded.dst_ip_len as usize];
-        let _key = FlowKey::from_endpoints(17, src, decoded.src_port, dst, decoded.dst_port);
-        let _bucket = hash_to_bucket(seed, &_key, buckets);
-        let rec = parse_dns_payload(&decoded, pkt.slice_second(), &pkt.iface);
-        worker.push_record(rec.clone());
-        agg.ingest(rec);
-        worker.stats.busy_ns = packets;
-        worker.stats.idle_ns = 1;
+        ingest_packet(&mut agg, &mut worker, &pkt, options, buckets, seed);
     }
 
     let max_sec = worker
@@ -60,19 +47,8 @@ pub fn replay_file(path: &str, options: &FluxOptions) -> Result<String, Pipeline
     let status = StatusLine {
         packets: agg.counters.packets,
         drops: agg.counters.capture_drops,
-        parse_busy_pct: worker.busy_percent(),
+        parse_busy_pct: worker_busy_percent(&worker),
         queue_depth: worker.stats.queue_depth,
     };
     Ok(format!("{body}{}", status.format()))
-}
-
-trait BusyPercent {
-    fn busy_percent(&self) -> u8;
-}
-
-impl BusyPercent for ParseWorker {
-    fn busy_percent(&self) -> u8 {
-        let total = self.stats.busy_ns.saturating_add(self.stats.idle_ns).max(1);
-        ((self.stats.busy_ns.saturating_mul(100)) / total).min(100) as u8
-    }
 }

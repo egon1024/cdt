@@ -1,3 +1,4 @@
+mod ingest;
 mod replay;
 mod stats;
 #[cfg(feature = "tui")]
@@ -55,9 +56,9 @@ pub fn run_watch(
     #[cfg(target_os = "linux")]
     {
         let iface = &interfaces[0];
-        let _cap = crate::capture::open_live(iface)?;
         if use_tui {
-            return run_live_tui(iface, options);
+            let cap = crate::capture::open_live(iface)?;
+            return run_live_tui(cap, options);
         }
         Err(PipelineError::Config(
             "live capture requires a TTY; use -r for batch replay".into(),
@@ -74,14 +75,20 @@ pub fn run_watch(
 }
 
 #[cfg(target_os = "linux")]
-fn run_live_tui(iface: &str, options: FluxOptions) -> Result<(), PipelineError> {
+fn run_live_tui(
+    cap: crate::capture::LiveCapture,
+    options: FluxOptions,
+) -> Result<(), PipelineError> {
     #[cfg(feature = "tui")]
     {
-        tui::run_live(iface, options).map_err(|e| PipelineError::Config(e.to_string()))
+        tui::run_live(cap, options).map_err(|e| match e {
+            tui::TuiError::Live(l) => PipelineError::Live(l),
+            tui::TuiError::Io(io) => PipelineError::Config(io.to_string()),
+        })
     }
     #[cfg(not(feature = "tui"))]
     {
-        let _ = (iface, options);
+        let _ = (cap, options);
         Err(PipelineError::Config("TUI disabled".into()))
     }
 }
