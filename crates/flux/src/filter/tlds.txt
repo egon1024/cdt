@@ -1,0 +1,8 @@
+# Minimal IANA TLD snapshot for tests; override with +tld-list=
+com
+net
+org
+edu
+gov
+example
+invalid

@@ -70,7 +70,7 @@ impl DnsResponse {
         Self {
             id: message.metadata.id,
             rcode,
-            rcode_text: rcode_to_text(rcode),
+            rcode_text: rcode_name(rcode),
             authoritative: message.metadata.authoritative,
             truncated: message.metadata.truncation,
             recursion_desired: message.metadata.recursion_desired,
@@ -241,7 +241,8 @@ fn zone_label_count(zone: &DomainName) -> usize {
     trimmed.split('.').filter(|label| !label.is_empty()).count()
 }
 
-fn rcode_to_text(rcode: u16) -> String {
+/// DNS RCODE presentation name (`NOERROR`, `NXDOMAIN`, `RCODE9`, …).
+pub fn rcode_name(rcode: u16) -> String {
     match rcode {
         0 => "NOERROR".into(),
         1 => "FORMERR".into(),
@@ -250,6 +251,26 @@ fn rcode_to_text(rcode: u16) -> String {
         4 => "NOTIMP".into(),
         5 => "REFUSED".into(),
         _ => format!("RCODE{rcode}"),
+    }
+}
+
+/// Parse a user filter token into an RCODE (`3`, `NXDOMAIN`, `RCODE3`, …).
+pub fn parse_rcode(input: &str) -> Option<u16> {
+    let upper = input.trim().to_ascii_uppercase();
+    if upper.is_empty() {
+        return None;
+    }
+    if let Some(rest) = upper.strip_prefix("RCODE") {
+        return rest.parse().ok();
+    }
+    match upper.as_str() {
+        "NOERROR" | "0" => Some(0),
+        "FORMERR" | "1" => Some(1),
+        "SERVFAIL" | "2" => Some(2),
+        "NXDOMAIN" | "3" => Some(3),
+        "NOTIMP" | "4" => Some(4),
+        "REFUSED" | "5" => Some(5),
+        _ => upper.parse().ok(),
     }
 }
 
@@ -518,5 +539,13 @@ mod tests {
                 .map(|name| name.to_string()),
             Some("www.newexample.net.".into())
         );
+    }
+
+    #[test]
+    fn rcode_name_and_parse() {
+        assert_eq!(rcode_name(0), "NOERROR");
+        assert_eq!(rcode_name(3), "NXDOMAIN");
+        assert_eq!(parse_rcode("NXDOMAIN"), Some(3));
+        assert_eq!(parse_rcode("RCODE0"), Some(0));
     }
 }
