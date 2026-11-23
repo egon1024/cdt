@@ -139,6 +139,7 @@ impl FluxOptions {
             if let Some(rest) = tok.strip_prefix('+') {
                 if is_filter_token(rest) {
                     passthrough_filters.push(tok.clone());
+                    continue;
                 }
                 parse_plus_option(rest, &mut opts, &mut from_file)?;
             } else if !tok.is_empty() {
@@ -363,8 +364,30 @@ fn parse_plus_option(
 }
 
 fn is_filter_token(rest: &str) -> bool {
-    let (key, _) = split_key_value(rest);
-    filter_field_key(key) || key.starts_with("no")
+    let key = filter_field_name_in_plus(rest);
+    filter_field_key(key) || rest.starts_with("no")
+}
+
+/// Field name for a `+` filter flag, matching `filter::flags` parsing (`!=`, comparisons, `=`).
+fn filter_field_name_in_plus(rest: &str) -> &str {
+    let body = if let Some(b) = rest.strip_prefix("no") {
+        b
+    } else {
+        rest
+    };
+    if let Some((k, _)) = body.split_once("!=") {
+        return k;
+    }
+    if let Some((k, _)) = body.split_once('>') {
+        return k;
+    }
+    if let Some((k, _)) = body.split_once('<') {
+        return k;
+    }
+    if let Some((k, _)) = body.split_once('=') {
+        return k;
+    }
+    body
 }
 
 fn filter_field_key(key: &str) -> bool {
@@ -515,5 +538,16 @@ mod tests {
     fn views_parsing() {
         let o = FluxOptions::parse(&["+views=src,qtype,2".into()]).unwrap();
         assert_eq!(o.batch_views.len(), 3);
+    }
+
+    #[test]
+    fn negated_qtype_filter_token() {
+        let o = FluxOptions::parse(&["+qtype!=PTR".into(), "+views=qtype".into()]).unwrap();
+        assert_eq!(o.filter_tokens, vec!["+qtype!=PTR".to_string()]);
+    }
+
+    #[test]
+    fn filter_field_name_with_not_equal() {
+        assert_eq!(filter_field_name_in_plus("qtype!=PTR"), "qtype");
     }
 }

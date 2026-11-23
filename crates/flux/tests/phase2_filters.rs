@@ -63,6 +63,75 @@ fn large_fixture_recompute_timing() {
 }
 
 #[test]
+fn g2_step1_qtype_or_and_negation() {
+    let dir = tempdir().unwrap();
+    regenerate_fixtures(dir.path());
+    let bin = env!("CARGO_BIN_EXE_flux");
+    let pcap = dir.path().join("udp-basic.pcap");
+
+    let out = Command::new(bin)
+        .args([
+            "watch",
+            "-r",
+            pcap.to_str().unwrap(),
+            "+qtype=A,AAAA",
+            "+views=qtype",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("A"));
+    assert!(!s.is_empty());
+
+    let out = Command::new(bin)
+        .args([
+            "watch",
+            "-r",
+            pcap.to_str().unwrap(),
+            "+qtype!=PTR",
+            "+views=qtype",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("A"));
+}
+
+#[test]
+fn g2_step1_qname_suffix_view() {
+    let dir = tempdir().unwrap();
+    regenerate_fixtures(dir.path());
+    let bin = env!("CARGO_BIN_EXE_flux");
+    let pcap = dir.path().join("udp-basic.pcap");
+    let out = Command::new(bin)
+        .args([
+            "watch",
+            "-r",
+            pcap.to_str().unwrap(),
+            "+qname=example.com",
+            "+views=3",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("example.com"));
+}
+
+#[test]
 fn preset_malformed_and_filter_header() {
     let dir = tempdir().unwrap();
     regenerate_fixtures(dir.path());

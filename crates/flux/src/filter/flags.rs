@@ -144,4 +144,10 @@ mod tests {
         let preds = parse_filter_flags(&["+noedns".into()]).unwrap();
         assert_eq!(preds.len(), 1);
     }
+
+    #[test]
+    fn negated_qtype_not_equal() {
+        let preds = parse_filter_flags(&["+qtype!=PTR".into()]).unwrap();
+        assert_eq!(preds.len(), 1);
+    }
 }

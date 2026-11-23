@@ -44,9 +44,9 @@ pub fn run_watch(
             );
         }
         let out = replay_file(path, &options)?;
-        if !use_tui || options.events_to_stdout() {
-            print!("{out}");
-        }
+        // Pcap replay always prints batch tables; a TTY must not suppress output (G2 lab).
+        let _ = use_tui;
+        print!("{out}");
         return Ok(());
     }
 
