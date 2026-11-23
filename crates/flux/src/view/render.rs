@@ -74,23 +74,28 @@ fn format_latency_table(counts: &ViewCounts, view: ViewId, limit: usize) -> Stri
             .then_with(|| a.0.cmp(b.0))
     });
     let mut out = format!(
-        "  {:<24} {:>6} {:>8} {:>8} {:>8} {:>8} {:>6}\n",
+        "  {:<24} {:>6} {:>9} {:>9} {:>9} {:>9} {:>6}\n",
         "key", "count", "p50", "p95", "p99", "max", "unans"
     );
     for (key, stats) in rows.iter().take(limit) {
         let h = &stats.hist;
         out.push_str(&format!(
-            "  {:<24} {:>6} {:>7}ms {:>7}ms {:>7}ms {:>7}ms {:>6}\n",
+            "  {:<24} {:>6} {:>9} {:>9} {:>9} {:>9} {:>6}\n",
             key,
             stats.response_count.saturating_add(stats.unanswered),
-            h.percentile(50.0),
-            h.percentile(95.0),
-            h.percentile(99.0),
-            h.max_ms(),
+            latency_ms_cell(h.percentile(50.0)),
+            latency_ms_cell(h.percentile(95.0)),
+            latency_ms_cell(h.percentile(99.0)),
+            latency_ms_cell(h.max_ms()),
             stats.unanswered,
         ));
     }
     out
+}
+
+/// Right-aligned latency value plus `ms`, always nine monospace columns (matches header widths).
+fn latency_ms_cell(ms: u32) -> String {
+    format!("{:>7}ms", ms)
 }
 
 #[cfg(test)]
@@ -104,5 +109,43 @@ mod tests {
         let a = format_batch_tables(&c, &[ViewId::Sources], 10, 0, 50, false);
         let b = format_batch_tables(&c, &[ViewId::Sources], 10, 0, 50, false);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn latency_ms_cell_fixed_width() {
+        assert_eq!(super::latency_ms_cell(987).len(), 9);
+        assert_eq!(super::latency_ms_cell(1000).len(), 9);
+    }
+
+    #[test]
+    fn latency_table_header_aligns_with_data() {
+        use crate::flow::{LatencyHistogram, LatencyKeyStats};
+        let mut c = ViewCounts::default();
+        c.latency_dst.insert(
+            "192.0.2.53".into(),
+            LatencyKeyStats {
+                hist: LatencyHistogram::default(),
+                response_count: 3,
+                unanswered: 0,
+            },
+        );
+        // Seed histogram so percentiles are non-zero
+        let stats = c.latency_dst.get_mut("192.0.2.53").unwrap();
+        for _ in 0..3 {
+            stats.hist.record(987);
+        }
+        let table = super::format_latency_table(&c, ViewId::LatencyDst, 10);
+        let mut lines = table.lines();
+        let header = lines.next().expect("header");
+        let data = lines.next().expect("data");
+        // Column after key (24) + count (6) and single spaces between fields.
+        let p50_col = 2 + 24 + 1 + 6 + 1;
+        let h_col = &header[p50_col..p50_col + 9];
+        let d_col = &data[p50_col..p50_col + 9];
+        assert_eq!(h_col.trim(), "p50", "header slice: {h_col:?}");
+        assert!(
+            d_col.contains("987ms"),
+            "data slice: {d_col:?} in\n{data}"
+        );
     }
 }
