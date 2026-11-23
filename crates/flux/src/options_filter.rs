@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::filter::{
     CompiledFilter, EndpointIndex, EndpointResolver, EvalContext, Predicate, build_compiled,
@@ -70,6 +70,19 @@ impl FluxOptions {
             format!("preset={p}")
         } else if let Some(n) = &self.saved_filter {
             format!("filter={n}")
+        } else if !self.filter_files.is_empty() {
+            let names: Vec<String> = self
+                .filter_files
+                .iter()
+                .map(|p| {
+                    Path::new(p)
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| p.clone())
+                })
+                .collect();
+            format!("filter-file={}", names.join(","))
         } else if !self.filter_tokens.is_empty() {
             self.filter_tokens.join(" ")
         } else {

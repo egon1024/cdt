@@ -153,6 +153,30 @@ fn preset_malformed_and_filter_header() {
 }
 
 #[test]
+fn g2_filter_file_header_and_narrowing() {
+    let dir = tempdir().unwrap();
+    regenerate_fixtures(dir.path());
+    let yaml_path = dir.path().join("ptr-only.yaml");
+    std::fs::write(&yaml_path, "all:\n  - qtype: PTR\n").unwrap();
+    let bin = env!("CARGO_BIN_EXE_flux");
+    let pcap = dir.path().join("udp-basic.pcap");
+    let out = Command::new(bin)
+        .args([
+            "watch",
+            "-r",
+            pcap.to_str().unwrap(),
+            &format!("+filter-file={}", yaml_path.display()),
+            "+views=src",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("filter-file=ptr-only.yaml"), "{s}");
+    assert!(s.contains("counted 0 in window"), "{s}");
+}
+
+#[test]
 fn time_bounds_limit_packets() {
     let dir = tempdir().unwrap();
     regenerate_fixtures(dir.path());

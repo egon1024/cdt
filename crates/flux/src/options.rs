@@ -550,4 +550,15 @@ mod tests {
     fn filter_field_name_with_not_equal() {
         assert_eq!(filter_field_name_in_plus("qtype!=PTR"), "qtype");
     }
+
+    #[test]
+    fn filter_file_option_parses() {
+        let o = FluxOptions::parse(&[
+            "+filter-file=/tmp/flux-g2/leaks.yaml".into(),
+            "+views=src".into(),
+        ])
+        .unwrap();
+        assert_eq!(o.filter_files, vec!["/tmp/flux-g2/leaks.yaml".to_string()]);
+        assert!(o.filter_tokens.is_empty());
+    }
 }
