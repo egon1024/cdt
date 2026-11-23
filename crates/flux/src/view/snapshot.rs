@@ -4,6 +4,7 @@ use std::net::Ipv4Addr;
 use dns_core::edns::ede_meaning;
 
 use crate::filter::{CompiledFilter, EvalContext, FilterPredicate, MatchStats, record_matches_qr};
+use crate::flow::LatencyKeyStats;
 use crate::options::ViewId;
 use crate::parse::ede_entries;
 use crate::parse::{ObservationRecord, TransportProto, qname_level_label};
@@ -25,6 +26,9 @@ pub struct ViewCounts {
     pub malformed: u64,
     pub responses_with_ede: u64,
     pub responses_total: u64,
+    pub latency_dst: HashMap<String, LatencyKeyStats>,
+    pub latency_src: HashMap<String, LatencyKeyStats>,
+    pub latency_qtype: HashMap<String, LatencyKeyStats>,
 }
 
 impl ViewCounts {
@@ -43,6 +47,9 @@ impl ViewCounts {
         self.malformed += other.malformed;
         self.responses_with_ede += other.responses_with_ede;
         self.responses_total += other.responses_total;
+        merge_latency_map(&mut self.latency_dst, &other.latency_dst);
+        merge_latency_map(&mut self.latency_src, &other.latency_src);
+        merge_latency_map(&mut self.latency_qtype, &other.latency_qtype);
     }
 
     pub fn merge_sub(&mut self, other: &ViewCounts) {
@@ -62,6 +69,31 @@ impl ViewCounts {
             .responses_with_ede
             .saturating_sub(other.responses_with_ede);
         self.responses_total = self.responses_total.saturating_sub(other.responses_total);
+        sub_latency_map(&mut self.latency_dst, &other.latency_dst);
+        sub_latency_map(&mut self.latency_src, &other.latency_src);
+        sub_latency_map(&mut self.latency_qtype, &other.latency_qtype);
+    }
+}
+
+fn merge_latency_map(
+    dst: &mut HashMap<String, LatencyKeyStats>,
+    src: &HashMap<String, LatencyKeyStats>,
+) {
+    for (k, v) in src {
+        dst.entry(k.clone()).or_default().merge_add(v);
+    }
+}
+
+fn sub_latency_map(
+    dst: &mut HashMap<String, LatencyKeyStats>,
+    src: &HashMap<String, LatencyKeyStats>,
+) {
+    for (k, v) in src {
+        let e = dst.entry(k.clone()).or_default();
+        e.merge_sub(v);
+        if e.response_count == 0 && e.unanswered == 0 {
+            dst.remove(k);
+        }
     }
 }
 
@@ -171,6 +203,28 @@ fn accumulate_record(
             *c.src_x_qname.entry((src_label, label)).or_insert(0) += 1;
         }
     }
+    if r.unanswered {
+        let dst = format_ip(r.responder_ip());
+        let src = format_ip(r.initiator_ip());
+        c.latency_dst.entry(dst.clone()).or_default().unanswered += 1;
+        c.latency_src.entry(src).or_default().unanswered += 1;
+        let qt = crate::qtype::qtype_label(r.qtype);
+        c.latency_qtype.entry(qt).or_default().unanswered += 1;
+    }
+    if r.qr && r.paired && r.latency_ms > 0 {
+        let dst = format_ip(r.responder_ip());
+        let src = format_ip(r.initiator_ip());
+        let qt = crate::qtype::qtype_label(r.qtype);
+        let e = c.latency_dst.entry(dst).or_default();
+        e.hist.record(r.latency_ms);
+        e.response_count += 1;
+        let e = c.latency_src.entry(src).or_default();
+        e.hist.record(r.latency_ms);
+        e.response_count += 1;
+        let e = c.latency_qtype.entry(qt).or_default();
+        e.hist.record(r.latency_ms);
+        e.response_count += 1;
+    }
     if r.qr {
         c.responses_total += 1;
         let blob = r.ede_blob(arena);
@@ -270,6 +324,7 @@ pub fn counts_for_view(
             .iter()
             .map(|(k, v)| (k.clone(), *v))
             .collect(),
+        ViewId::LatencyDst | ViewId::LatencySrc | ViewId::LatencyQtype => Vec::new(),
     };
     rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     apply_key_cap(&mut rows, key_cap);

@@ -20,7 +20,7 @@ use crate::parse::ParseWorker;
 use crate::view::format_batch_tables;
 use crate::window::Aggregator;
 
-use super::ingest::{ingest_packet, worker_busy_percent};
+use super::ingest::{drain_flow_timeouts, ingest_packet, new_flow_stage, worker_busy_percent};
 use super::stats::{StatusBar, StatusLine, WatchInput};
 
 #[derive(Debug, Error)]
@@ -38,9 +38,6 @@ pub enum TuiError {
 pub fn run_live(cap: LiveCapture, options: FluxOptions) -> Result<(), TuiError> {
     cap.set_nonblocking()?;
     let iface = cap.iface().to_string();
-    let (buckets, _) = options.effective_flow_buckets();
-    let seed: u64 = 0;
-
     let filter = options.compile_filter(&NoopResolver)?;
     let eval_ctx = options.build_eval_context(&NoopResolver);
     let mut agg = Aggregator::new(
@@ -51,6 +48,7 @@ pub fn run_live(cap: LiveCapture, options: FluxOptions) -> Result<(), TuiError> 
         eval_ctx,
     );
     let mut worker = ParseWorker::default();
+    let mut flow = new_flow_stage(&options);
 
     let mut stdout = io::stdout();
     enable_raw_mode()?;
@@ -62,12 +60,13 @@ pub fn run_live(cap: LiveCapture, options: FluxOptions) -> Result<(), TuiError> 
     let start = Instant::now();
 
     loop {
-        let drained = drain_capture(&cap, &mut agg, &mut worker, &options, buckets, seed);
+        let drained = drain_capture(&cap, &mut agg, &mut worker, &mut flow, &options);
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
         agg.tick(now);
+        drain_flow_timeouts(&mut agg, &mut worker, &mut flow, now);
 
         let snap = agg.snapshot();
         // Header and row shares use windowed, filter-matched totals — not lifetime packet count.
@@ -93,6 +92,8 @@ pub fn run_live(cap: LiveCapture, options: FluxOptions) -> Result<(), TuiError> 
                     parse_busy_pct: worker_busy_percent(&worker),
                     queue_depth: worker.stats.queue_depth,
                 },
+                flow: flow.counters,
+                pairing_enabled: options.pairing,
                 elapsed_secs: Some(start.elapsed().as_secs_f32()),
             };
 
@@ -164,15 +165,14 @@ fn drain_capture(
     cap: &LiveCapture,
     agg: &mut Aggregator,
     worker: &mut ParseWorker,
+    flow: &mut crate::flow::FlowStage,
     options: &FluxOptions,
-    buckets: u32,
-    seed: u64,
 ) -> u64 {
     let mut n = 0u64;
     loop {
         match cap.try_recv_packet() {
             Ok(Some(pkt)) => {
-                ingest_packet(agg, worker, &pkt, options, buckets, seed);
+                ingest_packet(agg, worker, flow, &pkt, options);
                 n += 1;
             }
             Ok(None) => break,

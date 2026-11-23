@@ -1,3 +1,4 @@
+use crate::flow::LatencyKeyStats;
 use crate::options::ViewId;
 use crate::view::snapshot::{ViewCounts, counts_for_view};
 
@@ -17,11 +18,15 @@ pub fn format_batch_tables(
     for view in views {
         let title = view_title(*view);
         out.push_str(&render_table_header(&title, total));
-        let rows = counts_for_view(counts, *view, key_cap, show_no_ede);
-        let denom = total.max(1);
-        for (key, count) in rows.iter().take(limit) {
-            let pct = (count.saturating_mul(10000) / denom) as f64 / 100.0;
-            out.push_str(&format!("  {key:<40} {count:>8}  {pct:>6.2}%\n"));
+        if is_latency_view(*view) {
+            out.push_str(&format_latency_table(counts, *view, limit));
+        } else {
+            let rows = counts_for_view(counts, *view, key_cap, show_no_ede);
+            let denom = total.max(1);
+            for (key, count) in rows.iter().take(limit) {
+                let pct = (count.saturating_mul(10000) / denom) as f64 / 100.0;
+                out.push_str(&format!("  {key:<40} {count:>8}  {pct:>6.2}%\n"));
+            }
         }
         out.push('\n');
     }
@@ -41,7 +46,51 @@ fn view_title(view: ViewId) -> String {
         ViewId::SrcXEde => "Source × EDE".into(),
         ViewId::Interface => "Interfaces".into(),
         ViewId::Transport => "Transport".into(),
+        ViewId::LatencyDst => "Latency by destination".into(),
+        ViewId::LatencySrc => "Latency by source".into(),
+        ViewId::LatencyQtype => "Latency by qtype".into(),
     }
+}
+
+fn is_latency_view(view: ViewId) -> bool {
+    matches!(
+        view,
+        ViewId::LatencyDst | ViewId::LatencySrc | ViewId::LatencyQtype
+    )
+}
+
+fn format_latency_table(counts: &ViewCounts, view: ViewId, limit: usize) -> String {
+    let map = match view {
+        ViewId::LatencyDst => &counts.latency_dst,
+        ViewId::LatencySrc => &counts.latency_src,
+        ViewId::LatencyQtype => &counts.latency_qtype,
+        _ => return String::new(),
+    };
+    let mut rows: Vec<(&String, &LatencyKeyStats)> = map.iter().collect();
+    rows.sort_by(|a, b| {
+        b.1.hist
+            .percentile(95.0)
+            .cmp(&a.1.hist.percentile(95.0))
+            .then_with(|| a.0.cmp(b.0))
+    });
+    let mut out = format!(
+        "  {:<24} {:>6} {:>8} {:>8} {:>8} {:>8} {:>6}\n",
+        "key", "count", "p50", "p95", "p99", "max", "unans"
+    );
+    for (key, stats) in rows.iter().take(limit) {
+        let h = &stats.hist;
+        out.push_str(&format!(
+            "  {:<24} {:>6} {:>7}ms {:>7}ms {:>7}ms {:>7}ms {:>6}\n",
+            key,
+            stats.response_count.saturating_add(stats.unanswered),
+            h.percentile(50.0),
+            h.percentile(95.0),
+            h.percentile(99.0),
+            h.max_ms(),
+            stats.unanswered,
+        ));
+    }
+    out
 }
 
 #[cfg(test)]

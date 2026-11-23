@@ -28,6 +28,11 @@ pub fn parse_filter_flags(tokens: &[String]) -> Result<Vec<Predicate>, FilterPar
             || rest.starts_with("key-cap")
             || rest.starts_with("views")
             || rest.starts_with("window")
+            || rest.starts_with("defrag")
+            || rest.starts_with("tcp")
+            || rest.starts_with("pairing")
+            || rest.starts_with("pair-timeout")
+            || rest.starts_with("pair-max")
         {
             continue;
         }

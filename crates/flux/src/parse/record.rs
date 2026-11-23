@@ -81,6 +81,12 @@ pub struct ObservationRecord {
     pub ede_off: u32,
     pub ede_len: u16,
     pub latency_ms: u32,
+    pub fragment_count: u8,
+    pub segment_count: u8,
+    pub ip_fragmented: bool,
+    pub unanswered: bool,
+    pub tc_retry: bool,
+    pub paired: bool,
 }
 
 impl ObservationRecord {
@@ -123,8 +129,16 @@ impl ObservationRecord {
 }
 
 pub fn parse_dns_payload(dns: &DecodedDns, slice_sec: u64, iface: &str) -> ParsedObservation {
+    parse_dns_payload_with_transport(dns, slice_sec, iface, TransportProto::Udp)
+}
+
+pub fn parse_dns_payload_with_transport(
+    dns: &DecodedDns,
+    slice_sec: u64,
+    iface: &str,
+    transport: TransportProto,
+) -> ParsedObservation {
     let wire_len = dns.payload.len().min(u16::MAX as usize) as u16;
-    let transport = TransportProto::Udp;
     match Message::from_vec(&dns.payload) {
         Ok(msg) => {
             let qr = msg.metadata.message_type == hickory_proto::op::MessageType::Response;
@@ -205,6 +219,12 @@ pub fn parse_dns_payload(dns: &DecodedDns, slice_sec: u64, iface: &str) -> Parse
                     ede_off: 0,
                     ede_len: ede_blob.len().min(u16::MAX as usize) as u16,
                     latency_ms: 0,
+                    fragment_count: 1,
+                    segment_count: 1,
+                    ip_fragmented: false,
+                    unanswered: false,
+                    tc_retry: false,
+                    paired: false,
                 },
                 ede_blob,
             }
@@ -241,6 +261,12 @@ pub fn parse_dns_payload(dns: &DecodedDns, slice_sec: u64, iface: &str) -> Parse
                 ede_off: 0,
                 ede_len: 0,
                 latency_ms: 0,
+                fragment_count: 1,
+                segment_count: 1,
+                ip_fragmented: false,
+                unanswered: false,
+                tc_retry: false,
+                paired: false,
             },
             ede_blob: Vec::new(),
         },

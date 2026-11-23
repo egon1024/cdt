@@ -129,8 +129,15 @@ impl FluxOptions {
 
     fn auto_response_view(&self) -> bool {
         use super::ViewId;
-        self.batch_views
-            .iter()
-            .any(|v| matches!(v, ViewId::Ede | ViewId::SrcXEde))
+        self.batch_views.iter().any(|v| {
+            matches!(
+                v,
+                ViewId::Ede
+                    | ViewId::SrcXEde
+                    | ViewId::LatencyDst
+                    | ViewId::LatencySrc
+                    | ViewId::LatencyQtype
+            )
+        })
     }
 }

@@ -93,6 +93,10 @@ pub enum FieldId {
     Transport,
     Iface,
     Vlan,
+    Fragmented,
+    MultiPacket,
+    Unanswered,
+    TcRetry,
     Preset,
 }
 
@@ -248,6 +252,12 @@ fn eval_field(
         FieldId::Transport => eval_transport(cond, record.transport),
         FieldId::Iface => eval_string_set(cond, &record.iface),
         FieldId::Vlan => eval_u64_set(cond, record.vlan.unwrap_or(0).into()),
+        FieldId::Fragmented => eval_bool(cond, record.ip_fragmented || record.fragment_count > 1),
+        FieldId::MultiPacket => {
+            eval_bool(cond, record.fragment_count > 1 || record.segment_count > 1)
+        }
+        FieldId::Unanswered => eval_bool(cond, record.unanswered),
+        FieldId::TcRetry => eval_bool(cond, record.tc_retry),
         FieldId::Preset => true,
     }
 }
@@ -455,6 +465,12 @@ mod tests {
             ede_off: 0,
             ede_len: 0,
             latency_ms: 0,
+            fragment_count: 1,
+            segment_count: 1,
+            ip_fragmented: false,
+            unanswered: false,
+            tc_retry: false,
+            paired: false,
         }
     }
 

@@ -3,6 +3,7 @@ use std::time::Duration;
 use thiserror::Error;
 
 use crate::filter::QrSelection;
+use crate::flow::{DefragMode, TcpMode};
 
 #[path = "options_filter.rs"]
 mod options_filter;
@@ -34,6 +35,18 @@ pub struct FluxOptions {
     pub tld_list_path: Option<String>,
     pub ede_show_no_ede: bool,
     pub ede_split_extra: bool,
+    pub defrag: DefragMode,
+    pub defrag_max_datagrams: usize,
+    pub defrag_max_fragments: usize,
+    pub defrag_timeout: Duration,
+    pub tcp: TcpMode,
+    pub tcp_max_connections: usize,
+    pub tcp_max_buffer: usize,
+    pub tcp_idle_timeout: Duration,
+    pub tcp_max_faults: u32,
+    pub pairing: bool,
+    pub pair_timeout: Duration,
+    pub pair_max: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +82,9 @@ pub enum ViewId {
     SrcXEde,
     Interface,
     Transport,
+    LatencyDst,
+    LatencySrc,
+    LatencyQtype,
 }
 
 #[derive(Debug, Clone)]
@@ -118,6 +134,18 @@ impl Default for FluxOptions {
             tld_list_path: None,
             ede_show_no_ede: false,
             ede_split_extra: false,
+            defrag: DefragMode::On,
+            defrag_max_datagrams: 512,
+            defrag_max_fragments: 32,
+            defrag_timeout: Duration::from_secs(30),
+            tcp: TcpMode::Full,
+            tcp_max_connections: 2048,
+            tcp_max_buffer: 64 * 1024,
+            tcp_idle_timeout: Duration::from_secs(120),
+            tcp_max_faults: 3,
+            pairing: true,
+            pair_timeout: Duration::from_secs(5),
+            pair_max: 10_000,
         }
     }
 }
@@ -351,6 +379,77 @@ fn parse_plus_option(
             let v = require_value(key, value)?;
             opts.tld_list_path = Some(v.into());
         }
+        "defrag" => {
+            let v = require_value(key, value)?;
+            opts.defrag = match v {
+                "on" => DefragMode::On,
+                "off" => DefragMode::Off,
+                _ => {
+                    return Err(OptionsError::InvalidValue {
+                        name: key.into(),
+                        detail: "expected on or off".into(),
+                    });
+                }
+            };
+        }
+        "tcp" => {
+            let v = require_value(key, value)?;
+            opts.tcp = match v {
+                "off" => TcpMode::Off,
+                "simple" => TcpMode::Simple,
+                "full" => TcpMode::Full,
+                _ => {
+                    return Err(OptionsError::InvalidValue {
+                        name: key.into(),
+                        detail: "expected off, simple, or full".into(),
+                    });
+                }
+            };
+        }
+        "pairing" => {
+            let v = require_value(key, value)?;
+            opts.pairing = match v {
+                "on" | "true" | "1" => true,
+                "off" | "false" | "0" => false,
+                _ => {
+                    return Err(OptionsError::InvalidValue {
+                        name: key.into(),
+                        detail: "expected on or off".into(),
+                    });
+                }
+            };
+        }
+        "pair-timeout" => {
+            let v = require_value(key, value)?;
+            let ms: u64 = if let Some(s) = v.strip_suffix("ms") {
+                s.parse().map_err(|_| OptionsError::InvalidValue {
+                    name: key.into(),
+                    detail: v.into(),
+                })?
+            } else if let Some(s) = v.strip_suffix('s') {
+                s.parse::<u64>()
+                    .map_err(|_| OptionsError::InvalidValue {
+                        name: key.into(),
+                        detail: v.into(),
+                    })?
+                    .saturating_mul(1000)
+            } else {
+                v.parse::<u64>()
+                    .map_err(|_| OptionsError::InvalidValue {
+                        name: key.into(),
+                        detail: v.into(),
+                    })?
+                    .saturating_mul(1000)
+            };
+            opts.pair_timeout = Duration::from_millis(ms);
+        }
+        "pair-max" => {
+            let v = require_value(key, value)?;
+            opts.pair_max = v.parse().map_err(|_| OptionsError::InvalidValue {
+                name: key.into(),
+                detail: v.into(),
+            })?;
+        }
         _ if filter_field_key(key) || key.starts_with("no") => {}
         _ if key.is_empty() && matches!(value, None | Some("") | Some("-")) => {
             opts.events = EventsMode::Stdout;
@@ -364,8 +463,22 @@ fn parse_plus_option(
 }
 
 fn is_filter_token(rest: &str) -> bool {
+    if is_flow_option_token(rest) {
+        return false;
+    }
     let key = filter_field_name_in_plus(rest);
     filter_field_key(key) || rest.starts_with("no")
+}
+
+fn is_flow_option_token(rest: &str) -> bool {
+    let (key, value) = split_key_value(rest);
+    match key {
+        "defrag" => matches!(value, Some("on" | "off")),
+        "tcp" => matches!(value, Some("off" | "simple" | "full")),
+        "pairing" => matches!(value, Some("on" | "off" | "true" | "false" | "0" | "1")),
+        "pair-timeout" | "pair-max" => value.is_some(),
+        _ => false,
+    }
 }
 
 /// Field name for a `+` filter flag, matching `filter::flags` parsing (`!=`, comparisons, `=`).
@@ -466,6 +579,9 @@ fn parse_view_list(s: &str) -> Result<Vec<ViewId>, OptionsError> {
             "src-x-ede" | "src×ede" => ViewId::SrcXEde,
             "iface" | "interface" => ViewId::Interface,
             "transport" => ViewId::Transport,
+            "latency-dst" | "latency-destinations" => ViewId::LatencyDst,
+            "latency-src" | "latency-sources" => ViewId::LatencySrc,
+            "latency-qtype" => ViewId::LatencyQtype,
             _ if part.chars().all(|c| c.is_ascii_digit()) => {
                 let level: u8 = part.parse().map_err(|_| OptionsError::InvalidValue {
                     name: "views".into(),

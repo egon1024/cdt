@@ -51,7 +51,7 @@ impl FlowKey {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FragmentKey {
     pub src: [u8; 16],
     pub src_len: u8,

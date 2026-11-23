@@ -1,5 +1,6 @@
 mod decode;
 mod file;
+mod l3;
 #[cfg(target_os = "linux")]
 mod live;
 
@@ -7,6 +8,7 @@ pub use decode::{DecodedDns, FrameError, decode_frame};
 pub use file::{
     CaptureError, PacketSource, iter_packets, open_packet_source, sniff_format, write_pcap_file,
 };
+pub use l3::{DnsL3Payload, L3Error, L3Transport, parse_l3};
 
 #[cfg(target_os = "linux")]
 pub use live::{LiveCapture, LiveCaptureError, open_live};

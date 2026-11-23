@@ -7,7 +7,7 @@ use crate::view::format_batch_tables;
 use crate::window::Aggregator;
 
 use super::PipelineError;
-use super::ingest::{ingest_packet, worker_busy_percent};
+use super::ingest::{drain_flow_timeouts, ingest_packet, new_flow_stage, worker_busy_percent};
 use super::stats::{StatusBar, StatusLine, WatchInput};
 
 pub fn replay_file(path: &str, options: &FluxOptions) -> Result<String, PipelineError> {
@@ -22,13 +22,12 @@ pub fn replay_file(path: &str, options: &FluxOptions) -> Result<String, Pipeline
         filter.clone(),
         eval_ctx,
     );
-    let (buckets, _) = options.effective_flow_buckets();
-    let _fb = FlowBuckets::new(buckets);
-    let seed: u64 = 0;
+    let _fb = FlowBuckets::new(options.effective_flow_buckets().0);
+    let mut flow = new_flow_stage(options);
 
     for pkt in iter_packets(&mut source, "replay") {
         let pkt = pkt?;
-        ingest_packet(&mut agg, &mut worker, &pkt, options, buckets, seed);
+        ingest_packet(&mut agg, &mut worker, &mut flow, &pkt, options);
     }
 
     let max_sec = worker
@@ -37,8 +36,10 @@ pub fn replay_file(path: &str, options: &FluxOptions) -> Result<String, Pipeline
         .map(|r| r.slice_sec)
         .max()
         .unwrap_or(0);
+    let pair_deadline = max_sec.saturating_add(options.pair_timeout.as_secs().saturating_add(1));
     agg.tick(max_sec + 1);
-    agg.catch_up_stall(max_sec + 2);
+    drain_flow_timeouts(&mut agg, &mut worker, &mut flow, pair_deadline);
+    agg.catch_up_stall(pair_deadline + 1);
 
     let snap = agg.snapshot();
     let body = format_batch_tables(
@@ -62,6 +63,8 @@ pub fn replay_file(path: &str, options: &FluxOptions) -> Result<String, Pipeline
             parse_busy_pct: worker_busy_percent(&worker),
             queue_depth: worker.stats.queue_depth,
         },
+        flow: flow.counters,
+        pairing_enabled: options.pairing,
         elapsed_secs: None,
     };
     Ok(format!("{body}{}", status.format()))

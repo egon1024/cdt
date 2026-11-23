@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::filter::{FilterHeader, MatchStats};
+use crate::flow::FlowCounters;
 use crate::options::WindowMode;
 
 #[derive(Debug, Clone)]
@@ -26,6 +27,8 @@ pub struct StatusBar {
     pub match_stats: MatchStats,
     pub counted_in_window: u64,
     pub counters: StatusLine,
+    pub flow: FlowCounters,
+    pub pairing_enabled: bool,
     /// Wall time since live session start (TUI only).
     pub elapsed_secs: Option<f32>,
 }
@@ -87,7 +90,13 @@ impl StatusBar {
             self.counters.queue_depth,
         ));
 
-        format!("--- status: {} ---\n", parts.join(" | "))
+        let mut line = format!("--- status: {} ---", parts.join(" | "));
+        line.push_str(&self.flow.format_suffix());
+        line.push('\n');
+        if !self.pairing_enabled {
+            line.push_str("--- note: pairing off; latency and unanswered unavailable ---\n");
+        }
+        line
     }
 }
 
@@ -126,6 +135,8 @@ mod tests {
                 parse_busy_pct: 50,
                 queue_depth: 0,
             },
+            flow: FlowCounters::default(),
+            pairing_enabled: true,
             elapsed_secs: None,
         };
         let s = bar.format();
@@ -151,6 +162,8 @@ mod tests {
                 parse_busy_pct: 10,
                 queue_depth: 0,
             },
+            flow: FlowCounters::default(),
+            pairing_enabled: true,
             elapsed_secs: Some(5.2),
         };
         let s = bar.format();

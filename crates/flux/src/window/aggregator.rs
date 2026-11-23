@@ -239,6 +239,12 @@ mod tests {
                 ede_off: 0,
                 ede_len: 0,
                 latency_ms: 0,
+                fragment_count: 1,
+                segment_count: 1,
+                ip_fragmented: false,
+                unanswered: false,
+                tc_retry: false,
+                paired: false,
             },
             ede_blob: Vec::new(),
         }

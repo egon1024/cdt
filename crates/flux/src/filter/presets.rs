@@ -16,6 +16,10 @@ pub enum PresetKind {
     Do,
     EdePresent,
     Malformed,
+    Fragmented,
+    MultiPacket,
+    Unanswered,
+    TcRetry,
 }
 
 pub fn preset_by_name(name: &str) -> Option<(PresetKind, Predicate)> {
@@ -31,6 +35,10 @@ pub fn preset_by_name(name: &str) -> Option<(PresetKind, Predicate)> {
         "do" => PresetKind::Do,
         "ede" | "ede-present" => PresetKind::EdePresent,
         "malformed" => PresetKind::Malformed,
+        "fragmented" => PresetKind::Fragmented,
+        "multi-packet" | "multipacket" => PresetKind::MultiPacket,
+        "unanswered" => PresetKind::Unanswered,
+        "tc-retry" | "tcretry" => PresetKind::TcRetry,
         other if other.starts_with("rcode") => {
             let code = other.trim_start_matches("rcode").parse().ok()?;
             PresetKind::Rcode(code)
@@ -56,6 +64,10 @@ pub fn preset_label(kind: PresetKind) -> &'static str {
         PresetKind::Do => "do",
         PresetKind::EdePresent => "ede-present",
         PresetKind::Malformed => "malformed",
+        PresetKind::Fragmented => "fragmented",
+        PresetKind::MultiPacket => "multi-packet",
+        PresetKind::Unanswered => "unanswered",
+        PresetKind::TcRetry => "tc-retry",
     }
 }
 
@@ -81,6 +93,10 @@ fn preset_predicate(kind: PresetKind) -> Predicate {
         PresetKind::Do => Predicate::Field(field_bool(FieldId::Do, true)),
         PresetKind::EdePresent => Predicate::Field(field_bool(FieldId::Ede, false)),
         PresetKind::Malformed => Predicate::Field(field_bool(FieldId::Malformed, true)),
+        PresetKind::Fragmented => Predicate::Field(field_bool(FieldId::Fragmented, true)),
+        PresetKind::MultiPacket => Predicate::Field(field_bool(FieldId::MultiPacket, true)),
+        PresetKind::Unanswered => Predicate::Field(field_bool(FieldId::Unanswered, true)),
+        PresetKind::TcRetry => Predicate::Field(field_bool(FieldId::TcRetry, true)),
     }
 }
 
@@ -179,6 +195,12 @@ mod tests {
             ede_off: 0,
             ede_len: 0,
             latency_ms: 0,
+            fragment_count: 1,
+            segment_count: 1,
+            ip_fragmented: false,
+            unanswered: false,
+            tc_retry: false,
+            paired: false,
         }
     }
 

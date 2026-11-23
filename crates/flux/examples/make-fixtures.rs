@@ -105,6 +105,81 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ));
     }
     write_pcap_file(&dir.join("large.pcap"), &large_frames)?;
+
+    // Phase 3 flow-tracking fixtures
+    let frag_opts = QueryOptions::new(DomainName::parse("big.frag.example.")?, RecordType::A);
+    let frag_q = fix_query_id(build_query(&frag_opts)?, 0x5100);
+    let mut frag_resp = Message::from_vec(&frag_q)?;
+    frag_resp.metadata.message_type = MessageType::Response;
+    use hickory_proto::rr::rdata::A;
+    use hickory_proto::rr::{Name, RData, Record};
+    use std::net::Ipv4Addr;
+    for i in 1..=40u8 {
+        frag_resp.answers.push(Record::from_rdata(
+            Name::from_ascii("big.frag.example.").expect("name"),
+            30,
+            RData::A(A(Ipv4Addr::new(192, 0, 2, i))),
+        ));
+    }
+    let frag_wire = frag_resp.to_vec()?;
+    let frag_frames =
+        ipv4_udp_fragmented_frames(&server, &clients[0], 53, 0xbeef, &frag_wire, &[24, 24]);
+    write_pcap_file(&dir.join("fragmented.pcap"), &frag_frames)?;
+
+    let tcp_opts = QueryOptions::new(DomainName::parse("tcp.split.example.")?, RecordType::A);
+    let tcp_wire = fix_query_id(build_query(&tcp_opts)?, 0x5200);
+    let mut tcp_resp = Message::from_vec(&tcp_wire)?;
+    tcp_resp.metadata.message_type = MessageType::Response;
+    let framed = dns_over_tcp_bytes(&tcp_resp.to_vec()?);
+    let (part_a, part_b) = framed.split_at(12);
+    write_pcap_file(
+        &dir.join("tcp-split.pcap"),
+        &[
+            ether_tcp_segment(&clients[1], &server, 45_100, part_a),
+            ether_tcp_segment(&clients[1], &server, 45_100, part_b),
+        ],
+    )?;
+
+    let mid_opts = QueryOptions::new(DomainName::parse("tcp.mid.example.")?, RecordType::A);
+    let mid_wire = fix_query_id(build_query(&mid_opts)?, 0x5300);
+    let mut mid_resp = Message::from_vec(&mid_wire)?;
+    mid_resp.metadata.message_type = MessageType::Response;
+    let mid_framed = dns_over_tcp_bytes(&mid_resp.to_vec()?);
+    write_pcap_file(
+        &dir.join("tcp-midstream.pcap"),
+        &[
+            ether_tcp_segment(
+                &clients[2],
+                &server,
+                45_200,
+                &[0xaa, 0xbb, 0xcc, 0xdd, 0xee],
+            ),
+            ether_tcp_segment(&clients[2], &server, 45_200, &mid_framed),
+        ],
+    )?;
+
+    let un_opts = QueryOptions::new(DomainName::parse("lonely.query.example.")?, RecordType::A);
+    let mut unanswered_frames = Vec::new();
+    for i in 0..20u16 {
+        let wire = fix_query_id(build_query(&un_opts)?, 0x5400 + i);
+        unanswered_frames.push(ether_udp_dns_frame(&clients[0], &server, 46_000 + i, wire));
+    }
+    write_pcap_file(&dir.join("unanswered.pcap"), &unanswered_frames)?;
+
+    let tc_opts = QueryOptions::new(DomainName::parse("tc.retry.example.")?, RecordType::A);
+    let tc_q = fix_query_id(build_query(&tc_opts)?, 0x5500);
+    let mut tc_udp_resp = Message::from_vec(&tc_q)?;
+    tc_udp_resp.metadata.message_type = MessageType::Response;
+    tc_udp_resp.metadata.truncation = true;
+    write_pcap_file(
+        &dir.join("tc-retry.pcap"),
+        &[
+            ether_udp_dns_frame(&clients[0], &server, 47_000, tc_q.clone()),
+            ether_udp_dns_frame(&server, &clients[0], 53, tc_udp_resp.to_vec()?),
+            ether_tcp_segment(&clients[0], &server, 47_001, &dns_over_tcp_bytes(&tc_q)),
+        ],
+    )?;
+
     Ok(())
 }
 
@@ -145,4 +220,103 @@ fn ether_udp_dns_v6_frame(src: &[u8; 16], dst: &[u8; 16], sport: u16, dns: Vec<u
         .write(&mut buf, &payload)
         .expect("frame");
     buf
+}
+
+fn dns_over_tcp_bytes(dns: &[u8]) -> Vec<u8> {
+    let len = dns.len() as u16;
+    let mut out = len.to_be_bytes().to_vec();
+    out.extend_from_slice(dns);
+    out
+}
+
+fn ether_tcp_segment(src: &[u8; 4], dst: &[u8; 4], sport: u16, payload: &[u8]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(14 + 20 + 20 + payload.len());
+    PacketBuilder::ethernet2([0; 6], [0; 6])
+        .ipv4(*src, *dst, 64)
+        .tcp(sport, 53, 1, 1)
+        .write(&mut buf, payload)
+        .expect("tcp frame");
+    buf
+}
+
+fn ipv4_udp_fragmented_frames(
+    src: &[u8; 4],
+    dst: &[u8; 4],
+    sport: u16,
+    ip_id: u16,
+    dns: &[u8],
+    chunk_sizes: &[usize],
+) -> Vec<Vec<u8>> {
+    let mut udp = Vec::with_capacity(8 + dns.len());
+    udp.extend_from_slice(&sport.to_be_bytes());
+    udp.extend_from_slice(&53u16.to_be_bytes());
+    udp.extend_from_slice(&(dns.len() as u16).to_be_bytes());
+    udp.extend_from_slice(dns);
+    let mut offset = 0usize;
+    let mut frames = Vec::new();
+    for (i, &size) in chunk_sizes.iter().enumerate() {
+        let end = if i + 1 == chunk_sizes.len() {
+            udp.len()
+        } else {
+            (offset + size).min(udp.len())
+        };
+        let chunk = &udp[offset..end];
+        let mf = end < udp.len();
+        frames.push(ethernet_ipv4_fragment(
+            src,
+            dst,
+            ip_id,
+            offset as u16,
+            mf,
+            chunk,
+        ));
+        offset = end;
+    }
+    frames
+}
+
+fn ethernet_ipv4_fragment(
+    src: &[u8; 4],
+    dst: &[u8; 4],
+    ip_id: u16,
+    offset_bytes: u16,
+    more_fragments: bool,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(14 + 20 + payload.len());
+    frame.extend_from_slice(&[0u8; 6]);
+    frame.extend_from_slice(&[0u8; 6]);
+    frame.extend_from_slice(&[0x08, 0x00]);
+    let mut ip = vec![0u8; 20];
+    ip[0] = 0x45;
+    let total_len = (20 + payload.len()) as u16;
+    ip[2..4].copy_from_slice(&total_len.to_be_bytes());
+    ip[4..6].copy_from_slice(&ip_id.to_be_bytes());
+    let frag_off = offset_bytes / 8;
+    let flags = if more_fragments { 0x2000u16 } else { 0u16 };
+    ip[6..8].copy_from_slice(&(flags | frag_off).to_be_bytes());
+    ip[8] = 64;
+    ip[9] = 17;
+    ip[12..16].copy_from_slice(src);
+    ip[16..20].copy_from_slice(dst);
+    let csum = ipv4_header_checksum(&ip);
+    ip[10..12].copy_from_slice(&csum.to_be_bytes());
+    frame.extend_from_slice(&ip);
+    frame.extend_from_slice(payload);
+    frame
+}
+
+fn ipv4_header_checksum(hdr: &[u8]) -> u16 {
+    let mut sum = 0u32;
+    for chunk in hdr.chunks(2) {
+        if chunk.len() == 2 {
+            sum += u32::from(u16::from_be_bytes([chunk[0], chunk[1]]));
+        } else {
+            sum += u32::from(chunk[0]) << 8;
+        }
+    }
+    while sum > 0xffff {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !sum as u16
 }
