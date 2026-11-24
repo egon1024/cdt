@@ -1,7 +1,10 @@
 #![cfg(all(target_os = "linux", feature = "tui"))]
 
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use crate::options::WindowMode;
 
 use crossterm::ExecutableCommand;
 use crossterm::event::{
@@ -46,6 +49,46 @@ struct DrawCache {
 impl DrawCache {
     fn is_valid(&self) -> bool {
         !self.main_text.is_empty()
+    }
+}
+
+/// Cached `format_batch_tables` output so view/level keys (1–9, s, d, …) repaint without refiltering.
+#[derive(Default)]
+struct ViewFormatCache {
+    entries: HashMap<ViewFormatKey, String>,
+}
+
+#[derive(Hash, PartialEq, Eq)]
+struct ViewFormatKey {
+    view: ViewId,
+    width: u16,
+    packets: u64,
+    filter_generation: u64,
+    smart: bool,
+}
+
+impl ViewFormatCache {
+    fn format(
+        &mut self,
+        key: ViewFormatKey,
+        build: impl FnOnce() -> String,
+    ) -> String {
+        if let Some(hit) = self.entries.get(&key) {
+            return hit.clone();
+        }
+        let text = build();
+        if self.entries.len() > 24 {
+            self.entries.clear();
+        }
+        self.entries.insert(key, text.clone());
+        text
+    }
+}
+
+fn effective_window_secs(window: &WindowMode) -> Option<u64> {
+    match window {
+        WindowMode::All => None,
+        WindowMode::Seconds(s) => Some(*s),
     }
 }
 
@@ -103,6 +146,7 @@ pub fn run_live(
     let mut frames_since_draw: u64 = 0;
     let mut force_redraw = true;
     let mut draw_cache = DrawCache::default();
+    let mut view_format_cache = ViewFormatCache::default();
     let mut overlay_dismiss_redraw = false;
 
     'live: loop {
@@ -135,6 +179,7 @@ pub fn run_live(
             &mut frames_since_draw,
             &mut last_draw,
             &mut draw_cache,
+            &mut view_format_cache,
         )? {
             force_redraw = false;
             overlay_dismiss_redraw = false;
@@ -184,6 +229,7 @@ pub fn run_live(
                 &mut frames_since_draw,
                 &mut last_draw,
                 &mut draw_cache,
+                &mut view_format_cache,
             )? {
                 force_redraw = false;
                 overlay_dismiss_redraw = false;
@@ -226,6 +272,7 @@ pub fn run_live(
             &mut frames_since_draw,
             &mut last_draw,
             &mut draw_cache,
+            &mut view_format_cache,
         )? {
             force_redraw = false;
             overlay_dismiss_redraw = false;
@@ -247,6 +294,7 @@ pub fn run_live(
                 refresh,
                 &mut frames_since_draw,
                 &mut draw_cache,
+                &mut view_format_cache,
             )?;
             last_draw = Instant::now();
         }
@@ -287,6 +335,7 @@ pub fn run_live(
             &mut frames_since_draw,
             &mut last_draw,
             &mut draw_cache,
+            &mut view_format_cache,
         )? {
             force_redraw = false;
         }
@@ -391,6 +440,7 @@ fn maybe_redraw(
     frames_since_draw: &mut u64,
     last_draw: &mut Instant,
     cache: &mut DrawCache,
+    view_format_cache: &mut ViewFormatCache,
 ) -> Result<bool, TuiError> {
     if !force_redraw {
         return Ok(false);
@@ -413,6 +463,7 @@ fn maybe_redraw(
             refresh,
             frames_since_draw,
             cache,
+            view_format_cache,
         )?;
     }
     *last_draw = Instant::now();
@@ -458,8 +509,8 @@ fn draw_live_frame(
     refresh: Duration,
     frames_since_draw: &mut u64,
     cache: &mut DrawCache,
+    view_format_cache: &mut ViewFormatCache,
 ) -> Result<(), TuiError> {
-    let snap = agg.snapshot();
     let recv_last = *frames_since_draw;
     *frames_since_draw = 0;
     let hints = hint_engine.evaluate(
@@ -477,7 +528,7 @@ fn draw_live_frame(
     );
     let hint_lines = HintEngine::format_hints(&hints);
 
-    let total = snap.total_messages;
+    let total = agg.total_in_window;
     let smart = agg.smart_qname_labels;
     let smart_tag = if smart { " smart-qname" } else { "" };
     let title = format!("flux watch {iface}{smart_tag}");
@@ -487,10 +538,10 @@ fn draw_live_frame(
                 interfaces: vec![iface.to_string()],
             },
             window: options.window.clone(),
-            effective_window_secs: snap.effective_window_secs,
+            effective_window_secs: effective_window_secs(&agg.window),
             filter: agg.filter.header.clone(),
-            match_stats: snap.match_stats,
-            counted_in_window: snap.total_messages,
+            match_stats: agg.match_stats,
+            counted_in_window: total,
             counters: StatusLine {
                 packets: agg.counters.packets,
                 drops: agg.counters.capture_drops,
@@ -508,15 +559,24 @@ fn draw_live_frame(
     };
 
     let table_width = term.size()?.width.saturating_sub(4).max(32);
-    let main_text = format_batch_tables(
-        &snap.counts,
-        &[*view],
-        options.batch_limit,
-        total,
-        options.key_cap,
-        options.ede_show_no_ede,
-        Some(table_width),
-    );
+    let format_key = ViewFormatKey {
+        view: *view,
+        width: table_width,
+        packets: agg.counters.packets,
+        filter_generation: agg.filter_generation,
+        smart,
+    };
+    let main_text = view_format_cache.format(format_key, || {
+        format_batch_tables(
+            &agg.window_totals,
+            &[*view],
+            options.batch_limit,
+            total,
+            options.key_cap,
+            options.ede_show_no_ede,
+            Some(table_width),
+        )
+    });
     cache.title.clone_from(&title);
     cache.main_text.clone_from(&main_text);
 

@@ -553,6 +553,7 @@ fn help_lines(smart_qname: bool) -> Vec<String> {
         lines.push("                then: tmux source-file ~/.tmux.conf".into());
         lines.push("  Terminator    outside tmux does not pass kitty Esc fix;".into());
         lines.push("                tmux holds Esc for sequence detection".into());
+        lines.push("  1–9           use top-row keys; numpad may lag like Esc".into());
     } else {
         lines.push("".into());
         lines.push("  Backspace     instant dismiss if Esc feels slow".into());
