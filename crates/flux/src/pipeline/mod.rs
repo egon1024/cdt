@@ -82,23 +82,20 @@ pub fn run_watch(
             return run_live_tui(cap, options);
         }
         let _ = cap_opts;
-        Err(PipelineError::Config(
-            "live capture requires a TTY; use -r for batch replay".into(),
-        ))
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    if interfaces.is_empty() {
         return Err(PipelineError::Config(
-            "flux watch: specify -i <iface> for live capture or -r <file> for replay".into(),
+            "live capture requires a TTY; use -r for batch replay".into(),
         ));
     }
 
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (interfaces, options, use_tui);
+        let _ = interfaces;
+        let _ = options;
+        let _ = use_tui;
         Err(PipelineError::Config(
-            "live capture is only supported on Linux".into(),
+            "flux watch: live capture requires Linux (omit -i to list all up interfaces, \
+             +exclude-iface, multi-listener capture); use -r for replay on this host"
+                .into(),
         ))
     }
 }

@@ -1,7 +1,24 @@
 use clap::{Parser, Subcommand};
 
+#[cfg(target_os = "linux")]
+const FLUX_LONG_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (cdt-flux-v1 phases 1–4; linux live capture)"
+);
+
+#[cfg(not(target_os = "linux"))]
+const FLUX_LONG_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (cdt-flux-v1 phases 1–4; replay-only on this OS)"
+);
+
 #[derive(Debug, Parser)]
-#[command(name = "flux", version, about = "Live DNS traffic observer")]
+#[command(
+    name = "flux",
+    version,
+    long_version = FLUX_LONG_VERSION,
+    about = "Live DNS traffic observer"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
