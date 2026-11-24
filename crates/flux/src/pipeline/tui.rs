@@ -15,8 +15,8 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
     supports_keyboard_enhancement,
 };
-use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::prelude::*;
+use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph};
 use thiserror::Error;
 
@@ -477,17 +477,14 @@ fn draw_cached_main_frame(
     let main_text = cache.main_text.clone();
     let title = cache.title.clone();
     term.draw(|f| {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(4), Constraint::Length(1)])
-            .split(f.area());
         f.render_widget(
-            Paragraph::new(main_text).block(Block::default().title(title).borders(Borders::ALL)),
-            chunks[0],
-        );
-        f.render_widget(
-            Paragraph::new(TUI_FOOTER_HINTS).block(Block::default().borders(Borders::TOP)),
-            chunks[1],
+            Paragraph::new(main_text).block(
+                Block::default()
+                    .title(title)
+                    .title_bottom(Line::from(TUI_FOOTER_HINTS))
+                    .borders(Borders::ALL),
+            ),
+            f.area(),
         );
     })?;
     flush_frame(term)
@@ -583,19 +580,14 @@ fn draw_live_frame(
     let main_text_draw = main_text.clone();
     let title_draw = title.clone();
     term.draw(|f| {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(4), Constraint::Length(1)])
-            .split(f.area());
-
         f.render_widget(
-            Paragraph::new(main_text_draw)
-                .block(Block::default().title(title_draw).borders(Borders::ALL)),
-            chunks[0],
-        );
-        f.render_widget(
-            Paragraph::new(TUI_FOOTER_HINTS).block(Block::default().borders(Borders::TOP)),
-            chunks[1],
+            Paragraph::new(main_text_draw).block(
+                Block::default()
+                    .title(title_draw)
+                    .title_bottom(Line::from(TUI_FOOTER_HINTS))
+                    .borders(Borders::ALL),
+            ),
+            f.area(),
         );
 
         render_modal(
