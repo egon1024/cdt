@@ -150,35 +150,31 @@ fn process_events(
     options: &mut FluxOptions,
     force_redraw: &mut bool,
 ) -> Result<bool, TuiError> {
-    let mut block = Duration::from_millis(50);
+    if !event::poll(Duration::from_millis(50))? {
+        return Ok(false);
+    }
     loop {
-        if !event::poll(block)? {
-            return Ok(false);
-        }
-        block = Duration::ZERO;
-        loop {
-            match event::read()? {
-                Event::Resize(_, _) => *force_redraw = true,
-                Event::Key(key) => {
-                    let outcome = handle_key(
-                        modal,
-                        view,
-                        agg,
-                        pipeline,
-                        options,
-                        key.code,
-                        key.modifiers,
-                    );
-                    if outcome.quit {
-                        return Ok(true);
-                    }
-                    *force_redraw |= outcome.force_redraw;
+        match event::read()? {
+            Event::Resize(_, _) => *force_redraw = true,
+            Event::Key(key) => {
+                let outcome = handle_key(
+                    modal,
+                    view,
+                    agg,
+                    pipeline,
+                    options,
+                    key.code,
+                    key.modifiers,
+                );
+                if outcome.quit {
+                    return Ok(true);
                 }
-                _ => {}
+                *force_redraw |= outcome.force_redraw;
             }
-            if !event::poll(Duration::ZERO)? {
-                return Ok(false);
-            }
+            _ => {}
+        }
+        if !event::poll(Duration::ZERO)? {
+            return Ok(false);
         }
     }
 }
