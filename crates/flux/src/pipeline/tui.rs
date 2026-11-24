@@ -72,24 +72,33 @@ pub fn run_live(
     let mut frames_since_draw: u64 = 0;
     let mut force_redraw = true;
 
-    loop {
+    'live: loop {
         frames_since_draw += drain_capture(&cap, &mut agg, &mut pipeline, &options);
 
         if event::poll(Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
-                let outcome = handle_key(
-                    &mut modal,
-                    &mut view,
-                    &mut agg,
-                    &mut pipeline,
-                    &mut options,
-                    key.code,
-                    key.modifiers,
-                );
-                if outcome.quit {
+            loop {
+                match event::read()? {
+                    Event::Resize(_, _) => force_redraw = true,
+                    Event::Key(key) => {
+                        let outcome = handle_key(
+                            &mut modal,
+                            &mut view,
+                            &mut agg,
+                            &mut pipeline,
+                            &mut options,
+                            key.code,
+                            key.modifiers,
+                        );
+                        if outcome.quit {
+                            break 'live;
+                        }
+                        force_redraw |= outcome.force_redraw;
+                    }
+                    _ => {}
+                }
+                if !event::poll(Duration::ZERO)? {
                     break;
                 }
-                force_redraw |= outcome.force_redraw;
             }
         }
 
