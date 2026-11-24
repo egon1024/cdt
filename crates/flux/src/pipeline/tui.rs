@@ -157,6 +157,7 @@ pub fn run_live(
                     .constraints([Constraint::Min(4), Constraint::Length(footer_lines)])
                     .split(f.area());
 
+                let table_width = chunks[0].width.saturating_sub(2);
                 let mut main_text = format_batch_tables(
                     &snap.counts,
                     &[view],
@@ -164,6 +165,7 @@ pub fn run_live(
                     total,
                     options.key_cap,
                     options.ede_show_no_ede,
+                    Some(table_width),
                 );
                 if !modal.is_open() {
                     main_text.push_str("\nv views · p panels · w workers · l qname level · g smart labels · ? help · q quit\n");

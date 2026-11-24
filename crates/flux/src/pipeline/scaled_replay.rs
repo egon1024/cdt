@@ -145,6 +145,7 @@ pub fn replay_file_scaled(
         estimated_total,
         options.key_cap,
         options.ede_show_no_ede,
+        None,
     );
     if overload.estimate_marker {
         body = format!("~ estimates at 1/{}\n{body}", overload.sample_every);
