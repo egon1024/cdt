@@ -209,6 +209,45 @@ fn hint_engine_capture_drops() {
 
 #[test]
 #[cfg(target_os = "linux")]
+fn live_watch_lists_default_interfaces_on_stderr() {
+    let out = flux_run(&["watch", "+window=10s"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("flux: opened interfaces:"),
+        "stderr={stderr}"
+    );
+    assert!(
+        !stderr.contains("specify -i"),
+        "pre-phase-4 flux binary? stderr={stderr}"
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn exclude_iface_option_parses() {
+    let out = flux_run(&["watch", "-i", "lo", "+exclude-iface=veth*"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("unknown option"),
+        "stderr={stderr}"
+    );
+    assert!(stderr.contains("opened interfaces: lo"), "stderr={stderr}");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn unknown_interface_named_in_error() {
+    let out = flux_run(&["watch", "-i", "does-not-exist"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unknown interface: does-not-exist"),
+        "stderr={stderr}"
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
 fn live_fanout_integration_gated() {
     if std::env::var("FLUX_LIVE_FANOUT_TEST").ok().as_deref() != Some("1") {
         return;

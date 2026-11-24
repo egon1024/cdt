@@ -17,7 +17,8 @@ pub enum Command {
 
 #[derive(Debug, Parser)]
 pub struct WatchArgs {
-    /// Network interface for live capture (repeatable)
+    /// Network interface(s) for live capture (`eth0,lo`, or `eth0:threads=4`). Omit `-i` to
+    /// capture every interface that is up (including loopback), minus any `+exclude-iface` match.
     #[arg(short = 'i')]
     pub interfaces: Vec<String>,
 
