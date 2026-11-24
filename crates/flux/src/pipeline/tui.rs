@@ -1,6 +1,6 @@
 #![cfg(all(target_os = "linux", feature = "tui"))]
 
-use std::io;
+use std::io::{self, Write};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::ExecutableCommand;
@@ -28,7 +28,22 @@ use super::tui_modal::{Modal, handle_key, render_modal};
 
 /// Per-loop packet budget; drained in smaller chunks so keys are handled between batches.
 const CAPTURE_DRAIN_BUDGET: u64 = 8_192;
-const CAPTURE_DRAIN_CHUNK: u64 = 128;
+const CAPTURE_DRAIN_CHUNK: u64 = 16;
+/// Block waiting for input; kept short so Esc feels immediate (especially with a modal open).
+const EVENT_WAIT_BUSY_MS: u64 = 4;
+const EVENT_WAIT_IDLE_MS: u64 = 12;
+
+#[derive(Default)]
+struct DrawCache {
+    main_text: String,
+    title: String,
+}
+
+impl DrawCache {
+    fn is_valid(&self) -> bool {
+        !self.main_text.is_empty()
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum TuiError {
@@ -75,6 +90,8 @@ pub fn run_live(
     let mut last_draw = Instant::now();
     let mut frames_since_draw: u64 = 0;
     let mut force_redraw = true;
+    let mut draw_cache = DrawCache::default();
+    let mut overlay_dismiss_redraw = false;
 
     'live: loop {
         if drain_events(
@@ -84,11 +101,13 @@ pub fn run_live(
             &mut pipeline,
             &mut options,
             &mut force_redraw,
+            &mut overlay_dismiss_redraw,
         )? {
             break 'live;
         }
         if maybe_redraw(
             force_redraw,
+            overlay_dismiss_redraw,
             &mut term,
             &iface,
             capture_threads,
@@ -103,8 +122,10 @@ pub fn run_live(
             refresh,
             &mut frames_since_draw,
             &mut last_draw,
+            &mut draw_cache,
         )? {
             force_redraw = false;
+            overlay_dismiss_redraw = false;
         }
 
         let mut drained_this_turn = 0u64;
@@ -129,11 +150,13 @@ pub fn run_live(
                 &mut pipeline,
                 &mut options,
                 &mut force_redraw,
+                &mut overlay_dismiss_redraw,
             )? {
                 break 'live;
             }
             if maybe_redraw(
                 force_redraw,
+                overlay_dismiss_redraw,
                 &mut term,
                 &iface,
                 capture_threads,
@@ -148,42 +171,11 @@ pub fn run_live(
                 refresh,
                 &mut frames_since_draw,
                 &mut last_draw,
+                &mut draw_cache,
             )? {
                 force_redraw = false;
+                overlay_dismiss_redraw = false;
             }
-        }
-
-        if drained_this_turn == 0 {
-            if wait_for_event(Duration::from_millis(50))?
-                && drain_events(
-                    &mut modal,
-                    &mut view,
-                    &mut agg,
-                    &mut pipeline,
-                    &mut options,
-                    &mut force_redraw,
-                )?
-            {
-                break 'live;
-            }
-            let _ = maybe_redraw(
-                force_redraw,
-                &mut term,
-                &iface,
-                capture_threads,
-                fanout_group,
-                &agg,
-                &pipeline,
-                &options,
-                &hint_engine,
-                &view,
-                &modal,
-                start,
-                refresh,
-                &mut frames_since_draw,
-                &mut last_draw,
-            )?;
-            force_redraw = false;
         }
 
         let now = SystemTime::now()
@@ -192,6 +184,40 @@ pub fn run_live(
             .unwrap_or(0);
         agg.tick(now);
         pipeline.drain_flow_timeouts(&mut agg, now);
+
+        if drain_events(
+            &mut modal,
+            &mut view,
+            &mut agg,
+            &mut pipeline,
+            &mut options,
+            &mut force_redraw,
+            &mut overlay_dismiss_redraw,
+        )? {
+            break 'live;
+        }
+        if maybe_redraw(
+            force_redraw,
+            overlay_dismiss_redraw,
+            &mut term,
+            &iface,
+            capture_threads,
+            fanout_group,
+            &agg,
+            &pipeline,
+            &options,
+            &hint_engine,
+            &view,
+            &modal,
+            start,
+            refresh,
+            &mut frames_since_draw,
+            &mut last_draw,
+            &mut draw_cache,
+        )? {
+            force_redraw = false;
+            overlay_dismiss_redraw = false;
+        }
 
         if last_draw.elapsed() >= refresh {
             draw_live_frame(
@@ -208,8 +234,49 @@ pub fn run_live(
                 start,
                 refresh,
                 &mut frames_since_draw,
+                &mut draw_cache,
             )?;
             last_draw = Instant::now();
+        }
+
+        let wait_ms = if modal.is_open() || drained_this_turn == 0 {
+            EVENT_WAIT_BUSY_MS
+        } else {
+            EVENT_WAIT_IDLE_MS
+        };
+        if wait_for_event(Duration::from_millis(wait_ms))?
+            && drain_events(
+                &mut modal,
+                &mut view,
+                &mut agg,
+                &mut pipeline,
+                &mut options,
+                &mut force_redraw,
+                &mut overlay_dismiss_redraw,
+            )?
+        {
+            break 'live;
+        }
+        if maybe_redraw(
+            force_redraw,
+            overlay_dismiss_redraw,
+            &mut term,
+            &iface,
+            capture_threads,
+            fanout_group,
+            &agg,
+            &pipeline,
+            &options,
+            &hint_engine,
+            &view,
+            &modal,
+            start,
+            refresh,
+            &mut frames_since_draw,
+            &mut last_draw,
+            &mut draw_cache,
+        )? {
+            force_redraw = false;
         }
     }
     disable_raw_mode()?;
@@ -229,9 +296,18 @@ fn drain_events(
     pipeline: &mut LivePipeline,
     options: &mut FluxOptions,
     force_redraw: &mut bool,
+    overlay_dismiss: &mut bool,
 ) -> Result<bool, TuiError> {
     while event::poll(Duration::ZERO)? {
-        if handle_one_event(modal, view, agg, pipeline, options, force_redraw)? {
+        if handle_one_event(
+            modal,
+            view,
+            agg,
+            pipeline,
+            options,
+            force_redraw,
+            overlay_dismiss,
+        )? {
             return Ok(true);
         }
     }
@@ -245,6 +321,7 @@ fn handle_one_event(
     pipeline: &mut LivePipeline,
     options: &mut FluxOptions,
     force_redraw: &mut bool,
+    overlay_dismiss: &mut bool,
 ) -> Result<bool, TuiError> {
     match event::read()? {
         Event::Resize(_, _) => {
@@ -252,6 +329,7 @@ fn handle_one_event(
             Ok(false)
         }
         Event::Key(key) => {
+            let had_overlay = modal.is_open();
             let outcome = handle_key(
                 modal,
                 view,
@@ -264,6 +342,9 @@ fn handle_one_event(
             if outcome.quit {
                 return Ok(true);
             }
+            if had_overlay && !modal.is_open() && outcome.force_redraw {
+                *overlay_dismiss = true;
+            }
             *force_redraw |= outcome.force_redraw;
             Ok(false)
         }
@@ -271,9 +352,15 @@ fn handle_one_event(
     }
 }
 
+fn flush_frame(term: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Result<(), TuiError> {
+    Write::flush(term.backend_mut())?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn maybe_redraw(
     force_redraw: bool,
+    overlay_dismiss: bool,
     term: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     iface: &str,
     capture_threads: u32,
@@ -288,27 +375,56 @@ fn maybe_redraw(
     refresh: Duration,
     frames_since_draw: &mut u64,
     last_draw: &mut Instant,
+    cache: &mut DrawCache,
 ) -> Result<bool, TuiError> {
     if !force_redraw {
         return Ok(false);
     }
-    draw_live_frame(
-        term,
-        iface,
-        capture_threads,
-        fanout_group,
-        agg,
-        pipeline,
-        options,
-        hint_engine,
-        view,
-        modal,
-        start,
-        refresh,
-        frames_since_draw,
-    )?;
+    if overlay_dismiss && !modal.is_open() && cache.is_valid() {
+        draw_cached_main_frame(term, cache)?;
+    } else {
+        draw_live_frame(
+            term,
+            iface,
+            capture_threads,
+            fanout_group,
+            agg,
+            pipeline,
+            options,
+            hint_engine,
+            view,
+            modal,
+            start,
+            refresh,
+            frames_since_draw,
+            cache,
+        )?;
+    }
     *last_draw = Instant::now();
     Ok(true)
+}
+
+fn draw_cached_main_frame(
+    term: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    cache: &DrawCache,
+) -> Result<(), TuiError> {
+    let main_text = cache.main_text.clone();
+    let title = cache.title.clone();
+    term.draw(|f| {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(4), Constraint::Length(1)])
+            .split(f.area());
+        f.render_widget(
+            Paragraph::new(main_text).block(Block::default().title(title).borders(Borders::ALL)),
+            chunks[0],
+        );
+        f.render_widget(
+            Paragraph::new(TUI_FOOTER_HINTS).block(Block::default().borders(Borders::TOP)),
+            chunks[1],
+        );
+    })?;
+    flush_frame(term)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -326,6 +442,7 @@ fn draw_live_frame(
     start: Instant,
     refresh: Duration,
     frames_since_draw: &mut u64,
+    cache: &mut DrawCache,
 ) -> Result<(), TuiError> {
     let snap = agg.snapshot();
     let recv_last = *frames_since_draw;
@@ -347,11 +464,10 @@ fn draw_live_frame(
 
     let total = snap.total_messages;
     let smart = agg.smart_qname_labels;
-    term.draw(|f| {
-        let smart_tag = if smart { " smart-qname" } else { "" };
-        let title = format!("flux watch {iface}{smart_tag}");
+    let smart_tag = if smart { " smart-qname" } else { "" };
+    let title = format!("flux watch {iface}{smart_tag}");
 
-        let status = StatusBar {
+    let status = StatusBar {
             input: WatchInput::Live {
                 interfaces: vec![iface.to_string()],
             },
@@ -374,25 +490,32 @@ fn draw_live_frame(
             overload: None,
             listener_stats: Vec::new(),
             hints: Vec::new(),
-        };
+    };
 
+    let table_width = term.size()?.width.saturating_sub(4).max(32);
+    let main_text = format_batch_tables(
+        &snap.counts,
+        &[*view],
+        options.batch_limit,
+        total,
+        options.key_cap,
+        options.ede_show_no_ede,
+        Some(table_width),
+    );
+    cache.title.clone_from(&title);
+    cache.main_text.clone_from(&main_text);
+
+    let main_text_draw = main_text.clone();
+    let title_draw = title.clone();
+    term.draw(|f| {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(4), Constraint::Length(1)])
             .split(f.area());
 
-        let table_width = chunks[0].width.saturating_sub(2).max(32);
-        let main_text = format_batch_tables(
-            &snap.counts,
-            &[*view],
-            options.batch_limit,
-            total,
-            options.key_cap,
-            options.ede_show_no_ede,
-            Some(table_width),
-        );
         f.render_widget(
-            Paragraph::new(main_text).block(Block::default().title(title).borders(Borders::ALL)),
+            Paragraph::new(main_text_draw)
+                .block(Block::default().title(title_draw).borders(Borders::ALL)),
             chunks[0],
         );
         f.render_widget(
@@ -412,7 +535,7 @@ fn draw_live_frame(
             &status,
         );
     })?;
-    Ok(())
+    flush_frame(term)
 }
 
 fn drain_capture(
