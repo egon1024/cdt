@@ -107,6 +107,17 @@ pub fn handle_key(
         };
     }
 
+    if code == KeyCode::Backspace
+        && modal.is_open()
+        && !matches!(modal, Modal::QnameLevelInput { .. })
+    {
+        modal.dismiss();
+        return KeyResult {
+            quit: false,
+            force_redraw: true,
+        };
+    }
+
     if let Some(result) = try_modal_launcher(modal, code) {
         return result;
     }
@@ -479,7 +490,7 @@ fn modal_content_height(area: Rect) -> u16 {
 }
 
 fn modal_footer(line_count: usize, content_height: u16) -> String {
-    let mut footer = "Esc dismiss".to_string();
+    let mut footer = "Esc or Backspace dismiss".to_string();
     if line_count > content_height as usize {
         footer.push_str(" · ↑/↓ j/k scroll");
     }
@@ -522,7 +533,8 @@ fn help_lines(smart_qname: bool) -> Vec<String> {
         "".into(),
         "Other".into(),
         "  ? or h        this help".into(),
-        "  Esc           close modal (does not quit)".into(),
+        "  Esc, Backspace  close modal (does not quit)".into(),
+        "                Backspace is instant on terminals where Esc lags".into(),
         "  q, Ctrl+C     quit".into(),
     ]
 }

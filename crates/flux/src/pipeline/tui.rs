@@ -4,9 +4,13 @@ use std::io::{self, Write};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::ExecutableCommand;
-use crossterm::event::{self, Event};
+use crossterm::event::{
+    self, Event, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
+};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    supports_keyboard_enhancement,
 };
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::prelude::*;
@@ -81,6 +85,14 @@ pub fn run_live(
 
     let mut stdout = io::stdout();
     enable_raw_mode()?;
+    // Lone Esc shares bytes with arrow/alt CSI sequences; the kitty keyboard protocol reports
+    // Esc without the terminal's disambiguation wait (see crossterm PR / Kitty docs).
+    let keyboard_enhanced = matches!(supports_keyboard_enhancement(), Ok(true));
+    if keyboard_enhanced {
+        stdout.execute(PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
+        ))?;
+    }
     stdout.execute(EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut term = Terminal::new(backend)?;
@@ -278,6 +290,9 @@ pub fn run_live(
         )? {
             force_redraw = false;
         }
+    }
+    if keyboard_enhanced {
+        let _ = term.backend_mut().execute(PopKeyboardEnhancementFlags);
     }
     disable_raw_mode()?;
     term.backend_mut().execute(LeaveAlternateScreen)?;
