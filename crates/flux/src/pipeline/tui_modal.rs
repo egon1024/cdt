@@ -113,7 +113,7 @@ pub fn handle_key(
         Modal::PanelPicker { .. } => handle_panel_picker(modal, code),
         Modal::Workers { .. } => handle_workers_modal(modal, pipeline, options, code),
         Modal::Help { .. } | Modal::Listeners { .. } => handle_scroll_modal(modal, code),
-        Modal::None => handle_main_keys(modal, view, agg, pipeline, options, code),
+        Modal::None => handle_main_keys(view, agg, pipeline, options, code),
     }
 }
 
@@ -327,7 +327,6 @@ fn handle_scroll_modal(modal: &mut Modal, code: KeyCode) -> KeyResult {
 }
 
 fn handle_main_keys(
-    modal: &mut Modal,
     view: &mut ViewId,
     agg: &mut Aggregator,
     pipeline: &mut LivePipeline,
