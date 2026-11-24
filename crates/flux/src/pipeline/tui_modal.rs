@@ -489,8 +489,16 @@ fn modal_content_height(area: Rect) -> u16 {
         .height
 }
 
+fn inside_tmux() -> bool {
+    std::env::var_os("TMUX").is_some()
+}
+
 fn modal_footer(line_count: usize, content_height: u16) -> String {
-    let mut footer = "Esc or Backspace dismiss".to_string();
+    let mut footer = if inside_tmux() {
+        "Backspace dismiss · Esc may lag (tmux escape-time; see ?)".to_string()
+    } else {
+        "Esc or Backspace dismiss".to_string()
+    };
     if line_count > content_height as usize {
         footer.push_str(" · ↑/↓ j/k scroll");
     }
@@ -511,7 +519,7 @@ fn scrollable_text(lines: &[String], scroll: u16, visible_rows: u16) -> String {
 
 fn help_lines(smart_qname: bool) -> Vec<String> {
     let smart = if smart_qname { "on" } else { "off" };
-    vec![
+    let mut lines = vec![
         "Views (main table)".into(),
         "  v             view picker (lists all view keys)".into(),
         "  s d t r o     sources, destinations, qtype, rcode, opcode".into(),
@@ -534,9 +542,22 @@ fn help_lines(smart_qname: bool) -> Vec<String> {
         "Other".into(),
         "  ? or h        this help".into(),
         "  Esc, Backspace  close modal (does not quit)".into(),
-        "                Backspace is instant on terminals where Esc lags".into(),
         "  q, Ctrl+C     quit".into(),
-    ]
+    ];
+    if inside_tmux() {
+        lines.push("".into());
+        lines.push("tmux (Esc latency)".into());
+        lines.push("  Backspace     dismiss without delay".into());
+        lines.push("  escape-time   add to ~/.tmux.conf:".into());
+        lines.push("                set -g escape-time 0".into());
+        lines.push("                then: tmux source-file ~/.tmux.conf".into());
+        lines.push("  Terminator    outside tmux does not pass kitty Esc fix;".into());
+        lines.push("                tmux holds Esc for sequence detection".into());
+    } else {
+        lines.push("".into());
+        lines.push("  Backspace     instant dismiss if Esc feels slow".into());
+    }
+    lines
 }
 
 fn view_picker_lines() -> Vec<String> {
