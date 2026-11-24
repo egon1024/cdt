@@ -26,6 +26,9 @@ use crate::scale::priority::{ThreadRole, apply_thread_priority};
 
 use super::tui_modal::{Modal, handle_key, render_modal};
 
+/// Stop draining packets for a moment so key input can repaint without waiting on capture.
+const CAPTURE_DRAIN_BUDGET: u64 = 8_192;
+
 #[derive(Debug, Error)]
 pub enum TuiError {
     #[error(transparent)]
@@ -73,34 +76,39 @@ pub fn run_live(
     let mut force_redraw = true;
 
     'live: loop {
-        frames_since_draw += drain_capture(&cap, &mut agg, &mut pipeline, &options);
-
-        if event::poll(Duration::from_millis(50))? {
-            loop {
-                match event::read()? {
-                    Event::Resize(_, _) => force_redraw = true,
-                    Event::Key(key) => {
-                        let outcome = handle_key(
-                            &mut modal,
-                            &mut view,
-                            &mut agg,
-                            &mut pipeline,
-                            &mut options,
-                            key.code,
-                            key.modifiers,
-                        );
-                        if outcome.quit {
-                            break 'live;
-                        }
-                        force_redraw |= outcome.force_redraw;
-                    }
-                    _ => {}
-                }
-                if !event::poll(Duration::ZERO)? {
-                    break;
-                }
-            }
+        if process_events(
+            &mut modal,
+            &mut view,
+            &mut agg,
+            &mut pipeline,
+            &mut options,
+            &mut force_redraw,
+        )? {
+            break 'live;
         }
+
+        if force_redraw {
+            draw_live_frame(
+                &mut term,
+                &iface,
+                capture_threads,
+                fanout_group,
+                &agg,
+                &pipeline,
+                &options,
+                &hint_engine,
+                &view,
+                &modal,
+                start,
+                refresh,
+                &mut frames_since_draw,
+            )?;
+            last_draw = Instant::now();
+            force_redraw = false;
+        }
+
+        frames_since_draw +=
+            drain_capture(&cap, &mut agg, &mut pipeline, &options, CAPTURE_DRAIN_BUDGET);
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -109,99 +117,173 @@ pub fn run_live(
         agg.tick(now);
         pipeline.drain_flow_timeouts(&mut agg, now);
 
-        if force_redraw || last_draw.elapsed() >= refresh {
-            let snap = agg.snapshot();
-            let recv_last = frames_since_draw;
-            frames_since_draw = 0;
-            let hints = hint_engine.evaluate(
-                &[ListenerMeasurements {
-                    iface: iface.clone(),
-                    rate_pps: recv_last as f64 / refresh.as_secs_f64().max(0.001),
-                    drops: agg.counters.capture_drops,
-                    capture_threads,
-                    capture_busy_pct: 0,
-                    capture_queue: 0,
-                }],
-                &pipeline.parse_measurements(),
-                0,
-                None,
-            );
-            let hint_lines = HintEngine::format_hints(&hints);
-
-            let total = snap.total_messages;
-            let smart = agg.smart_qname_labels;
-            term.draw(|f| {
-                let smart_tag = if smart { " smart-qname" } else { "" };
-                let title = format!("flux watch {iface}{smart_tag}");
-
-                let status = StatusBar {
-                    input: WatchInput::Live {
-                        interfaces: vec![iface.clone()],
-                    },
-                    window: options.window.clone(),
-                    effective_window_secs: snap.effective_window_secs,
-                    filter: agg.filter.header.clone(),
-                    match_stats: snap.match_stats,
-                    counted_in_window: snap.total_messages,
-                    counters: StatusLine {
-                        packets: agg.counters.packets,
-                        drops: agg.counters.capture_drops,
-                        parse_busy_pct: pipeline.parse_busy_percent(),
-                        queue_depth: pipeline.queue_depth(),
-                        listener_frames: agg.counters.listener_packets,
-                        recv_frames_last_tick: Some(recv_last),
-                    },
-                    flow: pipeline.flow_counters(),
-                    pairing_enabled: options.pairing,
-                    elapsed_secs: Some(start.elapsed().as_secs_f32()),
-                    overload: None,
-                    listener_stats: Vec::new(),
-                    hints: Vec::new(),
-                };
-
-                let chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Min(4), Constraint::Length(1)])
-                    .split(f.area());
-
-                let table_width = chunks[0].width.saturating_sub(2).max(32);
-                let main_text = format_batch_tables(
-                    &snap.counts,
-                    &[view],
-                    options.batch_limit,
-                    total,
-                    options.key_cap,
-                    options.ede_show_no_ede,
-                    Some(table_width),
-                );
-                f.render_widget(
-                    Paragraph::new(main_text).block(Block::default().title(title).borders(Borders::ALL)),
-                    chunks[0],
-                );
-                f.render_widget(
-                    Paragraph::new(TUI_FOOTER_HINTS).block(Block::default().borders(Borders::TOP)),
-                    chunks[1],
-                );
-
-                render_modal(
-                    f,
-                    &modal,
-                    &iface,
-                    capture_threads,
-                    fanout_group,
-                    &pipeline,
-                    &hint_lines,
-                    smart,
-                    &status,
-                );
-            })?;
-
+        if last_draw.elapsed() >= refresh {
+            draw_live_frame(
+                &mut term,
+                &iface,
+                capture_threads,
+                fanout_group,
+                &agg,
+                &pipeline,
+                &options,
+                &hint_engine,
+                &view,
+                &modal,
+                start,
+                refresh,
+                &mut frames_since_draw,
+            )?;
             last_draw = Instant::now();
-            force_redraw = false;
         }
     }
     disable_raw_mode()?;
     term.backend_mut().execute(LeaveAlternateScreen)?;
+    Ok(())
+}
+
+/// Returns true when the user requested quit.
+fn process_events(
+    modal: &mut Modal,
+    view: &mut ViewId,
+    agg: &mut Aggregator,
+    pipeline: &mut LivePipeline,
+    options: &mut FluxOptions,
+    force_redraw: &mut bool,
+) -> Result<bool, TuiError> {
+    let mut block = Duration::from_millis(50);
+    loop {
+        if !event::poll(block)? {
+            return Ok(false);
+        }
+        block = Duration::ZERO;
+        loop {
+            match event::read()? {
+                Event::Resize(_, _) => *force_redraw = true,
+                Event::Key(key) => {
+                    let outcome = handle_key(
+                        modal,
+                        view,
+                        agg,
+                        pipeline,
+                        options,
+                        key.code,
+                        key.modifiers,
+                    );
+                    if outcome.quit {
+                        return Ok(true);
+                    }
+                    *force_redraw |= outcome.force_redraw;
+                }
+                _ => {}
+            }
+            if !event::poll(Duration::ZERO)? {
+                return Ok(false);
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_live_frame(
+    term: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    iface: &str,
+    capture_threads: u32,
+    fanout_group: Option<u32>,
+    agg: &Aggregator,
+    pipeline: &LivePipeline,
+    options: &FluxOptions,
+    hint_engine: &HintEngine,
+    view: &ViewId,
+    modal: &Modal,
+    start: Instant,
+    refresh: Duration,
+    frames_since_draw: &mut u64,
+) -> Result<(), TuiError> {
+    let snap = agg.snapshot();
+    let recv_last = *frames_since_draw;
+    *frames_since_draw = 0;
+    let hints = hint_engine.evaluate(
+        &[ListenerMeasurements {
+            iface: iface.to_string(),
+            rate_pps: recv_last as f64 / refresh.as_secs_f64().max(0.001),
+            drops: agg.counters.capture_drops,
+            capture_threads,
+            capture_busy_pct: 0,
+            capture_queue: 0,
+        }],
+        &pipeline.parse_measurements(),
+        0,
+        None,
+    );
+    let hint_lines = HintEngine::format_hints(&hints);
+
+    let total = snap.total_messages;
+    let smart = agg.smart_qname_labels;
+    term.draw(|f| {
+        let smart_tag = if smart { " smart-qname" } else { "" };
+        let title = format!("flux watch {iface}{smart_tag}");
+
+        let status = StatusBar {
+            input: WatchInput::Live {
+                interfaces: vec![iface.to_string()],
+            },
+            window: options.window.clone(),
+            effective_window_secs: snap.effective_window_secs,
+            filter: agg.filter.header.clone(),
+            match_stats: snap.match_stats,
+            counted_in_window: snap.total_messages,
+            counters: StatusLine {
+                packets: agg.counters.packets,
+                drops: agg.counters.capture_drops,
+                parse_busy_pct: pipeline.parse_busy_percent(),
+                queue_depth: pipeline.queue_depth(),
+                listener_frames: agg.counters.listener_packets,
+                recv_frames_last_tick: Some(recv_last),
+            },
+            flow: pipeline.flow_counters(),
+            pairing_enabled: options.pairing,
+            elapsed_secs: Some(start.elapsed().as_secs_f32()),
+            overload: None,
+            listener_stats: Vec::new(),
+            hints: Vec::new(),
+        };
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(4), Constraint::Length(1)])
+            .split(f.area());
+
+        let table_width = chunks[0].width.saturating_sub(2).max(32);
+        let main_text = format_batch_tables(
+            &snap.counts,
+            &[*view],
+            options.batch_limit,
+            total,
+            options.key_cap,
+            options.ede_show_no_ede,
+            Some(table_width),
+        );
+        f.render_widget(
+            Paragraph::new(main_text).block(Block::default().title(title).borders(Borders::ALL)),
+            chunks[0],
+        );
+        f.render_widget(
+            Paragraph::new(TUI_FOOTER_HINTS).block(Block::default().borders(Borders::TOP)),
+            chunks[1],
+        );
+
+        render_modal(
+            f,
+            modal,
+            iface,
+            capture_threads,
+            fanout_group,
+            pipeline,
+            &hint_lines,
+            smart,
+            &status,
+        );
+    })?;
     Ok(())
 }
 
@@ -210,9 +292,10 @@ fn drain_capture(
     agg: &mut Aggregator,
     pipeline: &mut LivePipeline,
     options: &FluxOptions,
+    max_packets: u64,
 ) -> u64 {
     let mut n = 0u64;
-    loop {
+    while n < max_packets {
         match cap.try_recv_packet() {
             Ok(Some(pkt)) => {
                 pipeline.process_packet(agg, &pkt, options);
