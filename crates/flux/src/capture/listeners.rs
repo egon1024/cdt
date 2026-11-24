@@ -138,7 +138,7 @@ pub fn opened_interfaces_message(specs: &[ListenerSpec]) -> String {
             }
         })
         .collect();
-    format!("flux: opened interfaces: {}", parts.join(", "))
+    format!("flux: opened interfaces (phase 4): {}", parts.join(", "))
 }
 
 #[cfg(test)]
