@@ -83,8 +83,8 @@ impl LiveCapture {
             set_promisc(fd, iface, true)?;
         }
         let fanout_group = if opts.fanout_threads > 1 {
-            let fanout =
-                libc::PACKET_FANOUT_HASH | (opts.fanout_group << 16) | (opts.fanout_slot & 0xffff);
+            // Kernel packs fanout *mode* in low 16 bits and group id in high 16 bits.
+            let fanout = libc::PACKET_FANOUT_HASH | (opts.fanout_group << 16);
             if unsafe {
                 libc::setsockopt(
                     fd,
@@ -177,12 +177,19 @@ pub fn open_live(iface: &str) -> Result<LiveCapture, LiveCaptureError> {
     LiveCapture::open(iface)
 }
 
-pub fn fanout_available() -> bool {
+/// Probe whether `PACKET_FANOUT` works the same way as live open (socket bound to `lo`).
+pub fn fanout_probe_error() -> Option<String> {
     let fd = unsafe { libc::socket(libc::AF_PACKET, libc::SOCK_RAW, libc::ETH_P_ALL.to_be()) };
     if fd < 0 {
-        return false;
+        let err = io::Error::last_os_error();
+        return Some(err.to_string());
     }
-    let fanout = libc::PACKET_FANOUT_HASH;
+    let bind_err = bind_loopback(fd);
+    if let Err(e) = bind_err {
+        unsafe { libc::close(fd) };
+        return Some(e.to_string());
+    }
+    let fanout = libc::PACKET_FANOUT_HASH | (1_u32 << 16);
     let ok = unsafe {
         libc::setsockopt(
             fd,
@@ -192,8 +199,36 @@ pub fn fanout_available() -> bool {
             std::mem::size_of::<u32>() as u32,
         ) == 0
     };
+    if !ok {
+        let err = io::Error::last_os_error();
+        unsafe { libc::close(fd) };
+        return Some(err.to_string());
+    }
     unsafe { libc::close(fd) };
-    ok
+    None
+}
+
+pub fn fanout_available() -> bool {
+    fanout_probe_error().is_none()
+}
+
+fn bind_loopback(fd: RawFd) -> Result<(), io::Error> {
+    let ifindex = iface_ifindex("lo").map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let mut addr: libc::sockaddr_ll = unsafe { std::mem::zeroed() };
+    addr.sll_family = libc::AF_PACKET as u16;
+    addr.sll_protocol = (libc::ETH_P_ALL as u16).to_be();
+    addr.sll_ifindex = ifindex;
+    let ret = unsafe {
+        libc::bind(
+            fd,
+            &addr as *const libc::sockaddr_ll as *const libc::sockaddr,
+            std::mem::size_of::<libc::sockaddr_ll>() as u32,
+        )
+    };
+    if ret != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 fn set_promisc(fd: RawFd, iface: &str, on: bool) -> Result<(), LiveCaptureError> {

@@ -63,11 +63,13 @@ pub fn run_watch(
             ));
         }
         eprintln!("{}", crate::capture::opened_interfaces_message(&listeners));
-        if listeners.iter().any(|s| s.capture_threads > 1) && !crate::capture::fanout_available() {
-            return Err(PipelineError::Config(
-                "flux watch: per-interface capture threads > 1 require PACKET_FANOUT (Linux)"
-                    .into(),
-            ));
+        if listeners.iter().any(|s| s.capture_threads > 1) {
+            if let Some(detail) = crate::capture::live::fanout_probe_error() {
+                return Err(PipelineError::Config(format!(
+                    "flux watch: per-interface capture threads > 1 require Linux PACKET_FANOUT \
+                     ({detail}); try `-i <iface>:threads=1` and use `+flow-threads` / `+workers`"
+                )));
+            }
         }
         let iface = &listeners[0].iface;
         let cap_opts = crate::capture::live::LiveCaptureOpts {
