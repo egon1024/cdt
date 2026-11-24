@@ -10,6 +10,7 @@ pub mod parse;
 pub mod pipeline;
 pub mod qtype;
 pub mod rcode;
+pub mod scale;
 pub mod validate;
 pub mod view;
 pub mod window;

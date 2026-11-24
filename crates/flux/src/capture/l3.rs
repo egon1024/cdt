@@ -1,5 +1,6 @@
 use etherparse::{NetSlice, SlicedPacket, TransportSlice};
 
+use crate::capture::PortSet;
 use crate::flow::FragmentKey;
 use crate::options::AddressFamily;
 
@@ -42,21 +43,29 @@ pub enum L3Error {
     Parse,
 }
 
-pub fn parse_l3(pkt: &RawPacket, family: AddressFamily) -> Result<DnsL3Payload, L3Error> {
+pub fn parse_l3(
+    pkt: &RawPacket,
+    family: AddressFamily,
+    ports: &PortSet,
+) -> Result<DnsL3Payload, L3Error> {
     let sliced = SlicedPacket::from_ethernet(pkt.data.as_slice())
         .or_else(|_| SlicedPacket::from_ip(pkt.data.as_slice()))
         .map_err(|_| L3Error::Parse)?;
-    parse_sliced(&sliced, family)
+    parse_sliced(&sliced, family, ports)
 }
 
-fn parse_sliced(sliced: &SlicedPacket<'_>, family: AddressFamily) -> Result<DnsL3Payload, L3Error> {
+fn parse_sliced(
+    sliced: &SlicedPacket<'_>,
+    family: AddressFamily,
+    ports: &PortSet,
+) -> Result<DnsL3Payload, L3Error> {
     let vlan = sliced.vlan.as_ref().map(|v| match v {
         etherparse::VlanSlice::SingleVlan(s) => u16::from(s.vlan_identifier()),
         etherparse::VlanSlice::DoubleVlan(d) => u16::from(d.outer().vlan_identifier()),
     });
     match sliced.net.as_ref() {
-        Some(NetSlice::Ipv4(h)) => parse_ipv4(h, sliced.transport.as_ref(), vlan, family),
-        Some(NetSlice::Ipv6(h)) => parse_ipv6(h, sliced.transport.as_ref(), vlan, family),
+        Some(NetSlice::Ipv4(h)) => parse_ipv4(h, sliced.transport.as_ref(), vlan, family, ports),
+        Some(NetSlice::Ipv6(h)) => parse_ipv6(h, sliced.transport.as_ref(), vlan, family, ports),
         _ => Err(L3Error::NotDns),
     }
 }
@@ -66,6 +75,7 @@ fn parse_ipv4(
     transport: Option<&TransportSlice<'_>>,
     vlan: Option<u16>,
     family: AddressFamily,
+    ports: &PortSet,
 ) -> Result<DnsL3Payload, L3Error> {
     let hdr = h.header();
     let mut src = [0u8; 16];
@@ -121,6 +131,7 @@ fn parse_ipv4(
             u.payload().to_vec(),
             false,
             1,
+            ports,
         ),
         Some(TransportSlice::Tcp(t)) => dns_tcp(
             AddressFamily::V4,
@@ -132,6 +143,7 @@ fn parse_ipv4(
             t.destination_port(),
             vlan,
             t.payload().to_vec(),
+            ports,
         ),
         _ => Err(L3Error::NotDns),
     }
@@ -142,6 +154,7 @@ fn parse_ipv6(
     transport: Option<&TransportSlice<'_>>,
     vlan: Option<u16>,
     family: AddressFamily,
+    ports: &PortSet,
 ) -> Result<DnsL3Payload, L3Error> {
     let hdr = h.header();
     let src = hdr.source_addr().octets();
@@ -162,6 +175,7 @@ fn parse_ipv6(
             u.payload().to_vec(),
             false,
             1,
+            ports,
         ),
         Some(TransportSlice::Tcp(t)) => dns_tcp(
             AddressFamily::V6,
@@ -173,6 +187,7 @@ fn parse_ipv6(
             t.destination_port(),
             vlan,
             t.payload().to_vec(),
+            ports,
         ),
         _ => Err(L3Error::NotDns),
     }
@@ -191,8 +206,9 @@ fn dns_udp(
     payload: Vec<u8>,
     is_fragment: bool,
     fragment_count: u8,
+    ports: &PortSet,
 ) -> Result<DnsL3Payload, L3Error> {
-    if src_port != 53 && dst_port != 53 {
+    if !ports.is_dns_port(src_port, dst_port) {
         return Err(L3Error::NotDns);
     }
     Ok(DnsL3Payload {
@@ -226,8 +242,9 @@ fn dns_tcp(
     dst_port: u16,
     vlan: Option<u16>,
     payload: Vec<u8>,
+    ports: &PortSet,
 ) -> Result<DnsL3Payload, L3Error> {
-    if src_port != 53 && dst_port != 53 {
+    if !ports.is_dns_port(src_port, dst_port) {
         return Err(L3Error::NotDns);
     }
     Ok(DnsL3Payload {

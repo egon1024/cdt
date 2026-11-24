@@ -17,7 +17,7 @@ pub fn ingest_packet(
         if !options.within_time_bounds(ready.timestamp_secs as f64) {
             continue;
         }
-        let mut parsed = parse_flow_message(&ready);
+        let mut parsed = parse_flow_message(&ready, &options.dns_ports);
         let ts_ns = u128::from(ready.timestamp_secs) * 1_000_000_000
             + u128::from(ready.timestamp_subsec_ns);
         flow.pairing

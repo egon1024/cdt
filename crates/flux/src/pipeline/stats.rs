@@ -3,6 +3,8 @@ use std::path::Path;
 use crate::filter::{FilterHeader, MatchStats};
 use crate::flow::FlowCounters;
 use crate::options::WindowMode;
+use crate::scale::hints::Hint;
+use crate::scale::overload::OverloadState;
 
 #[derive(Debug, Clone)]
 pub struct StatusLine {
@@ -31,6 +33,9 @@ pub struct StatusBar {
     pub pairing_enabled: bool,
     /// Wall time since live session start (TUI only).
     pub elapsed_secs: Option<f32>,
+    pub overload: Option<OverloadState>,
+    pub listener_stats: Vec<String>,
+    pub hints: Vec<Hint>,
 }
 
 impl StatusBar {
@@ -93,6 +98,26 @@ impl StatusBar {
         let mut line = format!("--- status: {} ---", parts.join(" | "));
         line.push_str(&self.flow.format_suffix());
         line.push('\n');
+        if let Some(ov) = &self.overload {
+            if ov.active {
+                let mut note = format!(
+                    "--- overload: {:?} refused={} compacted={}",
+                    ov.policy, ov.refused, ov.compacted_slices
+                );
+                if ov.compact_blocks_refilter {
+                    note.push_str(" (compacted slices not re-filterable)");
+                }
+                note.push_str(" ---\n");
+                line.push_str(&note);
+            }
+        }
+        for hint in &self.hints {
+            line.push_str(&format!("--- {hint:?} ---\n"));
+        }
+        for ls in &self.listener_stats {
+            line.push_str(ls);
+            line.push('\n');
+        }
         if !self.pairing_enabled {
             line.push_str("--- note: pairing off; latency and unanswered unavailable ---\n");
         }
@@ -138,6 +163,9 @@ mod tests {
             flow: FlowCounters::default(),
             pairing_enabled: true,
             elapsed_secs: None,
+            overload: None,
+            listener_stats: Vec::new(),
+            hints: Vec::new(),
         };
         let s = bar.format();
         assert!(s.contains("replay udp-basic.pcap"));
@@ -165,6 +193,9 @@ mod tests {
             flow: FlowCounters::default(),
             pairing_enabled: true,
             elapsed_secs: Some(5.2),
+            overload: None,
+            listener_stats: Vec::new(),
+            hints: Vec::new(),
         };
         let s = bar.format();
         assert!(s.contains("live lo"));

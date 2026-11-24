@@ -59,7 +59,7 @@ impl FlowStage {
         pkt: &RawPacket,
         family: AddressFamily,
     ) -> Vec<DnsMessageReady> {
-        let l3 = match parse_l3(pkt, family) {
+        let l3 = match parse_l3(pkt, family, &self.config.dns_ports) {
             Ok(v) => v,
             Err(L3Error::NotDns) | Err(L3Error::Parse) => return Vec::new(),
             Err(L3Error::FamilyFiltered) => return Vec::new(),
@@ -90,7 +90,7 @@ impl FlowStage {
         }
         let src_port = u16::from_be_bytes([dgram.payload[0], dgram.payload[1]]);
         let dst_port = u16::from_be_bytes([dgram.payload[2], dgram.payload[3]]);
-        if src_port != 53 && dst_port != 53 {
+        if !self.config.dns_ports.is_dns_port(src_port, dst_port) {
             return Vec::new();
         }
         let udp_payload = dgram.payload[8..].to_vec();
@@ -172,6 +172,20 @@ impl FlowStage {
     pub fn sync_pairing_counters(&mut self) {
         self.counters.pairing_evicted = self.pairing.counters().pairing_evicted;
     }
+
+    pub fn pair_message(
+        &mut self,
+        ready: &DnsMessageReady,
+        ports: &crate::capture::PortSet,
+    ) -> crate::parse::ParsedObservation {
+        let mut parsed = parse_flow_message(ready, ports);
+        let ts_ns = u128::from(ready.timestamp_secs) * 1_000_000_000
+            + u128::from(ready.timestamp_subsec_ns);
+        self.pairing
+            .on_message(&mut parsed.record, ts_ns, ready.timestamp_secs);
+        self.sync_pairing_counters();
+        parsed
+    }
 }
 
 fn to_ready(
@@ -203,12 +217,16 @@ fn to_ready(
     }
 }
 
-pub fn parse_flow_message(ready: &DnsMessageReady) -> crate::parse::ParsedObservation {
+pub fn parse_flow_message(
+    ready: &DnsMessageReady,
+    ports: &crate::capture::PortSet,
+) -> crate::parse::ParsedObservation {
     let mut parsed = parse_dns_payload_with_transport(
         &ready.decoded,
         ready.timestamp_secs,
         &ready.iface,
         ready.transport,
+        ports,
     );
     parsed.record.transport = ready.transport;
     parsed.record.fragment_count = ready.fragment_count;

@@ -471,6 +471,7 @@ mod tests {
             unanswered: false,
             tc_retry: false,
             paired: false,
+            initiator_is_src: true,
         }
     }
 

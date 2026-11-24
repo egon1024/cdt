@@ -1,17 +1,26 @@
 mod decode;
 mod file;
-mod l3;
+pub mod iface_spec;
+pub mod l3;
+pub mod listeners;
 #[cfg(target_os = "linux")]
-mod live;
+pub mod live;
+mod ports;
 
 pub use decode::{DecodedDns, FrameError, decode_frame};
 pub use file::{
     CaptureError, PacketSource, iter_packets, open_packet_source, sniff_format, write_pcap_file,
 };
+pub use iface_spec::{IfaceSpecError, ListenerSpec, parse_interface_args};
 pub use l3::{DnsL3Payload, L3Error, L3Transport, parse_l3};
+pub use listeners::{
+    InterfaceTable, ListenerError, NetInterface, host_interface_table, opened_interfaces_message,
+    resolve_listeners,
+};
+pub use ports::{PortParseError, PortSet, initiator_is_src};
 
 #[cfg(target_os = "linux")]
-pub use live::{LiveCapture, LiveCaptureError, open_live};
+pub use live::{LiveCapture, LiveCaptureError, LiveCaptureOpts, fanout_available, open_live};
 
 #[derive(Debug, Clone)]
 pub struct RawPacket {

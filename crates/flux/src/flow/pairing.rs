@@ -180,7 +180,11 @@ fn pair_key_from_response(rec: &ObservationRecord) -> PairKey {
 }
 
 fn initiator_bytes(rec: &ObservationRecord) -> [u8; 16] {
-    if rec.qr { rec.dst_ip } else { rec.src_ip }
+    if rec.initiator_is_src {
+        rec.src_ip
+    } else {
+        rec.dst_ip
+    }
 }
 
 #[cfg(test)]
@@ -227,6 +231,7 @@ mod tests {
             unanswered: false,
             tc_retry: false,
             paired: false,
+            initiator_is_src: true,
         }
     }
 

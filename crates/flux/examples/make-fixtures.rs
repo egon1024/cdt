@@ -63,6 +63,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     write_pcap_file(&dir.join("udp-basic.pcap"), &frames)?;
 
+    let mut mdns_frames = Vec::new();
+    let mdns_opts = QueryOptions::new(DomainName::parse("mdns.local.")?, RecordType::PTR);
+    let mdns_wire = fix_query_id(build_query(&mdns_opts)?, 0x1500);
+    mdns_frames.push(ether_udp_dns_frame_port(
+        &clients[0],
+        &server,
+        5353,
+        5353,
+        mdns_wire,
+    ));
+    write_pcap_file(&dir.join("port5353.pcap"), &mdns_frames)?;
+
     let mut ede_frames = Vec::new();
     let opts = QueryOptions::new(DomainName::parse("ede.test.")?, RecordType::A);
     let qwire = fix_query_id(build_query(&opts)?, 0x3000);
@@ -198,6 +210,23 @@ fn fix_query_id(wire: Vec<u8>, id: u16) -> Vec<u8> {
     let mut msg = Message::from_vec(&wire).expect("query");
     msg.metadata.id = id;
     msg.to_vec().expect("encode")
+}
+
+fn ether_udp_dns_frame_port(
+    src: &[u8; 4],
+    dst: &[u8; 4],
+    sport: u16,
+    dport: u16,
+    dns: Vec<u8>,
+) -> Vec<u8> {
+    let payload = dns;
+    let mut buf = Vec::with_capacity(14 + 20 + 8 + payload.len());
+    PacketBuilder::ethernet2([0; 6], [0; 6])
+        .ipv4(*src, *dst, 64)
+        .udp(sport, dport)
+        .write(&mut buf, &payload)
+        .expect("frame");
+    buf
 }
 
 fn ether_udp_dns_frame(src: &[u8; 4], dst: &[u8; 4], sport: u16, dns: Vec<u8>) -> Vec<u8> {

@@ -228,6 +228,7 @@ all:
             unanswered: false,
             tc_retry: false,
             paired: false,
+            initiator_is_src: true,
         };
         assert!(evaluate_predicate(
             &pred,

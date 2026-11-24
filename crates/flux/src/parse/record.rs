@@ -2,7 +2,7 @@ use dns_core::query::extract_edns_meta;
 use hickory_proto::op::Message;
 use hickory_proto::rr::RecordType;
 
-use crate::capture::DecodedDns;
+use crate::capture::{DecodedDns, PortSet, initiator_is_src};
 use crate::options::AddressFamily;
 
 use super::ede::encode_edes;
@@ -87,6 +87,8 @@ pub struct ObservationRecord {
     pub unanswered: bool,
     pub tc_retry: bool,
     pub paired: bool,
+    /// L3 source is the DNS initiator (port/QR semantics).
+    pub initiator_is_src: bool,
 }
 
 impl ObservationRecord {
@@ -108,28 +110,34 @@ impl ObservationRecord {
     }
 
     pub fn initiator_is_src(&self) -> bool {
-        !self.qr
+        self.initiator_is_src
     }
 
     pub fn responder_ip(&self) -> &[u8] {
-        if self.qr {
-            &self.src_ip[..self.src_len as usize]
-        } else {
+        if self.initiator_is_src {
             &self.dst_ip[..self.dst_len as usize]
+        } else {
+            &self.src_ip[..self.src_len as usize]
         }
     }
 
     pub fn initiator_ip(&self) -> &[u8] {
-        if self.qr {
-            &self.dst_ip[..self.dst_len as usize]
-        } else {
+        if self.initiator_is_src {
             &self.src_ip[..self.src_len as usize]
+        } else {
+            &self.dst_ip[..self.dst_len as usize]
         }
     }
 }
 
 pub fn parse_dns_payload(dns: &DecodedDns, slice_sec: u64, iface: &str) -> ParsedObservation {
-    parse_dns_payload_with_transport(dns, slice_sec, iface, TransportProto::Udp)
+    parse_dns_payload_with_transport(
+        dns,
+        slice_sec,
+        iface,
+        TransportProto::Udp,
+        &PortSet::dns_default(),
+    )
 }
 
 pub fn parse_dns_payload_with_transport(
@@ -137,6 +145,7 @@ pub fn parse_dns_payload_with_transport(
     slice_sec: u64,
     iface: &str,
     transport: TransportProto,
+    ports: &PortSet,
 ) -> ParsedObservation {
     let wire_len = dns.payload.len().min(u16::MAX as usize) as u16;
     match Message::from_vec(&dns.payload) {
@@ -167,6 +176,7 @@ pub fn parse_dns_payload_with_transport(
                 (String::new(), 0, 0)
             };
             let qh = QnameHash(hash_qname(&qname));
+            let init_src = initiator_is_src(dns.src_port, dns.dst_port, qr, ports);
             let meta = extract_edns_meta(&msg);
             let mut edns = EdnsSummary {
                 present: msg.edns.is_some(),
@@ -225,51 +235,56 @@ pub fn parse_dns_payload_with_transport(
                     unanswered: false,
                     tc_retry: false,
                     paired: false,
+                    initiator_is_src: init_src,
                 },
                 ede_blob,
             }
         }
-        Err(_) => ParsedObservation {
-            record: ObservationRecord {
-                slice_sec,
-                iface: iface.to_string(),
-                vlan: dns.vlan,
-                family: dns.family,
-                transport,
-                src_ip: dns.src_ip,
-                src_len: dns.src_ip_len,
-                dst_ip: dns.dst_ip,
-                dst_len: dns.dst_ip_len,
-                src_port: dns.src_port,
-                dst_port: dns.dst_port,
-                wire_len,
-                malformed: true,
-                id: 0,
-                qr: false,
-                opcode: 0,
-                rcode: 0,
-                flags: DnsFlags::default(),
-                qdcount: 0,
-                ancount: 0,
-                nscount: 0,
-                arcount: 0,
-                qname: String::new(),
-                qname_hash: QnameHash(0),
-                qtype: 0,
-                qclass: 0,
-                edns: EdnsSummary::default(),
-                ede_off: 0,
-                ede_len: 0,
-                latency_ms: 0,
-                fragment_count: 1,
-                segment_count: 1,
-                ip_fragmented: false,
-                unanswered: false,
-                tc_retry: false,
-                paired: false,
-            },
-            ede_blob: Vec::new(),
-        },
+        Err(_) => {
+            let init_src = initiator_is_src(dns.src_port, dns.dst_port, false, ports);
+            ParsedObservation {
+                record: ObservationRecord {
+                    slice_sec,
+                    iface: iface.to_string(),
+                    vlan: dns.vlan,
+                    family: dns.family,
+                    transport,
+                    src_ip: dns.src_ip,
+                    src_len: dns.src_ip_len,
+                    dst_ip: dns.dst_ip,
+                    dst_len: dns.dst_ip_len,
+                    src_port: dns.src_port,
+                    dst_port: dns.dst_port,
+                    wire_len,
+                    malformed: true,
+                    id: 0,
+                    qr: false,
+                    opcode: 0,
+                    rcode: 0,
+                    flags: DnsFlags::default(),
+                    qdcount: 0,
+                    ancount: 0,
+                    nscount: 0,
+                    arcount: 0,
+                    qname: String::new(),
+                    qname_hash: QnameHash(0),
+                    qtype: 0,
+                    qclass: 0,
+                    edns: EdnsSummary::default(),
+                    ede_off: 0,
+                    ede_len: 0,
+                    latency_ms: 0,
+                    fragment_count: 1,
+                    segment_count: 1,
+                    ip_fragmented: false,
+                    unanswered: false,
+                    tc_retry: false,
+                    paired: false,
+                    initiator_is_src: init_src,
+                },
+                ede_blob: Vec::new(),
+            }
+        }
     }
 }
 

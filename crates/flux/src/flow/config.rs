@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use crate::capture::PortSet;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DefragMode {
     On,
@@ -27,6 +29,7 @@ pub struct FlowConfig {
     pub pairing: bool,
     pub pair_timeout: Duration,
     pub pair_max: usize,
+    pub dns_ports: PortSet,
 }
 
 impl Default for FlowConfig {
@@ -44,6 +47,7 @@ impl Default for FlowConfig {
             pairing: true,
             pair_timeout: Duration::from_secs(5),
             pair_max: 10_000,
+            dns_ports: PortSet::dns_default(),
         }
     }
 }
@@ -63,6 +67,7 @@ impl FlowConfig {
             pairing: opts.pairing,
             pair_timeout: opts.pair_timeout,
             pair_max: opts.pair_max,
+            dns_ports: opts.dns_ports.clone(),
         }
     }
 }

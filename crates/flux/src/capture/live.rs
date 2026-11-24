@@ -15,16 +15,41 @@ pub enum LiveCaptureError {
 
     #[error("interface error: {0}")]
     Interface(String),
+
+    #[error("per-interface capture threads > 1 require Linux PACKET_FANOUT support ({detail})")]
+    FanoutUnavailable { detail: String },
 }
 
 #[derive(Debug)]
 pub struct LiveCapture {
     fd: OwnedFd,
     iface: String,
+    pub fanout_group: Option<u32>,
+    pub fanout_slot: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LiveCaptureOpts {
+    pub promisc: bool,
+    pub fanout_group: u32,
+    pub fanout_slot: u32,
+    pub fanout_threads: u32,
 }
 
 impl LiveCapture {
     pub fn open(iface: &str) -> Result<Self, LiveCaptureError> {
+        Self::open_with(
+            iface,
+            LiveCaptureOpts {
+                promisc: false,
+                fanout_group: 0,
+                fanout_slot: 0,
+                fanout_threads: 1,
+            },
+        )
+    }
+
+    pub fn open_with(iface: &str, opts: LiveCaptureOpts) -> Result<Self, LiveCaptureError> {
         let fd = unsafe { libc::socket(libc::AF_PACKET, libc::SOCK_RAW, libc::ETH_P_ALL.to_be()) };
         if fd < 0 {
             let err = io::Error::last_os_error();
@@ -54,9 +79,41 @@ impl LiveCapture {
             return Err(LiveCaptureError::Io(err));
         }
         attach_dns_bpf(fd)?;
+        if opts.promisc {
+            set_promisc(fd, iface, true)?;
+        }
+        let fanout_group = if opts.fanout_threads > 1 {
+            let fanout =
+                libc::PACKET_FANOUT_HASH | (opts.fanout_group << 16) | (opts.fanout_slot & 0xffff);
+            if unsafe {
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_PACKET,
+                    libc::PACKET_FANOUT,
+                    &fanout as *const _ as *const libc::c_void,
+                    std::mem::size_of::<u32>() as u32,
+                )
+            } != 0
+            {
+                let err = io::Error::last_os_error();
+                unsafe { libc::close(fd) };
+                return Err(LiveCaptureError::FanoutUnavailable {
+                    detail: err.to_string(),
+                });
+            }
+            Some(opts.fanout_group)
+        } else {
+            None
+        };
         Ok(Self {
             fd: unsafe { OwnedFd::from_raw_fd(fd) },
             iface: iface.to_string(),
+            fanout_group,
+            fanout_slot: if opts.fanout_threads > 1 {
+                Some(opts.fanout_slot)
+            } else {
+                None
+            },
         })
     }
 
@@ -120,6 +177,59 @@ pub fn open_live(iface: &str) -> Result<LiveCapture, LiveCaptureError> {
     LiveCapture::open(iface)
 }
 
+pub fn fanout_available() -> bool {
+    let fd = unsafe { libc::socket(libc::AF_PACKET, libc::SOCK_RAW, libc::ETH_P_ALL.to_be()) };
+    if fd < 0 {
+        return false;
+    }
+    let fanout = libc::PACKET_FANOUT_HASH;
+    let ok = unsafe {
+        libc::setsockopt(
+            fd,
+            libc::SOL_PACKET,
+            libc::PACKET_FANOUT,
+            &fanout as *const _ as *const libc::c_void,
+            std::mem::size_of::<u32>() as u32,
+        ) == 0
+    };
+    unsafe { libc::close(fd) };
+    ok
+}
+
+fn set_promisc(fd: RawFd, iface: &str, on: bool) -> Result<(), LiveCaptureError> {
+    let mut req: libc::ifreq = unsafe { std::mem::zeroed() };
+    for (i, b) in iface.bytes().take(libc::IFNAMSIZ - 1).enumerate() {
+        req.ifr_name[i] = b as libc::c_char;
+    }
+    let flags = unsafe {
+        if libc::ioctl(
+            fd,
+            libc::SIOCGIFFLAGS,
+            &mut req as *mut libc::ifreq as *mut _,
+        ) != 0
+        {
+            return Err(LiveCaptureError::Io(io::Error::last_os_error()));
+        }
+        req.ifr_ifru.ifru_flags
+    };
+    if on {
+        req.ifr_ifru.ifru_flags = flags | (libc::IFF_PROMISC as i16);
+    } else {
+        req.ifr_ifru.ifru_flags = flags & !(libc::IFF_PROMISC as i16);
+    }
+    if unsafe {
+        libc::ioctl(
+            fd,
+            libc::SIOCSIFFLAGS,
+            &req as *const libc::ifreq as *mut libc::c_void,
+        )
+    } != 0
+    {
+        return Err(LiveCaptureError::Io(io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
 fn is_privilege_os_error(code: Option<i32>) -> bool {
     matches!(code, Some(libc::EPERM) | Some(libc::EACCES))
 }
@@ -144,6 +254,17 @@ fn attach_dns_bpf(fd: RawFd) -> Result<(), LiveCaptureError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fanout_parse_threads_request() {
+        let err = LiveCaptureOpts {
+            promisc: false,
+            fanout_group: 1,
+            fanout_slot: 2,
+            fanout_threads: 4,
+        };
+        assert_eq!(err.fanout_threads, 4);
+    }
 
     #[test]
     fn unprivileged_open_fails() {

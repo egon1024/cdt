@@ -27,10 +27,13 @@ pub struct BucketMap {
 
 impl BucketMap {
     pub fn new(buckets: &FlowBuckets, max_flow_threads: u32) -> Self {
-        let flow_threads = max_flow_threads.max(1);
+        Self::for_runtime(buckets, max_flow_threads.max(1))
+    }
+
+    pub fn for_runtime(buckets: &FlowBuckets, flow_threads: u32) -> Self {
         Self {
             buckets: buckets.count,
-            flow_threads,
+            flow_threads: flow_threads.max(1),
         }
     }
 

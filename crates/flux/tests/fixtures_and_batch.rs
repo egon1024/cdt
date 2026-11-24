@@ -25,6 +25,7 @@ fn fixtures_are_byte_identical_across_runs() {
     regenerate_fixtures(d2.path());
     for name in [
         "udp-basic.pcap",
+        "port5353.pcap",
         "edns-ede.pcap",
         "large.pcap",
         "fragmented.pcap",

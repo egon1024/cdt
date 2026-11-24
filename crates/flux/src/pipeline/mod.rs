@@ -1,5 +1,6 @@
 mod ingest;
 mod replay;
+mod scaled_replay;
 mod stats;
 #[cfg(feature = "tui")]
 mod tui;
@@ -50,22 +51,47 @@ pub fn run_watch(
         return Ok(());
     }
 
+    #[cfg(target_os = "linux")]
+    {
+        let table = crate::capture::host_interface_table();
+        let listeners =
+            crate::capture::resolve_listeners(&interfaces, &options.exclude_iface, &table)
+                .map_err(|e| PipelineError::Config(e.to_string()))?;
+        if listeners.is_empty() {
+            return Err(PipelineError::Config(
+                "flux watch: no eligible capture interfaces".into(),
+            ));
+        }
+        eprintln!("{}", crate::capture::opened_interfaces_message(&listeners));
+        if listeners.iter().any(|s| s.capture_threads > 1) && !crate::capture::fanout_available() {
+            return Err(PipelineError::Config(
+                "flux watch: per-interface capture threads > 1 require PACKET_FANOUT (Linux)"
+                    .into(),
+            ));
+        }
+        let iface = &listeners[0].iface;
+        let cap_opts = crate::capture::live::LiveCaptureOpts {
+            promisc: options.promisc,
+            fanout_group: 1,
+            fanout_slot: 0,
+            fanout_threads: listeners[0].capture_threads,
+        };
+        if use_tui {
+            let cap = crate::capture::live::LiveCapture::open_with(iface, cap_opts)
+                .map_err(PipelineError::Live)?;
+            return run_live_tui(cap, options);
+        }
+        let _ = cap_opts;
+        Err(PipelineError::Config(
+            "live capture requires a TTY; use -r for batch replay".into(),
+        ))
+    }
+
+    #[cfg(not(target_os = "linux"))]
     if interfaces.is_empty() {
         return Err(PipelineError::Config(
             "flux watch: specify -i <iface> for live capture or -r <file> for replay".into(),
         ));
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let iface = &interfaces[0];
-        if use_tui {
-            let cap = crate::capture::open_live(iface)?;
-            return run_live_tui(cap, options);
-        }
-        Err(PipelineError::Config(
-            "live capture requires a TTY; use -r for batch replay".into(),
-        ))
     }
 
     #[cfg(not(target_os = "linux"))]

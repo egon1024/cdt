@@ -22,6 +22,8 @@ use crate::window::Aggregator;
 
 use super::ingest::{drain_flow_timeouts, ingest_packet, new_flow_stage, worker_busy_percent};
 use super::stats::{StatusBar, StatusLine, WatchInput};
+use crate::scale::hints::{HintEngine, ListenerMeasurements, ParseThreadMeasurements};
+use crate::scale::priority::{ThreadRole, apply_thread_priority};
 
 #[derive(Debug, Error)]
 pub enum TuiError {
@@ -35,7 +37,8 @@ pub enum TuiError {
     Options(#[from] crate::options::OptionsError),
 }
 
-pub fn run_live(cap: LiveCapture, options: FluxOptions) -> Result<(), TuiError> {
+pub fn run_live(cap: LiveCapture, mut options: FluxOptions) -> Result<(), TuiError> {
+    apply_thread_priority(ThreadRole::Tui);
     cap.set_nonblocking()?;
     let iface = cap.iface().to_string();
     let filter = options.compile_filter(&NoopResolver)?;
@@ -57,6 +60,9 @@ pub fn run_live(cap: LiveCapture, options: FluxOptions) -> Result<(), TuiError> 
     let mut term = Terminal::new(backend)?;
     let mut view = ViewId::Sources;
     let mut show_help = false;
+    let mut show_listeners = false;
+    let mut worker_count = options.workers.max(1);
+    let hint_engine = HintEngine::new();
     let start = Instant::now();
 
     loop {
@@ -77,6 +83,38 @@ pub fn run_live(cap: LiveCapture, options: FluxOptions) -> Result<(), TuiError> 
             } else {
                 format!("flux watch {iface}")
             };
+            let hints = hint_engine.evaluate(
+                &[ListenerMeasurements {
+                    iface: iface.clone(),
+                    rate_pps: drained as f64 / 0.08_f64.max(f32::EPSILON as f64),
+                    drops: agg.counters.capture_drops,
+                    capture_threads: cap.fanout_slot.map(|_| 2).unwrap_or(1),
+                    capture_busy_pct: 0,
+                    capture_queue: 0,
+                }],
+                &[ParseThreadMeasurements {
+                    busy_pct: worker_busy_percent(&worker),
+                    queue_depth: worker.stats.queue_depth,
+                }],
+                0,
+                None,
+            );
+            let listener_lines: Vec<String> = if show_listeners {
+                vec![
+                    format!(
+                        "listener {iface}: threads={} fanout={:?} workers={worker_count}",
+                        cap.fanout_slot.unwrap_or(0) + 1,
+                        cap.fanout_group
+                    ),
+                    format!(
+                        "parse worker busy={}% queue={}",
+                        worker_busy_percent(&worker),
+                        worker.stats.queue_depth
+                    ),
+                ]
+            } else {
+                Vec::new()
+            };
             let status = StatusBar {
                 input: WatchInput::Live {
                     interfaces: vec![iface.clone()],
@@ -95,6 +133,9 @@ pub fn run_live(cap: LiveCapture, options: FluxOptions) -> Result<(), TuiError> 
                 flow: flow.counters,
                 pairing_enabled: options.pairing,
                 elapsed_secs: Some(start.elapsed().as_secs_f32()),
+                overload: None,
+                listener_stats: listener_lines,
+                hints,
             };
 
             let footer_text = status.format().trim_end().to_string();
@@ -114,12 +155,22 @@ pub fn run_live(cap: LiveCapture, options: FluxOptions) -> Result<(), TuiError> 
                 options.key_cap,
                 options.ede_show_no_ede,
             );
+            if show_listeners {
+                main_text.push_str("\n-- listeners panel --\n");
+                for line in &status.listener_stats {
+                    main_text.push_str(line);
+                    main_text.push('\n');
+                }
+                for h in &status.hints {
+                    main_text.push_str(&format!("{h:?}\n"));
+                }
+            }
             if show_help {
                 main_text.push_str(
-                    "\nkeys: s src d dst t qtype r rcode o opcode 1-3 qname ? help q quit\n",
+                    "\nkeys: s src d dst t qtype r rcode o opcode 1-3 qname l listeners + - workers ? help q quit\n",
                 );
             } else {
-                main_text.push_str("\n? for help, q to quit\n");
+                main_text.push_str("\n? for help, l listeners, q quit\n");
             }
             f.render_widget(Paragraph::new(main_text).block(main_block), chunks[0]);
 
@@ -147,6 +198,15 @@ pub fn run_live(cap: LiveCapture, options: FluxOptions) -> Result<(), TuiError> 
                     KeyCode::Char('2') => view = ViewId::QnameLevel(2),
                     KeyCode::Char('3') => view = ViewId::QnameLevel(3),
                     KeyCode::Char('?') => show_help = !show_help,
+                    KeyCode::Char('l') => show_listeners = !show_listeners,
+                    KeyCode::Char('+') => {
+                        worker_count = worker_count.saturating_add(1);
+                        options.workers = worker_count;
+                    }
+                    KeyCode::Char('-') => {
+                        worker_count = worker_count.saturating_sub(1).max(1);
+                        options.workers = worker_count;
+                    }
                     KeyCode::Char('f') => {
                         let mut picker = crate::filter::PickerState::Closed;
                         let _ = crate::filter::picker_key(&mut picker, 'f');

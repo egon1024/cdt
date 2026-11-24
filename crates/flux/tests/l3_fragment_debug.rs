@@ -16,7 +16,13 @@ fn fragmented_pcap_yields_l3_fragments() {
     let mut frags = 0;
     for pkt in iter_packets(&mut src, "t") {
         let pkt = pkt.unwrap();
-        if parse_l3(&pkt, AddressFamily::Auto).is_ok() {
+        if parse_l3(
+            &pkt,
+            AddressFamily::Auto,
+            &flux::capture::PortSet::dns_default(),
+        )
+        .is_ok()
+        {
             frags += 1;
         }
     }

@@ -2,8 +2,12 @@ use std::time::Duration;
 
 use thiserror::Error;
 
+use crate::capture::PortSet;
 use crate::filter::QrSelection;
 use crate::flow::{DefragMode, TcpMode};
+use crate::scale::memory::{effective_mem_limit, parse_mem_limit};
+use crate::scale::overload::OverloadPolicy;
+use crate::scale::workers::QueuePolicy;
 
 #[path = "options_filter.rs"]
 mod options_filter;
@@ -15,7 +19,15 @@ pub struct FluxOptions {
     pub late_grace: Duration,
     pub late_policy: LatePolicy,
     pub flow_buckets: u32,
+    pub flow_threads: u32,
     pub max_flow_threads: u32,
+    pub dns_ports: PortSet,
+    pub exclude_iface: Vec<String>,
+    pub promisc: bool,
+    pub workers: usize,
+    pub queue_policy: QueuePolicy,
+    pub mem_limit_bytes: Option<usize>,
+    pub overload_policy: OverloadPolicy,
     pub qname_levels: u8,
     pub batch_views: Vec<ViewId>,
     pub batch_limit: usize,
@@ -114,7 +126,15 @@ impl Default for FluxOptions {
             late_grace: Duration::from_millis(250),
             late_policy: LatePolicy::Correct,
             flow_buckets: 0,
-            max_flow_threads: 1,
+            flow_threads: 1,
+            max_flow_threads: default_max_flow_threads(),
+            dns_ports: PortSet::dns_default(),
+            exclude_iface: Vec::new(),
+            promisc: false,
+            workers: 1,
+            queue_policy: QueuePolicy::default(),
+            mem_limit_bytes: None,
+            overload_policy: OverloadPolicy::default(),
             qname_levels: 3,
             batch_views: vec![ViewId::Sources, ViewId::Qtype, ViewId::QnameLevel(2)],
             batch_limit: 50,
@@ -201,6 +221,18 @@ impl FluxOptions {
 
     pub fn options_overrode_window(&self) -> bool {
         !matches!(self.window, WindowMode::Seconds(30))
+    }
+
+    pub fn effective_flow_threads(&self) -> u32 {
+        self.flow_threads.max(1)
+    }
+
+    pub fn uses_split_pipeline(&self, listener_count: usize) -> bool {
+        listener_count > 1 || self.effective_flow_threads() > 1 || self.workers > 1
+    }
+
+    pub fn memory_limit_bytes(&self) -> usize {
+        effective_mem_limit(self.mem_limit_bytes)
     }
 
     pub fn effective_flow_buckets(&self) -> (u32, Option<u32>) {
@@ -302,12 +334,63 @@ fn parse_plus_option(
                 detail: v.into(),
             })?;
         }
+        "flow-threads" => {
+            let v = require_value(key, value)?;
+            opts.flow_threads = v.parse().map_err(|_| OptionsError::InvalidValue {
+                name: key.into(),
+                detail: v.into(),
+            })?;
+        }
         "max-flow-threads" => {
             let v = require_value(key, value)?;
             opts.max_flow_threads = v.parse().map_err(|_| OptionsError::InvalidValue {
                 name: key.into(),
                 detail: v.into(),
             })?;
+        }
+        "port" => {
+            let v = require_value(key, value)?;
+            opts.dns_ports = PortSet::parse(v).map_err(|e| OptionsError::InvalidValue {
+                name: key.into(),
+                detail: e.to_string(),
+            })?;
+        }
+        "exclude-iface" => {
+            let v = require_value(key, value)?;
+            opts.exclude_iface = split_csv(v);
+        }
+        "promisc" => {
+            opts.promisc = true;
+        }
+        "workers" => {
+            let v = require_value(key, value)?;
+            opts.workers = v.parse().map_err(|_| OptionsError::InvalidValue {
+                name: key.into(),
+                detail: v.into(),
+            })?;
+        }
+        "queue" => {
+            let v = require_value(key, value)?;
+            opts.queue_policy = QueuePolicy::parse(v).map_err(|e| OptionsError::InvalidValue {
+                name: key.into(),
+                detail: e,
+            })?;
+        }
+        "mem" => {
+            let v = require_value(key, value)?;
+            opts.mem_limit_bytes =
+                Some(parse_mem_limit(v).map_err(|e| OptionsError::InvalidValue {
+                    name: key.into(),
+                    detail: e,
+                })?);
+        }
+        "overload" => {
+            let v = require_value(key, value)?;
+            opts.overload_policy =
+                OverloadPolicy::parse(v).map_err(|e| OptionsError::InvalidValue {
+                    name: key.into(),
+                    detail: e,
+                })?;
         }
         "levels" => {
             let v = require_value(key, value)?;
@@ -476,9 +559,18 @@ fn is_flow_option_token(rest: &str) -> bool {
         "defrag" => matches!(value, Some("on" | "off")),
         "tcp" => matches!(value, Some("off" | "simple" | "full")),
         "pairing" => matches!(value, Some("on" | "off" | "true" | "false" | "0" | "1")),
-        "pair-timeout" | "pair-max" => value.is_some(),
+        "pair-timeout" | "pair-max" | "flow-threads" | "workers" | "port" | "queue" | "mem"
+        | "overload" | "exclude-iface" => value.is_some(),
+        "promisc" | "max-flow-threads" => true,
         _ => false,
     }
+}
+
+fn default_max_flow_threads() -> u32 {
+    std::thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(1)
+        .max(1)
 }
 
 /// Field name for a `+` filter flag, matching `filter::flags` parsing (`!=`, comparisons, `=`).

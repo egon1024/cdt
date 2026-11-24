@@ -9,7 +9,7 @@ pub struct ParseStats {
     pub queue_depth: u64,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct ParseWorker {
     pub arena: Vec<u8>,
     pub records: Vec<ObservationRecord>,
