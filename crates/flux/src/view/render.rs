@@ -23,9 +23,10 @@ pub fn format_batch_tables(
         if is_latency_view(*view) {
             out.push_str(&format_latency_table(counts, *view, limit, terminal_width));
         } else {
-            let (name_w, count_w, pct_w) = count_table_widths(terminal_width);
-            out.push_str(&format_count_table_header(name_w, count_w, pct_w));
             let rows = counts_for_view(counts, *view, key_cap, show_no_ede);
+            let (name_w, count_w, pct_w) =
+                count_table_layout(&rows, limit, terminal_width);
+            out.push_str(&format_count_table_header(name_w, count_w, pct_w));
             let denom = total.max(1);
             for (key, count) in rows.iter().take(limit) {
                 let pct = (count.saturating_mul(10000) / denom) as f64 / 100.0;
@@ -42,23 +43,58 @@ pub fn format_batch_tables(
     out
 }
 
-const COUNT_COL_WIDTH: usize = 10;
-const PCT_COL_WIDTH: usize = 9;
+const TABLE_INDENT: usize = 2;
+const COL_GAP: usize = 1;
+const MIN_NAME_COL: usize = 4;
+const PCT_COL_WIDTH: usize = 7; // "100.00%" and header "Percent"
 const FIXED_NAME_WIDTH: usize = 40;
 
-fn count_table_widths(terminal_width: Option<u16>) -> (usize, usize, usize) {
+/// Name column hugs content; Count/Percent sit to its right. Terminal width caps name only.
+fn count_table_layout(
+    rows: &[(String, u64)],
+    limit: usize,
+    terminal_width: Option<u16>,
+) -> (usize, usize, usize) {
+    let sample = rows.iter().take(limit);
+    let count_w = sample
+        .clone()
+        .map(|(_, c)| c.to_string().len())
+        .max()
+        .unwrap_or(1)
+        .max("Count".len());
+    let pct_w = PCT_COL_WIDTH;
+
+    let natural_name_w = sample
+        .map(|(k, _)| k.chars().count())
+        .max()
+        .unwrap_or(MIN_NAME_COL)
+        .max("Name".len());
+
     let name_w = match terminal_width {
         None => FIXED_NAME_WIDTH,
-        Some(w) => {
-            let w = usize::from(w.max(48));
-            w.saturating_sub(2 + COUNT_COL_WIDTH + 1 + PCT_COL_WIDTH)
+        Some(tw) => {
+            let tw = usize::from(tw);
+            let max_name = tw.saturating_sub(TABLE_INDENT + COL_GAP + count_w + COL_GAP + pct_w);
+            if max_name == 0 {
+                return (1, count_w, pct_w);
+            }
+            let mut name_w = natural_name_w.min(max_name);
+            if name_w < MIN_NAME_COL && max_name >= MIN_NAME_COL {
+                name_w = MIN_NAME_COL;
+            }
+            name_w = name_w.max(1);
+            while name_w > 1 && row_char_width(name_w, count_w, pct_w) > tw {
+                name_w -= 1;
+            }
+            name_w
         }
     };
-    (
-        name_w.max(8),
-        COUNT_COL_WIDTH,
-        PCT_COL_WIDTH,
-    )
+
+    (name_w, count_w, pct_w)
+}
+
+fn row_char_width(name_w: usize, count_w: usize, pct_w: usize) -> usize {
+    TABLE_INDENT + name_w + COL_GAP + count_w + COL_GAP + pct_w
 }
 
 fn format_count_table_header(name_w: usize, count_w: usize, pct_w: usize) -> String {
@@ -166,6 +202,38 @@ mod tests {
         let a = format_batch_tables(&c, &[ViewId::Sources], 10, 0, 50, false, None);
         let b = format_batch_tables(&c, &[ViewId::Sources], 10, 0, 50, false, None);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn count_columns_hug_short_names() {
+        let mut c = ViewCounts::default();
+        c.sources.insert("a.com".into(), 5);
+        let out = format_batch_tables(&c, &[ViewId::Sources], 10, 5, 50, false, Some(120));
+        let row = out.lines().find(|l| l.contains("a.com")).expect("row");
+        assert!(
+            row.chars().count() < 30,
+            "count/percent should sit near name, not at far margin: {row:?}"
+        );
+    }
+
+    #[test]
+    fn narrow_terminal_keeps_count_and_percent_visible() {
+        let mut c = ViewCounts::default();
+        c.sources.insert("averylonglabel.another.example.com".into(), 42);
+        let tw = 36u16;
+        let out = format_batch_tables(&c, &[ViewId::Sources], 10, 42, 80, false, Some(tw));
+        let row = out
+            .lines()
+            .find(|l| l.starts_with("  ") && (l.contains('…') || l.contains(".com")))
+            .expect("data row");
+        assert!(row.contains("42"));
+        assert!(row.contains('%'));
+        let width = row.chars().count();
+        assert!(
+            width <= tw as usize,
+            "row {:?} is {width} cols, pane is {tw}",
+            row
+        );
     }
 
     #[test]

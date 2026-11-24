@@ -155,7 +155,7 @@ pub fn run_live(
                     .constraints([Constraint::Min(4), Constraint::Length(1)])
                     .split(f.area());
 
-                let table_width = chunks[0].width.saturating_sub(2);
+                let table_width = chunks[0].width.saturating_sub(2).max(32);
                 let main_text = format_batch_tables(
                     &snap.counts,
                     &[view],
