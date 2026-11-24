@@ -26,8 +26,9 @@ use crate::scale::priority::{ThreadRole, apply_thread_priority};
 
 use super::tui_modal::{Modal, handle_key, render_modal};
 
-/// Stop draining packets for a moment so key input can repaint without waiting on capture.
+/// Per-loop packet budget; drained in smaller chunks so keys are handled between batches.
 const CAPTURE_DRAIN_BUDGET: u64 = 8_192;
+const CAPTURE_DRAIN_CHUNK: u64 = 128;
 
 #[derive(Debug, Error)]
 pub enum TuiError {
@@ -76,7 +77,7 @@ pub fn run_live(
     let mut force_redraw = true;
 
     'live: loop {
-        if process_events(
+        if drain_events(
             &mut modal,
             &mut view,
             &mut agg,
@@ -86,9 +87,53 @@ pub fn run_live(
         )? {
             break 'live;
         }
+        if maybe_redraw(
+            force_redraw,
+            &mut term,
+            &iface,
+            capture_threads,
+            fanout_group,
+            &agg,
+            &pipeline,
+            &options,
+            &hint_engine,
+            &view,
+            &modal,
+            start,
+            refresh,
+            &mut frames_since_draw,
+            &mut last_draw,
+        )? {
+            force_redraw = false;
+        }
 
-        if force_redraw {
-            draw_live_frame(
+        let mut drained_this_turn = 0u64;
+        while drained_this_turn < CAPTURE_DRAIN_BUDGET {
+            let chunk = drain_capture(
+                &cap,
+                &mut agg,
+                &mut pipeline,
+                &options,
+                CAPTURE_DRAIN_CHUNK,
+            );
+            if chunk == 0 {
+                break;
+            }
+            drained_this_turn += chunk;
+            frames_since_draw += chunk;
+
+            if drain_events(
+                &mut modal,
+                &mut view,
+                &mut agg,
+                &mut pipeline,
+                &mut options,
+                &mut force_redraw,
+            )? {
+                break 'live;
+            }
+            if maybe_redraw(
+                force_redraw,
                 &mut term,
                 &iface,
                 capture_threads,
@@ -102,13 +147,44 @@ pub fn run_live(
                 start,
                 refresh,
                 &mut frames_since_draw,
-            )?;
-            last_draw = Instant::now();
-            force_redraw = false;
+                &mut last_draw,
+            )? {
+                force_redraw = false;
+            }
         }
 
-        frames_since_draw +=
-            drain_capture(&cap, &mut agg, &mut pipeline, &options, CAPTURE_DRAIN_BUDGET);
+        if drained_this_turn == 0 {
+            if wait_for_event(Duration::from_millis(50))?
+                && drain_events(
+                    &mut modal,
+                    &mut view,
+                    &mut agg,
+                    &mut pipeline,
+                    &mut options,
+                    &mut force_redraw,
+                )?
+            {
+                break 'live;
+            }
+            let _ = maybe_redraw(
+                force_redraw,
+                &mut term,
+                &iface,
+                capture_threads,
+                fanout_group,
+                &agg,
+                &pipeline,
+                &options,
+                &hint_engine,
+                &view,
+                &modal,
+                start,
+                refresh,
+                &mut frames_since_draw,
+                &mut last_draw,
+            )?;
+            force_redraw = false;
+        }
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -141,8 +217,12 @@ pub fn run_live(
     Ok(())
 }
 
-/// Returns true when the user requested quit.
-fn process_events(
+fn wait_for_event(block: Duration) -> Result<bool, TuiError> {
+    Ok(event::poll(block)?)
+}
+
+/// Non-blocking: drain every pending event from the terminal.
+fn drain_events(
     modal: &mut Modal,
     view: &mut ViewId,
     agg: &mut Aggregator,
@@ -150,33 +230,85 @@ fn process_events(
     options: &mut FluxOptions,
     force_redraw: &mut bool,
 ) -> Result<bool, TuiError> {
-    if !event::poll(Duration::from_millis(50))? {
+    while event::poll(Duration::ZERO)? {
+        if handle_one_event(modal, view, agg, pipeline, options, force_redraw)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn handle_one_event(
+    modal: &mut Modal,
+    view: &mut ViewId,
+    agg: &mut Aggregator,
+    pipeline: &mut LivePipeline,
+    options: &mut FluxOptions,
+    force_redraw: &mut bool,
+) -> Result<bool, TuiError> {
+    match event::read()? {
+        Event::Resize(_, _) => {
+            *force_redraw = true;
+            Ok(false)
+        }
+        Event::Key(key) => {
+            let outcome = handle_key(
+                modal,
+                view,
+                agg,
+                pipeline,
+                options,
+                key.code,
+                key.modifiers,
+            );
+            if outcome.quit {
+                return Ok(true);
+            }
+            *force_redraw |= outcome.force_redraw;
+            Ok(false)
+        }
+        _ => Ok(false),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn maybe_redraw(
+    force_redraw: bool,
+    term: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    iface: &str,
+    capture_threads: u32,
+    fanout_group: Option<u32>,
+    agg: &Aggregator,
+    pipeline: &LivePipeline,
+    options: &FluxOptions,
+    hint_engine: &HintEngine,
+    view: &ViewId,
+    modal: &Modal,
+    start: Instant,
+    refresh: Duration,
+    frames_since_draw: &mut u64,
+    last_draw: &mut Instant,
+) -> Result<bool, TuiError> {
+    if !force_redraw {
         return Ok(false);
     }
-    loop {
-        match event::read()? {
-            Event::Resize(_, _) => *force_redraw = true,
-            Event::Key(key) => {
-                let outcome = handle_key(
-                    modal,
-                    view,
-                    agg,
-                    pipeline,
-                    options,
-                    key.code,
-                    key.modifiers,
-                );
-                if outcome.quit {
-                    return Ok(true);
-                }
-                *force_redraw |= outcome.force_redraw;
-            }
-            _ => {}
-        }
-        if !event::poll(Duration::ZERO)? {
-            return Ok(false);
-        }
-    }
+    draw_live_frame(
+        term,
+        iface,
+        capture_threads,
+        fanout_group,
+        agg,
+        pipeline,
+        options,
+        hint_engine,
+        view,
+        modal,
+        start,
+        refresh,
+        frames_since_draw,
+    )?;
+    *last_draw = Instant::now();
+    Ok(true)
 }
 
 #[allow(clippy::too_many_arguments)]
