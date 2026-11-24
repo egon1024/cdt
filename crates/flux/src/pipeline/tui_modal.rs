@@ -9,6 +9,7 @@ use crate::options::ViewId;
 use crate::window::Aggregator;
 
 use super::live_ingest::LivePipeline;
+use super::stats::StatusBar;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Modal {
@@ -18,6 +19,7 @@ pub enum Modal {
     PanelPicker { scroll: u16 },
     Listeners { scroll: u16 },
     Workers { scroll: u16 },
+    Stats { scroll: u16 },
     QnameLevelInput { buf: String },
 }
 
@@ -40,7 +42,8 @@ impl Modal {
             | Modal::ViewPicker { scroll }
             | Modal::PanelPicker { scroll }
             | Modal::Listeners { scroll }
-            | Modal::Workers { scroll } => {
+            | Modal::Workers { scroll }
+            | Modal::Stats { scroll } => {
                 *scroll = scroll.saturating_sub(1);
             }
             _ => {}
@@ -53,7 +56,8 @@ impl Modal {
             | Modal::ViewPicker { scroll }
             | Modal::PanelPicker { scroll }
             | Modal::Listeners { scroll }
-            | Modal::Workers { scroll } => {
+            | Modal::Workers { scroll }
+            | Modal::Stats { scroll } => {
                 *scroll = (*scroll + 1).min(max);
             }
             _ => {}
@@ -112,7 +116,9 @@ pub fn handle_key(
         Modal::ViewPicker { .. } => handle_view_picker(modal, view, code),
         Modal::PanelPicker { .. } => handle_panel_picker(modal, code),
         Modal::Workers { .. } => handle_workers_modal(modal, pipeline, options, code),
-        Modal::Help { .. } | Modal::Listeners { .. } => handle_scroll_modal(modal, code),
+        Modal::Help { .. } | Modal::Listeners { .. } | Modal::Stats { .. } => {
+            handle_scroll_modal(modal, code)
+        }
         Modal::None => handle_main_keys(view, agg, pipeline, options, code),
     }
 }
@@ -122,7 +128,11 @@ fn launcher_suppressed(modal: &Modal, code: KeyCode) -> bool {
     match modal {
         Modal::PanelPicker { .. } => matches!(
             code,
-            KeyCode::Char('l') | KeyCode::Char('w') | KeyCode::Char('h') | KeyCode::Char('?')
+            KeyCode::Char('l')
+                | KeyCode::Char('w')
+                | KeyCode::Char('h')
+                | KeyCode::Char('?')
+                | KeyCode::Char('s')
         ),
         Modal::ViewPicker { .. } => view_action(code).is_some(),
         Modal::QnameLevelInput { .. } => match code {
@@ -133,7 +143,7 @@ fn launcher_suppressed(modal: &Modal, code: KeyCode) -> bool {
         Modal::Workers { .. } => {
             matches!(code, KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char('-'))
         }
-        Modal::Help { .. } | Modal::Listeners { .. } | Modal::None => false,
+        Modal::Help { .. } | Modal::Listeners { .. } | Modal::Stats { .. } | Modal::None => false,
     }
 }
 
@@ -150,6 +160,7 @@ fn try_modal_launcher(modal: &mut Modal, code: KeyCode) -> Option<KeyResult> {
             buf: String::new(),
         }),
         KeyCode::Char('?') | KeyCode::Char('h') => Some(Modal::Help { scroll: 0 }),
+        KeyCode::Char('u') => Some(Modal::Stats { scroll: 0 }),
         _ => None,
     };
     next.map(|m| {
@@ -216,6 +227,7 @@ enum PanelAction {
     Listeners,
     Workers,
     Help,
+    Stats,
 }
 
 fn panel_action(code: KeyCode) -> Option<PanelAction> {
@@ -223,6 +235,7 @@ fn panel_action(code: KeyCode) -> Option<PanelAction> {
         KeyCode::Char('l') => Some(PanelAction::Listeners),
         KeyCode::Char('w') => Some(PanelAction::Workers),
         KeyCode::Char('?') | KeyCode::Char('h') => Some(PanelAction::Help),
+        KeyCode::Char('s') => Some(PanelAction::Stats),
         _ => None,
     }
 }
@@ -280,6 +293,7 @@ fn handle_panel_picker(modal: &mut Modal, code: KeyCode) -> KeyResult {
             PanelAction::Listeners => modal.open(Modal::Listeners { scroll: 0 }),
             PanelAction::Workers => modal.open(Modal::Workers { scroll: 0 }),
             PanelAction::Help => modal.open(Modal::Help { scroll: 0 }),
+            PanelAction::Stats => modal.open(Modal::Stats { scroll: 0 }),
         }
         return KeyResult {
             quit: false,
@@ -396,6 +410,7 @@ pub fn render_modal(
     pipeline: &LivePipeline,
     hint_lines: &[String],
     smart_qname: bool,
+    status: &StatusBar,
 ) {
     if matches!(modal, Modal::None) {
         return;
@@ -415,6 +430,7 @@ pub fn render_modal(
             workers_lines(iface, capture_threads, fanout_group, pipeline, hint_lines),
             *scroll,
         ),
+        Modal::Stats { scroll } => ("Stats", status.format_detail_lines(), *scroll),
         Modal::QnameLevelInput { buf } => {
             let popup = centered_rect(50, 20, f.area());
             f.render_widget(Clear, popup);
@@ -493,7 +509,8 @@ fn help_lines(smart_qname: bool) -> Vec<String> {
         "".into(),
         "Panels (modals)".into(),
         "  p             panel picker".into(),
-        "  p → l/w/h     listeners, workers, or help".into(),
+        "  p → l/w/s/h   listeners, workers, stats, or help".into(),
+        "  u             session stats (shortcut)".into(),
         "  w             workers & tuning (shortcut)".into(),
         "".into(),
         "Scaling".into(),
@@ -529,6 +546,7 @@ fn panel_picker_lines() -> Vec<String> {
         "".into(),
         "  l   Listeners & pipeline".into(),
         "  w   Workers & tuning".into(),
+        "  s   Session stats".into(),
         "  h   Help".into(),
     ]
 }

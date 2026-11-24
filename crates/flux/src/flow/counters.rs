@@ -37,10 +37,7 @@ impl FlowCounters {
             || self.pairing_evicted > 0
     }
 
-    pub fn format_suffix(&self) -> String {
-        if !self.any_nonzero() {
-            return String::new();
-        }
+    pub fn format_lines(&self) -> Vec<String> {
         let mut parts = Vec::new();
         if self.fragmented_unparsed > 0 {
             parts.push(format!("frag_unparsed={}", self.fragmented_unparsed));
@@ -64,7 +61,15 @@ impl FlowCounters {
             parts.push(format!("tcp_resync_failed={}", self.tcp_resync_failed));
         }
         if self.pairing_evicted > 0 {
-            parts.push(format!("pair_evicted={}", self.pairing_evicted));
+            parts.push(format!("pairing_evicted={}", self.pairing_evicted));
+        }
+        parts
+    }
+
+    pub fn format_suffix(&self) -> String {
+        let parts = self.format_lines();
+        if parts.is_empty() {
+            return String::new();
         }
         format!(" | {}", parts.join(" "))
     }

@@ -10,7 +10,7 @@ use crossterm::terminal::{
 };
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use thiserror::Error;
 
 use crate::capture::LiveCapture;
@@ -21,7 +21,7 @@ use crate::view::format_batch_tables;
 use crate::window::Aggregator;
 
 use super::live_ingest::LivePipeline;
-use super::stats::{StatusBar, StatusLine, WatchInput};
+use super::stats::{StatusBar, StatusLine, TUI_FOOTER_HINTS, WatchInput};
 use crate::scale::priority::{ThreadRole, apply_thread_priority};
 
 use super::tui_modal::{Modal, handle_key, render_modal};
@@ -150,15 +150,13 @@ pub fn run_live(
                     hints: Vec::new(),
                 };
 
-                let footer_text = status.format().trim_end().to_string();
-                let footer_lines: u16 = if footer_text.len() > 100 { 3 } else { 2 };
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([Constraint::Min(4), Constraint::Length(footer_lines)])
+                    .constraints([Constraint::Min(4), Constraint::Length(1)])
                     .split(f.area());
 
                 let table_width = chunks[0].width.saturating_sub(2);
-                let mut main_text = format_batch_tables(
+                let main_text = format_batch_tables(
                     &snap.counts,
                     &[view],
                     options.batch_limit,
@@ -167,17 +165,12 @@ pub fn run_live(
                     options.ede_show_no_ede,
                     Some(table_width),
                 );
-                if !modal.is_open() {
-                    main_text.push_str("\nv views · p panels · w workers · l qname level · g smart labels · ? help · q quit\n");
-                }
                 f.render_widget(
                     Paragraph::new(main_text).block(Block::default().title(title).borders(Borders::ALL)),
                     chunks[0],
                 );
                 f.render_widget(
-                    Paragraph::new(footer_text)
-                        .block(Block::default().borders(Borders::TOP))
-                        .wrap(Wrap { trim: true }),
+                    Paragraph::new(TUI_FOOTER_HINTS).block(Block::default().borders(Borders::TOP)),
                     chunks[1],
                 );
 
@@ -190,6 +183,7 @@ pub fn run_live(
                     &pipeline,
                     &hint_lines,
                     smart,
+                    &status,
                 );
             })?;
 

@@ -140,7 +140,111 @@ impl StatusBar {
         }
         line
     }
+
+    /// Sectioned status for the live TUI stats panel (1 Hz updates while open).
+    pub fn format_detail_lines(&self) -> Vec<String> {
+        let mut out = vec!["== Session ==".to_string()];
+
+        match &self.input {
+            WatchInput::Live { interfaces } => {
+                let ifaces = if interfaces.is_empty() {
+                    "(default)".to_string()
+                } else {
+                    interfaces.join(", ")
+                };
+                out.push(format!("  input live on {ifaces}"));
+            }
+            WatchInput::Replay { path } => {
+                let label = Path::new(path)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(path.as_str());
+                out.push(format!("  input replay {label}"));
+            }
+        }
+
+        out.push(format!(
+            "  window {}",
+            format_window(&self.window, self.effective_window_secs)
+        ));
+        if let Some(elapsed) = self.elapsed_secs {
+            out.push(format!("  elapsed {elapsed:.1}s"));
+        }
+        out.push(format!("  qr filter {}", self.filter.qr.as_str()));
+        if self.filter.is_empty() {
+            out.push("  predicate none".into());
+        } else {
+            let pct = if self.match_stats.total_observed == 0 {
+                0.0
+            } else {
+                (self.match_stats.matched as f64) * 100.0
+                    / (self.match_stats.total_observed as f64)
+            };
+            out.push(format!(
+                "  filter {} — {} of {} matched ({pct:.1}%)",
+                self.filter.label, self.match_stats.matched, self.match_stats.total_observed,
+            ));
+        }
+        out.push(format!("  counted in window {}", self.counted_in_window));
+
+        out.push("".into());
+        out.push("== Capture & parse ==".into());
+        if self.counters.listener_frames > 0 || self.counters.recv_frames_last_tick.is_some() {
+            out.push(format!("  listener frames {}", self.counters.listener_frames));
+            if let Some(n) = self.counters.recv_frames_last_tick {
+                out.push(format!("  recv last tick {n}"));
+            }
+            out.push(format!("  dns messages {}", self.counters.packets));
+        } else {
+            out.push(format!("  packets {}", self.counters.packets));
+        }
+        out.push(format!("  capture drops {}", self.counters.drops));
+        out.push(format!(
+            "  parse busy {}%  queue depth {}",
+            self.counters.parse_busy_pct, self.counters.queue_depth
+        ));
+
+        if self.flow.any_nonzero() {
+            out.push("".into());
+            out.push("== Flow stage counters ==".into());
+            for line in self.flow.format_lines() {
+                out.push(format!("  {line}"));
+            }
+        }
+
+        if let Some(ov) = &self.overload {
+            if ov.active {
+                out.push("".into());
+                out.push("== Overload ==".into());
+                out.push(format!("  policy {:?}", ov.policy));
+                out.push(format!("  refused {}", ov.refused));
+                out.push(format!("  compacted slices {}", ov.compacted_slices));
+                if ov.compact_blocks_refilter {
+                    out.push("  compacted slices not re-filterable".into());
+                }
+            }
+        }
+
+        if !self.pairing_enabled {
+            out.push("".into());
+            out.push("  note: pairing off — latency / unanswered views unavailable".into());
+        }
+
+        for hint in &self.hints {
+            out.push("".into());
+            out.push(format!("== Hint ==  {hint:?}"));
+        }
+        for ls in &self.listener_stats {
+            out.push(ls.clone());
+        }
+
+        out
+    }
 }
+
+/// Single-line key hints for the live TUI footer (static; avoids flicker on refresh).
+pub const TUI_FOOTER_HINTS: &str =
+    "v views · p panels · u stats · w workers · l qname · g smart · ? help · q quit";
 
 fn format_window(window: &WindowMode, effective_secs: Option<u64>) -> String {
     match window {
