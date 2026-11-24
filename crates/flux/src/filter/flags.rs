@@ -33,6 +33,7 @@ pub fn parse_filter_flags(tokens: &[String]) -> Result<Vec<Predicate>, FilterPar
             || rest.starts_with("pairing")
             || rest.starts_with("pair-timeout")
             || rest.starts_with("pair-max")
+            || rest.starts_with("dedup")
         {
             continue;
         }

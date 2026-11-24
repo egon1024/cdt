@@ -3,10 +3,10 @@ mod live_ingest;
 mod replay;
 mod scaled_replay;
 mod stats;
-#[cfg(all(target_os = "linux", feature = "tui"))]
-mod tui_modal;
 #[cfg(feature = "tui")]
 mod tui;
+#[cfg(all(target_os = "linux", feature = "tui"))]
+mod tui_modal;
 
 pub use replay::replay_file;
 pub use stats::{StatusBar, StatusLine, WatchInput};
@@ -66,6 +66,11 @@ pub fn run_watch(
             ));
         }
         eprintln!("{}", crate::capture::opened_interfaces_message(&listeners));
+        let names: Vec<_> = listeners.iter().map(|l| l.iface.clone()).collect();
+        let topo = crate::capture::discover_topology(&crate::capture::LinuxSysTopology, &names);
+        for hint in crate::capture::topology_duplicate_hints(&names, &topo) {
+            eprintln!("{hint}");
+        }
         if listeners.iter().any(|s| s.capture_threads > 1) {
             if let Some(detail) = crate::capture::live::fanout_probe_error() {
                 return Err(PipelineError::Config(format!(
@@ -87,9 +92,9 @@ pub fn run_watch(
             return run_live_tui(cap, options, listeners[0].capture_threads);
         }
         let _ = cap_opts;
-        return Err(PipelineError::Config(
+        Err(PipelineError::Config(
             "live capture requires a TTY; use -r for batch replay".into(),
-        ));
+        ))
     }
 
     #[cfg(not(target_os = "linux"))]

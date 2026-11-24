@@ -22,6 +22,7 @@ pub struct ViewCounts {
     pub ede: HashMap<String, u64>,
     pub src_x_ede: HashMap<(String, String), u64>,
     pub interfaces: HashMap<String, u64>,
+    pub vlans: HashMap<String, u64>,
     pub transports: HashMap<String, u64>,
     pub malformed: u64,
     pub responses_with_ede: u64,
@@ -43,6 +44,7 @@ impl ViewCounts {
         merge_map(&mut self.ede, &other.ede);
         merge_map(&mut self.src_x_ede, &other.src_x_ede);
         merge_map(&mut self.interfaces, &other.interfaces);
+        merge_map(&mut self.vlans, &other.vlans);
         merge_map(&mut self.transports, &other.transports);
         self.malformed += other.malformed;
         self.responses_with_ede += other.responses_with_ede;
@@ -63,6 +65,7 @@ impl ViewCounts {
         sub_map(&mut self.ede, &other.ede);
         sub_map(&mut self.src_x_ede, &other.src_x_ede);
         sub_map(&mut self.interfaces, &other.interfaces);
+        sub_map(&mut self.vlans, &other.vlans);
         sub_map(&mut self.transports, &other.transports);
         self.malformed = self.malformed.saturating_sub(other.malformed);
         self.responses_with_ede = self
@@ -183,8 +186,13 @@ pub fn build_counts_from_slices_with_qname<'a>(
     let mut merged = ViewCounts::default();
     let mut stats = MatchStats::default();
     for slice in slices {
-        let (partial, part_stats) =
-            build_counts_filtered_with_qname(&slice.records, &slice.arena, filter, ctx, smart_qname);
+        let (partial, part_stats) = build_counts_filtered_with_qname(
+            &slice.records,
+            &slice.arena,
+            filter,
+            ctx,
+            smart_qname,
+        );
         merged.merge_add(&partial);
         stats.matched += part_stats.matched;
         stats.total_observed += part_stats.total_observed;
@@ -210,6 +218,11 @@ fn accumulate_record(
     *c.rcodes.entry(r.rcode).or_insert(0) += 1;
     *c.opcodes.entry(r.opcode).or_insert(0) += 1;
     *c.interfaces.entry(r.iface.clone()).or_insert(0) += 1;
+    let vlan_label = r
+        .vlan
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "untagged".into());
+    *c.vlans.entry(vlan_label).or_insert(0) += 1;
     let transport = match r.transport {
         TransportProto::Udp => "udp",
         TransportProto::Tcp => "tcp",
@@ -220,9 +233,7 @@ fn accumulate_record(
         if !label.is_empty() {
             *c.qname_levels.entry((level, label.clone())).or_insert(0) += 1;
             let src_label = src.clone();
-            *c.src_x_qname
-                .entry((level, src_label, label))
-                .or_insert(0) += 1;
+            *c.src_x_qname.entry((level, src_label, label)).or_insert(0) += 1;
         }
     }
     if r.unanswered {
@@ -335,6 +346,7 @@ pub fn counts_for_view(
             .iter()
             .map(|(k, v)| (k.clone(), *v))
             .collect(),
+        ViewId::Vlan => counts.vlans.iter().map(|(k, v)| (k.clone(), *v)).collect(),
         ViewId::Transport => counts
             .transports
             .iter()

@@ -24,8 +24,7 @@ pub fn format_batch_tables(
             out.push_str(&format_latency_table(counts, *view, limit, terminal_width));
         } else {
             let rows = counts_for_view(counts, *view, key_cap, show_no_ede);
-            let (name_w, count_w, pct_w) =
-                count_table_layout(&rows, limit, terminal_width);
+            let (name_w, count_w, pct_w) = count_table_layout(&rows, limit, terminal_width);
             out.push_str(&format_count_table_header(name_w, count_w, pct_w));
             let denom = total.max(1);
             for (key, count) in rows.iter().take(limit) {
@@ -133,6 +132,7 @@ fn view_title(view: ViewId) -> String {
         ViewId::Ede => "EDE codes".into(),
         ViewId::SrcXEde => "Source × EDE".into(),
         ViewId::Interface => "Interfaces".into(),
+        ViewId::Vlan => "VLAN".into(),
         ViewId::Transport => "Transport".into(),
         ViewId::LatencyDst => "Latency by destination".into(),
         ViewId::LatencySrc => "Latency by source".into(),
@@ -219,7 +219,8 @@ mod tests {
     #[test]
     fn narrow_terminal_keeps_count_and_percent_visible() {
         let mut c = ViewCounts::default();
-        c.sources.insert("averylonglabel.another.example.com".into(), 42);
+        c.sources
+            .insert("averylonglabel.another.example.com".into(), 42);
         let tw = 36u16;
         let out = format_batch_tables(&c, &[ViewId::Sources], 10, 42, 80, false, Some(tw));
         let row = out
@@ -239,10 +240,7 @@ mod tests {
     #[test]
     fn truncate_long_qname_from_left() {
         let name = "averylonglabel.another.example.com";
-        assert_eq!(
-            truncate_key_left(name, 20),
-            "…another.example.com"
-        );
+        assert_eq!(truncate_key_left(name, 20), "…another.example.com");
         assert_eq!(truncate_key_left("short", 10), "short");
     }
 }

@@ -159,7 +159,10 @@ fn launcher_suppressed(modal: &Modal, code: KeyCode) -> bool {
             _ => false,
         },
         Modal::Workers { .. } => {
-            matches!(code, KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char('-'))
+            matches!(
+                code,
+                KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char('-')
+            )
         }
         Modal::Help { .. } | Modal::Pipeline { .. } | Modal::Stats { .. } | Modal::None => false,
     }
@@ -174,9 +177,7 @@ fn try_modal_launcher(modal: &mut Modal, code: KeyCode) -> Option<KeyResult> {
         KeyCode::Char('p') => Some(Modal::PanelPicker { scroll: 0 }),
         KeyCode::Char('v') => Some(Modal::ViewPicker { scroll: 0 }),
         KeyCode::Char('w') => Some(Modal::Workers { scroll: 0 }),
-        KeyCode::Char('l') => Some(Modal::QnameLevelInput {
-            buf: String::new(),
-        }),
+        KeyCode::Char('l') => Some(Modal::QnameLevelInput { buf: String::new() }),
         KeyCode::Char('?') | KeyCode::Char('h') => Some(Modal::Help { scroll: 0 }),
         KeyCode::Char('u') => Some(Modal::Stats { scroll: 0 }),
         _ => None,
@@ -210,7 +211,7 @@ fn handle_qname_input(
             }
             modal.dismiss();
         }
-        KeyCode::Char(c) if c.is_ascii_digit() && buf.len() < 1 => {
+        KeyCode::Char(c) if c.is_ascii_digit() && buf.is_empty() => {
             buf.push(c);
             *modal = Modal::QnameLevelInput { buf };
         }
@@ -419,6 +420,7 @@ fn handle_main_keys(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_modal(
     f: &mut Frame<'_>,
     modal: &Modal,
@@ -613,7 +615,10 @@ fn pipeline_lines(
         .unwrap_or_else(|| "single capture path (no fanout)".into());
     let flow = pipeline.flow_threads();
     let parse = pipeline.worker_count();
-    let mut out = vec![pipeline_diagram(capture_threads, flow, parse), String::new()];
+    let mut out = vec![
+        pipeline_diagram(capture_threads, flow, parse),
+        String::new(),
+    ];
     out.push("== Capture ==".into());
     out.push(kv_line("interface", iface));
     out.push(kv_line("capture threads", capture_threads));
@@ -625,7 +630,10 @@ fn pipeline_lines(
     out.push(String::new());
     out.push("== Parse ==".into());
     out.push(kv_line("parse threads", parse));
-    out.push(kv_line("busy", format!("{}%", pipeline.parse_busy_percent())));
+    out.push(kv_line(
+        "busy",
+        format!("{}%", pipeline.parse_busy_percent()),
+    ));
     out.push(kv_line("queue depth", pipeline.queue_depth()));
     out.push(String::new());
     out.push("== Tuning hints ==".into());
@@ -651,7 +659,10 @@ fn scaling_lines(
         .unwrap_or_else(|| "no fanout".into());
     let flow = pipeline.flow_threads();
     let parse = pipeline.worker_count();
-    let mut out = vec![pipeline_diagram(capture_threads, flow, parse), String::new()];
+    let mut out = vec![
+        pipeline_diagram(capture_threads, flow, parse),
+        String::new(),
+    ];
     out.push("Adjust parse threads with + / - (live only).".into());
     out.push("Capture and flow thread counts: set at startup (CLI).".into());
     out.push(String::new());
@@ -661,7 +672,10 @@ fn scaling_lines(
     out.push(kv_line("fanout", fanout));
     out.push(kv_line("flow threads", flow));
     out.push(kv_line("parse threads", parse));
-    out.push(kv_line("busy", format!("{}%", pipeline.parse_busy_percent())));
+    out.push(kv_line(
+        "busy",
+        format!("{}%", pipeline.parse_busy_percent()),
+    ));
     out.push(kv_line("queue depth", pipeline.queue_depth()));
     out.push(String::new());
     out.push("== Tuning hints ==".into());

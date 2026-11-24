@@ -82,13 +82,12 @@ impl Aggregator {
     }
 
     pub fn recompute_window(&mut self) {
-        let (counts, stats) =
-            build_counts_from_slices_with_qname(
-                self.slices.values(),
-                &self.filter,
-                &self.eval_ctx,
-                self.smart_qname_labels,
-            );
+        let (counts, stats) = build_counts_from_slices_with_qname(
+            self.slices.values(),
+            &self.filter,
+            &self.eval_ctx,
+            self.smart_qname_labels,
+        );
         self.window_totals = counts;
         self.match_stats = stats;
         self.total_in_window = stats.matched;

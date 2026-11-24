@@ -213,7 +213,7 @@ pub fn fanout_available() -> bool {
 }
 
 fn bind_loopback(fd: RawFd) -> Result<(), io::Error> {
-    let ifindex = iface_ifindex("lo").map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let ifindex = iface_ifindex("lo").map_err(io::Error::other)?;
     let mut addr: libc::sockaddr_ll = unsafe { std::mem::zeroed() };
     addr.sll_family = libc::AF_PACKET as u16;
     addr.sll_protocol = (libc::ETH_P_ALL as u16).to_be();

@@ -30,6 +30,8 @@ pub struct FlowConfig {
     pub pair_timeout: Duration,
     pub pair_max: usize,
     pub dns_ports: PortSet,
+    pub dedup: bool,
+    pub dedup_window: Duration,
 }
 
 impl Default for FlowConfig {
@@ -48,6 +50,8 @@ impl Default for FlowConfig {
             pair_timeout: Duration::from_secs(5),
             pair_max: 10_000,
             dns_ports: PortSet::dns_default(),
+            dedup: false,
+            dedup_window: Duration::from_millis(5),
         }
     }
 }
@@ -68,6 +72,8 @@ impl FlowConfig {
             pair_timeout: opts.pair_timeout,
             pair_max: opts.pair_max,
             dns_ports: opts.dns_ports.clone(),
+            dedup: opts.dedup,
+            dedup_window: opts.dedup_window,
         }
     }
 }

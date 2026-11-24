@@ -5,7 +5,9 @@ use crate::parse::{TransportProto, parse_dns_payload_with_transport};
 
 use super::config::{FlowConfig, TcpMode};
 use super::counters::FlowCounters;
+use super::dedup::DedupState;
 use super::defrag::DefragState;
+use super::fingerprint::packet_fingerprint;
 use super::keys::FlowKey;
 use super::pairing::PairingState;
 use super::tcp::TcpState;
@@ -28,6 +30,7 @@ pub struct FlowStage {
     defrag: DefragState,
     tcp: TcpState,
     pub pairing: PairingState,
+    dedup: DedupState,
     pending_tcp_segments: std::collections::HashMap<FlowKey, u8>,
 }
 
@@ -48,6 +51,7 @@ impl FlowStage {
                 config.tcp_max_faults,
             ),
             pairing: PairingState::new(&config),
+            dedup: DedupState::new(config.dedup, config.dedup_window),
             config,
             counters: FlowCounters::default(),
             pending_tcp_segments: std::collections::HashMap::new(),
@@ -64,6 +68,12 @@ impl FlowStage {
             Err(L3Error::NotDns) | Err(L3Error::Parse) => return Vec::new(),
             Err(L3Error::FamilyFiltered) => return Vec::new(),
         };
+        let fp = packet_fingerprint(pkt, &l3);
+        if !self.dedup.admit(fp, pkt.timestamp_nanos()) {
+            self.counters.dedup_removals = self.dedup.removals;
+            return Vec::new();
+        }
+        self.counters.dedup_removals = self.dedup.removals;
         match l3.transport {
             L3Transport::Fragment => self.process_fragment(l3, pkt),
             L3Transport::Udp => self.ready_udp(l3, pkt, 1),

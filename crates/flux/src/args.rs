@@ -3,13 +3,13 @@ use clap::{Parser, Subcommand};
 #[cfg(target_os = "linux")]
 const FLUX_LONG_VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
-    " (cdt-flux-v1 phases 1–4; linux live capture)"
+    " (cdt-flux-v1 phases 1–5; linux live capture)"
 );
 
 #[cfg(not(target_os = "linux"))]
 const FLUX_LONG_VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
-    " (cdt-flux-v1 phases 1–4; replay-only on this OS)"
+    " (cdt-flux-v1 phases 1–5; replay-only on this OS)"
 );
 
 #[derive(Debug, Parser)]

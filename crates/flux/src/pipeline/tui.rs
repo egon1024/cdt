@@ -68,11 +68,7 @@ struct ViewFormatKey {
 }
 
 impl ViewFormatCache {
-    fn format(
-        &mut self,
-        key: ViewFormatKey,
-        build: impl FnOnce() -> String,
-    ) -> String {
+    fn format(&mut self, key: ViewFormatKey, build: impl FnOnce() -> String) -> String {
         if let Some(hit) = self.entries.get(&key) {
             return hit.clone();
         }
@@ -187,13 +183,7 @@ pub fn run_live(
 
         let mut drained_this_turn = 0u64;
         while drained_this_turn < CAPTURE_DRAIN_BUDGET {
-            let chunk = drain_capture(
-                &cap,
-                &mut agg,
-                &mut pipeline,
-                &options,
-                CAPTURE_DRAIN_CHUNK,
-            );
+            let chunk = drain_capture(&cap, &mut agg, &mut pipeline, &options, CAPTURE_DRAIN_CHUNK);
             if chunk == 0 {
                 break;
             }
@@ -394,15 +384,7 @@ fn handle_one_event(
         }
         Event::Key(key) => {
             let had_overlay = modal.is_open();
-            let outcome = handle_key(
-                modal,
-                view,
-                agg,
-                pipeline,
-                options,
-                key.code,
-                key.modifiers,
-            );
+            let outcome = handle_key(modal, view, agg, pipeline, options, key.code, key.modifiers);
             if outcome.quit {
                 return Ok(true);
             }
@@ -531,28 +513,28 @@ fn draw_live_frame(
     let title = format!("flux watch {iface}{smart_tag}");
 
     let status = StatusBar {
-            input: WatchInput::Live {
-                interfaces: vec![iface.to_string()],
-            },
-            window: options.window.clone(),
-            effective_window_secs: effective_window_secs(&agg.window),
-            filter: agg.filter.header.clone(),
-            match_stats: agg.match_stats,
-            counted_in_window: total,
-            counters: StatusLine {
-                packets: agg.counters.packets,
-                drops: agg.counters.capture_drops,
-                parse_busy_pct: pipeline.parse_busy_percent(),
-                queue_depth: pipeline.queue_depth(),
-                listener_frames: agg.counters.listener_packets,
-                recv_frames_last_tick: Some(recv_last),
-            },
-            flow: pipeline.flow_counters(),
-            pairing_enabled: options.pairing,
-            elapsed_secs: Some(start.elapsed().as_secs_f32()),
-            overload: None,
-            listener_stats: Vec::new(),
-            hints: Vec::new(),
+        input: WatchInput::Live {
+            interfaces: vec![iface.to_string()],
+        },
+        window: options.window.clone(),
+        effective_window_secs: effective_window_secs(&agg.window),
+        filter: agg.filter.header.clone(),
+        match_stats: agg.match_stats,
+        counted_in_window: total,
+        counters: StatusLine {
+            packets: agg.counters.packets,
+            drops: agg.counters.capture_drops,
+            parse_busy_pct: pipeline.parse_busy_percent(),
+            queue_depth: pipeline.queue_depth(),
+            listener_frames: agg.counters.listener_packets,
+            recv_frames_last_tick: Some(recv_last),
+        },
+        flow: pipeline.flow_counters(),
+        pairing_enabled: options.pairing,
+        elapsed_secs: Some(start.elapsed().as_secs_f32()),
+        overload: None,
+        listener_stats: Vec::new(),
+        hints: Vec::new(),
     };
 
     let table_width = term.size()?.width.saturating_sub(4).max(32);

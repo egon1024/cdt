@@ -61,6 +61,8 @@ pub struct FluxOptions {
     pub pairing: bool,
     pub pair_timeout: Duration,
     pub pair_max: usize,
+    pub dedup: bool,
+    pub dedup_window: Duration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +97,7 @@ pub enum ViewId {
     Ede,
     SrcXEde,
     Interface,
+    Vlan,
     Transport,
     LatencyDst,
     LatencySrc,
@@ -169,6 +172,8 @@ impl Default for FluxOptions {
             pairing: true,
             pair_timeout: Duration::from_secs(5),
             pair_max: 10_000,
+            dedup: false,
+            dedup_window: Duration::from_millis(5),
         }
     }
 }
@@ -550,6 +555,41 @@ fn parse_plus_option(
                 detail: v.into(),
             })?;
         }
+        "dedup" => {
+            opts.dedup = match value {
+                None | Some("") | Some("-") => true,
+                Some("on" | "true" | "1") => true,
+                Some("off" | "false" | "0") => false,
+                Some(other) => {
+                    return Err(OptionsError::InvalidValue {
+                        name: key.into(),
+                        detail: other.into(),
+                    });
+                }
+            };
+        }
+        "dedup-window" => {
+            let v = require_value(key, value)?;
+            let ms: u64 = if let Some(s) = v.strip_suffix("ms") {
+                s.parse().map_err(|_| OptionsError::InvalidValue {
+                    name: key.into(),
+                    detail: v.into(),
+                })?
+            } else if let Some(s) = v.strip_suffix('s') {
+                s.parse::<u64>()
+                    .map_err(|_| OptionsError::InvalidValue {
+                        name: key.into(),
+                        detail: v.into(),
+                    })?
+                    .saturating_mul(1000)
+            } else {
+                v.parse().map_err(|_| OptionsError::InvalidValue {
+                    name: key.into(),
+                    detail: v.into(),
+                })?
+            };
+            opts.dedup_window = Duration::from_millis(ms);
+        }
         _ if filter_field_key(key) || key.starts_with("no") => {}
         _ if key.is_empty() && matches!(value, None | Some("") | Some("-")) => {
             opts.events = EventsMode::Stdout;
@@ -576,9 +616,9 @@ fn is_flow_option_token(rest: &str) -> bool {
         "defrag" => matches!(value, Some("on" | "off")),
         "tcp" => matches!(value, Some("off" | "simple" | "full")),
         "pairing" => matches!(value, Some("on" | "off" | "true" | "false" | "0" | "1")),
-        "pair-timeout" | "pair-max" | "flow-threads" | "workers" | "port" | "queue" | "mem"
-        | "overload" | "exclude-iface" | "tui-hz" => value.is_some(),
-        "promisc" | "max-flow-threads" => true,
+        "pair-timeout" | "pair-max" | "dedup-window" | "flow-threads" | "workers" | "port"
+        | "queue" | "mem" | "overload" | "exclude-iface" | "tui-hz" => value.is_some(),
+        "promisc" | "max-flow-threads" | "dedup" => true,
         _ => false,
     }
 }
@@ -687,6 +727,7 @@ fn parse_view_list(s: &str) -> Result<Vec<ViewId>, OptionsError> {
             "ede" => ViewId::Ede,
             "src-x-ede" | "src×ede" => ViewId::SrcXEde,
             "iface" | "interface" => ViewId::Interface,
+            "vlan" => ViewId::Vlan,
             "transport" => ViewId::Transport,
             "latency-dst" | "latency-destinations" => ViewId::LatencyDst,
             "latency-src" | "latency-sources" => ViewId::LatencySrc,

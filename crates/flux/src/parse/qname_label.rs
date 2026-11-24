@@ -4,9 +4,9 @@ use super::record::qname_level_label;
 
 /// Multi-label public suffixes (longest match wins). Curated subset; extend as needed.
 const MULTI_SUFFIXES: &[&str] = &[
-    "co.uk", "org.uk", "ac.uk", "gov.uk", "ltd.uk", "plc.uk", "net.uk", "sch.uk",
-    "com.au", "net.au", "org.au", "edu.au", "gov.au", "co.nz", "org.nz", "co.jp",
-    "ne.jp", "or.jp", "co.kr", "com.br", "com.mx", "com.ar", "co.za", "com.cn",
+    "co.uk", "org.uk", "ac.uk", "gov.uk", "ltd.uk", "plc.uk", "net.uk", "sch.uk", "com.au",
+    "net.au", "org.au", "edu.au", "gov.au", "co.nz", "org.nz", "co.jp", "ne.jp", "or.jp", "co.kr",
+    "com.br", "com.mx", "com.ar", "co.za", "com.cn",
 ];
 
 fn labels_of(name: &str) -> Vec<String> {

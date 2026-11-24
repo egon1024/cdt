@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use dns_core::name::DomainName;
 use dns_core::query::{QueryOptions, build_query};
 use etherparse::PacketBuilder;
-use flux::capture::write_pcap_file;
+use etherparse::VlanId;
+use flux::capture::{write_pcap_file, write_pcapng_dup};
 use hickory_proto::op::{Message, MessageType, ResponseCode};
 use hickory_proto::rr::RecordType;
 use hickory_proto::rr::rdata::opt::EdnsOption;
@@ -192,6 +193,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ],
     )?;
 
+    let dup_opts = QueryOptions::new(DomainName::parse("dup.example.com.")?, RecordType::A);
+    let dup_wire = fix_query_id(build_query(&dup_opts)?, 0x6000);
+    let frame_br = ether_udp_dns_frame_ttl(&clients[0], &server, 48_000, dup_wire.clone(), 64);
+    let frame_v0 = ether_udp_dns_frame_ttl(&clients[0], &server, 48_000, dup_wire, 32);
+    write_pcapng_dup(
+        &dir.join("dup-two-iface.pcapng"),
+        &["br0", "v0"],
+        &[&[frame_br], &[frame_v0]],
+    )?;
+
+    let vlan_opts = QueryOptions::new(DomainName::parse("vlan100.example.com.")?, RecordType::A);
+    let vlan_wire = fix_query_id(build_query(&vlan_opts)?, 0x6100);
+    write_pcap_file(
+        &dir.join("vlan.pcap"),
+        &[ether_udp_dns_vlan_frame(
+            &clients[0],
+            &server,
+            49_000,
+            vlan_wire,
+            100,
+        )],
+    )?;
+
     Ok(())
 }
 
@@ -230,13 +254,41 @@ fn ether_udp_dns_frame_port(
 }
 
 fn ether_udp_dns_frame(src: &[u8; 4], dst: &[u8; 4], sport: u16, dns: Vec<u8>) -> Vec<u8> {
+    ether_udp_dns_frame_ttl(src, dst, sport, dns, 64)
+}
+
+fn ether_udp_dns_frame_ttl(
+    src: &[u8; 4],
+    dst: &[u8; 4],
+    sport: u16,
+    dns: Vec<u8>,
+    ttl: u8,
+) -> Vec<u8> {
     let payload = dns;
     let mut buf = Vec::with_capacity(14 + 20 + 8 + payload.len());
     PacketBuilder::ethernet2([0; 6], [0; 6])
-        .ipv4(*src, *dst, 64)
+        .ipv4(*src, *dst, ttl)
         .udp(sport, 53)
         .write(&mut buf, &payload)
         .expect("frame");
+    buf
+}
+
+fn ether_udp_dns_vlan_frame(
+    src: &[u8; 4],
+    dst: &[u8; 4],
+    sport: u16,
+    dns: Vec<u8>,
+    vlan_id: u16,
+) -> Vec<u8> {
+    let payload = dns;
+    let mut buf = Vec::with_capacity(14 + 4 + 20 + 8 + payload.len());
+    PacketBuilder::ethernet2([0; 6], [0; 6])
+        .single_vlan(VlanId::try_new(vlan_id).expect("vlan"))
+        .ipv4(*src, *dst, 64)
+        .udp(sport, 53)
+        .write(&mut buf, &payload)
+        .expect("vlan frame");
     buf
 }
 

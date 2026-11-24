@@ -1,9 +1,11 @@
-use crate::capture::{iter_packets, open_packet_source};
+use crate::capture::{iter_packets_multi, open_packet_source, parse_l3};
 use crate::filter::NoopResolver;
 use crate::flow::FlowStage;
+use crate::flow::packet_fingerprint;
 use crate::flow::{FlowKey, hash_to_bucket};
 use crate::options::FluxOptions;
 use crate::parse::ParseWorker;
+use crate::scale::OverlapTracker;
 use crate::scale::flow_pool::FlowThreadPool;
 use crate::scale::memory::{MemoryBudget, MemoryCounters};
 use crate::scale::overload::{OverloadPolicy, OverloadState, scale_estimate_count};
@@ -49,17 +51,20 @@ pub fn replay_file_scaled(
         resize_at = Some(6_000);
     }
 
+    let mut overlap = OverlapTracker::default();
     let mut packet_index = 0usize;
-    for pkt in iter_packets(&mut source, "replay") {
+    for pkt in iter_packets_multi(&mut source, "replay") {
         let pkt = pkt?;
+        if let Ok(l3) = parse_l3(&pkt, options.family, &options.dns_ports) {
+            let fp = packet_fingerprint(&pkt, &l3);
+            overlap.observe(fp, &pkt.iface);
+        }
         packet_index += 1;
         if let Some(idx) = resize_at
             && idx == packet_index
         {
             workers.resize(workers.len().saturating_add(1));
         }
-
-        agg.counters.listener_packets += 1;
 
         if use_pool {
             let routed = flow_pool.process_packet(&pkt, options.family, &options.dns_ports);
@@ -190,9 +195,12 @@ pub fn replay_file_scaled(
         pairing_enabled: options.pairing,
         elapsed_secs: None,
         overload: Some(overload),
-        listener_stats: Vec::new(),
+        listener_stats: overlap.format_listener_lines(),
         hints: Vec::new(),
     };
+    if let Some(hint) = overlap.high_overlap_hint(50.0) {
+        eprintln!("{hint}");
+    }
     Ok(ReplayOutcome { body, status })
 }
 

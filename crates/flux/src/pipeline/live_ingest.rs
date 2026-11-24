@@ -42,11 +42,7 @@ impl LivePipeline {
     }
 
     pub fn worker_count(&self) -> usize {
-        if self.use_pool {
-            self.workers.len()
-        } else {
-            1
-        }
+        if self.use_pool { self.workers.len() } else { 1 }
     }
 
     pub fn resize_workers(&mut self, new_len: usize) {
@@ -63,7 +59,12 @@ impl LivePipeline {
         }
     }
 
-    fn process_packet_pooled(&mut self, agg: &mut Aggregator, pkt: &RawPacket, options: &FluxOptions) {
+    fn process_packet_pooled(
+        &mut self,
+        agg: &mut Aggregator,
+        pkt: &RawPacket,
+        options: &FluxOptions,
+    ) {
         agg.counters.listener_packets += 1;
         let routed = self
             .flow_pool
@@ -122,7 +123,7 @@ impl LivePipeline {
         if self.use_pool {
             self.flow_pool.merged_counters()
         } else {
-            self.flow.counters.clone()
+            self.flow.counters
         }
     }
 

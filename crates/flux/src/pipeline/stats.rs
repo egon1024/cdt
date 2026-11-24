@@ -177,8 +177,7 @@ impl StatusBar {
             let pct = if self.match_stats.total_observed == 0 {
                 0.0
             } else {
-                (self.match_stats.matched as f64) * 100.0
-                    / (self.match_stats.total_observed as f64)
+                (self.match_stats.matched as f64) * 100.0 / (self.match_stats.total_observed as f64)
             };
             out.push(format!(
                 "  filter {} — {} of {} matched ({pct:.1}%)",
@@ -190,7 +189,10 @@ impl StatusBar {
         out.push("".into());
         out.push("== Capture & parse ==".into());
         if self.counters.listener_frames > 0 || self.counters.recv_frames_last_tick.is_some() {
-            out.push(format!("  listener frames {}", self.counters.listener_frames));
+            out.push(format!(
+                "  listener frames {}",
+                self.counters.listener_frames
+            ));
             if let Some(n) = self.counters.recv_frames_last_tick {
                 out.push(format!("  recv last tick {n}"));
             }

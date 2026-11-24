@@ -227,10 +227,7 @@ fn live_watch_lists_default_interfaces_on_stderr() {
 fn exclude_iface_option_parses() {
     let out = flux_run(&["watch", "-i", "lo", "+exclude-iface=veth*"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        !stderr.contains("unknown option"),
-        "stderr={stderr}"
-    );
+    assert!(!stderr.contains("unknown option"), "stderr={stderr}");
     assert!(stderr.contains("opened interfaces: lo"), "stderr={stderr}");
 }
 

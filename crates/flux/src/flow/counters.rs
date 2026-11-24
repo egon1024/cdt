@@ -8,6 +8,7 @@ pub struct FlowCounters {
     pub tcp_idle_evicted: u64,
     pub tcp_resync_failed: u64,
     pub pairing_evicted: u64,
+    pub dedup_removals: u64,
 }
 
 impl FlowCounters {
@@ -24,6 +25,7 @@ impl FlowCounters {
             .tcp_resync_failed
             .saturating_add(other.tcp_resync_failed);
         self.pairing_evicted = self.pairing_evicted.saturating_add(other.pairing_evicted);
+        self.dedup_removals = self.dedup_removals.saturating_add(other.dedup_removals);
     }
 
     pub fn any_nonzero(&self) -> bool {
@@ -35,6 +37,7 @@ impl FlowCounters {
             || self.tcp_idle_evicted > 0
             || self.tcp_resync_failed > 0
             || self.pairing_evicted > 0
+            || self.dedup_removals > 0
     }
 
     pub fn format_lines(&self) -> Vec<String> {
@@ -61,7 +64,13 @@ impl FlowCounters {
             parts.push(format!("tcp_resync_failed={}", self.tcp_resync_failed));
         }
         if self.pairing_evicted > 0 {
-            parts.push(format!("pairing_evicted={}", self.pairing_evicted));
+            parts.push(format!(
+                "pairing_evicted={} pair_evicted={}",
+                self.pairing_evicted, self.pairing_evicted
+            ));
+        }
+        if self.dedup_removals > 0 {
+            parts.push(format!("dedup={}", self.dedup_removals));
         }
         parts
     }
