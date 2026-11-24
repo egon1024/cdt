@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use crate::filter::{CompiledFilter, EvalContext, MatchStats};
 use crate::options::{LatePolicy, WindowMode};
 use crate::parse::{ObservationRecord, ParsedObservation};
-use crate::view::{ViewCounts, build_counts_from_slices};
+use crate::view::{ViewCounts, build_counts_from_slices_with_qname};
 
 use super::slice::{SliceId, TimeSlice};
 
@@ -38,6 +38,7 @@ pub struct Aggregator {
     pub filter: CompiledFilter,
     pub eval_ctx: EvalContext,
     pub filter_generation: u64,
+    pub smart_qname_labels: bool,
 }
 
 impl Aggregator {
@@ -62,6 +63,14 @@ impl Aggregator {
             filter,
             eval_ctx,
             filter_generation: 1,
+            smart_qname_labels: false,
+        }
+    }
+
+    pub fn set_smart_qname_labels(&mut self, on: bool) {
+        if self.smart_qname_labels != on {
+            self.smart_qname_labels = on;
+            self.recompute_window();
         }
     }
 
@@ -74,7 +83,12 @@ impl Aggregator {
 
     pub fn recompute_window(&mut self) {
         let (counts, stats) =
-            build_counts_from_slices(self.slices.values(), &self.filter, &self.eval_ctx);
+            build_counts_from_slices_with_qname(
+                self.slices.values(),
+                &self.filter,
+                &self.eval_ctx,
+                self.smart_qname_labels,
+            );
         self.window_totals = counts;
         self.match_stats = stats;
         self.total_in_window = stats.matched;
@@ -121,7 +135,12 @@ impl Aggregator {
             if !slice.sealed && slice.second < now {
                 slice.sealed = true;
                 slice.grace_until = Some(Instant::now() + grace);
-                let partial = build_counts_from_slice_filtered(slice, &self.filter, &self.eval_ctx);
+                let partial = build_counts_from_slice_filtered(
+                    slice,
+                    &self.filter,
+                    &self.eval_ctx,
+                    self.smart_qname_labels,
+                );
                 self.window_totals.merge_add(&partial.0);
                 self.match_stats.matched += partial.1.matched;
                 self.match_stats.total_observed += partial.1.total_observed;
@@ -144,8 +163,12 @@ impl Aggregator {
             .collect();
         for id in expired {
             if let Some(slice) = self.slices.remove(&id) {
-                let partial =
-                    build_counts_from_slice_filtered(&slice, &self.filter, &self.eval_ctx);
+                let partial = build_counts_from_slice_filtered(
+                    &slice,
+                    &self.filter,
+                    &self.eval_ctx,
+                    self.smart_qname_labels,
+                );
                 self.window_totals.merge_sub(&partial.0);
                 self.match_stats.matched =
                     self.match_stats.matched.saturating_sub(partial.1.matched);
@@ -194,8 +217,15 @@ fn build_counts_from_slice_filtered(
     slice: &TimeSlice,
     filter: &CompiledFilter,
     ctx: &EvalContext,
+    smart_qname: bool,
 ) -> (ViewCounts, MatchStats) {
-    crate::view::build_counts_filtered(&slice.records, &slice.arena, filter, ctx)
+    crate::view::build_counts_filtered_with_qname(
+        &slice.records,
+        &slice.arena,
+        filter,
+        ctx,
+        smart_qname,
+    )
 }
 
 #[cfg(test)]

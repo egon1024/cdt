@@ -7,7 +7,7 @@ use crate::filter::{CompiledFilter, EvalContext, FilterPredicate, MatchStats, re
 use crate::flow::LatencyKeyStats;
 use crate::options::ViewId;
 use crate::parse::ede_entries;
-use crate::parse::{ObservationRecord, TransportProto, qname_level_label};
+use crate::parse::{ObservationRecord, TransportProto, qname_group_label};
 use crate::window::TimeSlice;
 
 #[derive(Debug, Default, Clone)]
@@ -18,7 +18,7 @@ pub struct ViewCounts {
     pub rcodes: HashMap<u8, u64>,
     pub opcodes: HashMap<u8, u64>,
     pub qname_levels: HashMap<(u8, String), u64>,
-    pub src_x_qname: HashMap<(String, String), u64>,
+    pub src_x_qname: HashMap<(u8, String, String), u64>,
     pub ede: HashMap<String, u64>,
     pub src_x_ede: HashMap<(String, String), u64>,
     pub interfaces: HashMap<String, u64>,
@@ -133,6 +133,16 @@ pub fn build_counts_filtered(
     filter: &CompiledFilter,
     ctx: &EvalContext,
 ) -> (ViewCounts, MatchStats) {
+    build_counts_filtered_with_qname(records, arena, filter, ctx, false)
+}
+
+pub fn build_counts_filtered_with_qname(
+    records: &[ObservationRecord],
+    arena: &[u8],
+    filter: &CompiledFilter,
+    ctx: &EvalContext,
+    smart_qname: bool,
+) -> (ViewCounts, MatchStats) {
     let mut c = ViewCounts::default();
     let mut matched = 0u64;
     let total = records.len() as u64;
@@ -145,7 +155,7 @@ pub fn build_counts_filtered(
             continue;
         }
         matched += 1;
-        accumulate_record(&mut c, r, arena, false);
+        accumulate_record(&mut c, r, arena, false, smart_qname);
     }
     (
         c,
@@ -161,11 +171,20 @@ pub fn build_counts_from_slices<'a>(
     filter: &CompiledFilter,
     ctx: &EvalContext,
 ) -> (ViewCounts, MatchStats) {
+    build_counts_from_slices_with_qname(slices, filter, ctx, false)
+}
+
+pub fn build_counts_from_slices_with_qname<'a>(
+    slices: impl Iterator<Item = &'a TimeSlice>,
+    filter: &CompiledFilter,
+    ctx: &EvalContext,
+    smart_qname: bool,
+) -> (ViewCounts, MatchStats) {
     let mut merged = ViewCounts::default();
     let mut stats = MatchStats::default();
     for slice in slices {
         let (partial, part_stats) =
-            build_counts_filtered(&slice.records, &slice.arena, filter, ctx);
+            build_counts_filtered_with_qname(&slice.records, &slice.arena, filter, ctx, smart_qname);
         merged.merge_add(&partial);
         stats.matched += part_stats.matched;
         stats.total_observed += part_stats.total_observed;
@@ -178,6 +197,7 @@ fn accumulate_record(
     r: &ObservationRecord,
     arena: &[u8],
     split_ede_extra: bool,
+    smart_qname: bool,
 ) {
     if r.malformed {
         c.malformed += 1;
@@ -195,12 +215,14 @@ fn accumulate_record(
         TransportProto::Tcp => "tcp",
     };
     *c.transports.entry(transport.into()).or_insert(0) += 1;
-    for level in 1..=3 {
-        let label = qname_level_label(&r.qname, level);
+    for level in 1..=9u8 {
+        let label = qname_group_label(&r.qname, level, smart_qname);
         if !label.is_empty() {
             *c.qname_levels.entry((level, label.clone())).or_insert(0) += 1;
             let src_label = src.clone();
-            *c.src_x_qname.entry((src_label, label)).or_insert(0) += 1;
+            *c.src_x_qname
+                .entry((level, src_label, label))
+                .or_insert(0) += 1;
         }
     }
     if r.unanswered {
@@ -290,14 +312,8 @@ pub fn counts_for_view(
         ViewId::SrcXQname(level) => counts
             .src_x_qname
             .iter()
-            .filter_map(|((src, name), v)| {
-                let lbl = qname_level_label(name, level);
-                if lbl.is_empty() {
-                    None
-                } else {
-                    Some((format!("{src} × {lbl}"), *v))
-                }
-            })
+            .filter(|((l, _, _), _)| *l == level)
+            .map(|((_, src, lbl), v)| (format!("{src} × {lbl}"), *v))
             .collect(),
         ViewId::Ede => {
             let mut rows: Vec<_> = counts.ede.iter().map(|(k, v)| (k.clone(), *v)).collect();

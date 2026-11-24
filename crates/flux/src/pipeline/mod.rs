@@ -3,6 +3,8 @@ mod live_ingest;
 mod replay;
 mod scaled_replay;
 mod stats;
+#[cfg(all(target_os = "linux", feature = "tui"))]
+mod tui_modal;
 #[cfg(feature = "tui")]
 mod tui;
 

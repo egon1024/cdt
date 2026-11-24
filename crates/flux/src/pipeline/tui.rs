@@ -4,13 +4,13 @@ use std::io;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::ExecutableCommand;
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{self, Event};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use thiserror::Error;
 
 use crate::capture::LiveCapture;
@@ -23,6 +23,8 @@ use crate::window::Aggregator;
 use super::live_ingest::LivePipeline;
 use super::stats::{StatusBar, StatusLine, WatchInput};
 use crate::scale::priority::{ThreadRole, apply_thread_priority};
+
+use super::tui_modal::{Modal, handle_key, render_modal};
 
 #[derive(Debug, Error)]
 pub enum TuiError {
@@ -64,8 +66,7 @@ pub fn run_live(
     let backend = CrosstermBackend::new(stdout);
     let mut term = Terminal::new(backend)?;
     let mut view = ViewId::Sources;
-    let mut show_help = false;
-    let mut show_listeners = false;
+    let mut modal = Modal::None;
     let start = Instant::now();
     let mut last_draw = Instant::now();
     let mut frames_since_draw: u64 = 0;
@@ -76,38 +77,19 @@ pub fn run_live(
 
         if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
-                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                let outcome = handle_key(
+                    &mut modal,
+                    &mut view,
+                    &mut agg,
+                    &mut pipeline,
+                    &mut options,
+                    key.code,
+                    key.modifiers,
+                );
+                if outcome.quit {
                     break;
                 }
-                force_redraw = true;
-                match key.code {
-                    KeyCode::Char('q') => break,
-                    KeyCode::Char('s') => view = ViewId::Sources,
-                    KeyCode::Char('d') => view = ViewId::Destinations,
-                    KeyCode::Char('t') => view = ViewId::Qtype,
-                    KeyCode::Char('r') => view = ViewId::Rcode,
-                    KeyCode::Char('o') => view = ViewId::Opcode,
-                    KeyCode::Char('1') => view = ViewId::QnameLevel(1),
-                    KeyCode::Char('2') => view = ViewId::QnameLevel(2),
-                    KeyCode::Char('3') => view = ViewId::QnameLevel(3),
-                    KeyCode::Char('?') => show_help = !show_help,
-                    KeyCode::Char('l') => show_listeners = !show_listeners,
-                    KeyCode::Char('+') => {
-                        let n = pipeline.worker_count().saturating_add(1);
-                        pipeline.resize_workers(n);
-                        options.workers = n;
-                    }
-                    KeyCode::Char('-') => {
-                        let n = pipeline.worker_count().saturating_sub(1).max(1);
-                        pipeline.resize_workers(n);
-                        options.workers = n;
-                    }
-                    KeyCode::Char('f') => {
-                        let mut picker = crate::filter::PickerState::Closed;
-                        let _ = crate::filter::picker_key(&mut picker, 'f');
-                    }
-                    _ => {}
-                }
+                force_redraw |= outcome.force_redraw;
             }
         }
 
@@ -136,19 +118,12 @@ pub fn run_live(
                 None,
             );
             let hint_lines = HintEngine::format_hints(&hints);
-            let listener_panel = listener_panel_lines(
-                &iface,
-                capture_threads,
-                fanout_group,
-                pipeline.flow_threads(),
-                pipeline.worker_count(),
-                pipeline.parse_busy_percent(),
-                pipeline.queue_depth(),
-            );
 
             let total = snap.total_messages;
+            let smart = agg.smart_qname_labels;
             term.draw(|f| {
-                let title = format!("flux watch {iface}");
+                let smart_tag = if smart { " smart-qname" } else { "" };
+                let title = format!("flux watch {iface}{smart_tag}");
 
                 let status = StatusBar {
                     input: WatchInput::Live {
@@ -190,12 +165,8 @@ pub fn run_live(
                     options.key_cap,
                     options.ede_show_no_ede,
                 );
-                if show_help {
-                    main_text.push_str(
-                        "\nkeys: s src d dst t qtype r rcode o opcode 1-3 qname l listeners + - workers ? help q quit\n",
-                    );
-                } else {
-                    main_text.push_str("\n? for help, l listeners, q quit\n");
+                if !modal.is_open() {
+                    main_text.push_str("\np panels · w workers · l qname level · g smart labels · ? help · q quit\n");
                 }
                 f.render_widget(
                     Paragraph::new(main_text).block(Block::default().title(title).borders(Borders::ALL)),
@@ -208,32 +179,16 @@ pub fn run_live(
                     chunks[1],
                 );
 
-                if show_listeners {
-                    let popup = centered_rect(72, 48, f.area());
-                    f.render_widget(Clear, popup);
-                    let mut body = listener_panel.join("\n");
-                    body.push_str("\n\n-- tuning hints --\n");
-                    if hint_lines.is_empty() {
-                        body.push_str("  (none)\n");
-                    } else {
-                        for h in &hint_lines {
-                            body.push_str("  ");
-                            body.push_str(h);
-                            body.push('\n');
-                        }
-                    }
-                    body.push_str("\n(press l to close)");
-                    f.render_widget(
-                        Paragraph::new(body)
-                            .block(
-                                Block::default()
-                                    .title("Listeners & pipeline")
-                                    .borders(Borders::ALL),
-                            )
-                            .alignment(Alignment::Left),
-                        popup,
-                    );
-                }
+                render_modal(
+                    f,
+                    &modal,
+                    &iface,
+                    capture_threads,
+                    fanout_group,
+                    &pipeline,
+                    &hint_lines,
+                    smart,
+                );
             })?;
 
             last_draw = Instant::now();
@@ -243,46 +198,6 @@ pub fn run_live(
     disable_raw_mode()?;
     term.backend_mut().execute(LeaveAlternateScreen)?;
     Ok(())
-}
-
-fn listener_panel_lines(
-    iface: &str,
-    capture_threads: u32,
-    fanout_group: Option<u32>,
-    flow_threads: u32,
-    parse_workers: usize,
-    parse_busy: u8,
-    queue_depth: u64,
-) -> Vec<String> {
-    let fanout = fanout_group
-        .map(|g| format!("kernel fanout group {g}"))
-        .unwrap_or_else(|| "no fanout (1 capture thread)".into());
-    vec![
-        format!("capture {iface}: threads={capture_threads} ({fanout})"),
-        format!("flow stage: {flow_threads} thread(s) over virtual buckets"),
-        format!(
-            "parse: {parse_workers} worker(s) busy={parse_busy}% queue={queue_depth}"
-        ),
-    ]
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(area);
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(popup_layout[1])[1]
 }
 
 fn drain_capture(
