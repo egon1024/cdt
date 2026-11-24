@@ -117,8 +117,31 @@ pub fn handle_key(
     }
 }
 
+/// Keys that belong to the open picker/entry modal, not global launchers.
+fn launcher_suppressed(modal: &Modal, code: KeyCode) -> bool {
+    match modal {
+        Modal::PanelPicker { .. } => matches!(
+            code,
+            KeyCode::Char('l') | KeyCode::Char('w') | KeyCode::Char('h') | KeyCode::Char('?')
+        ),
+        Modal::ViewPicker { .. } => view_action(code).is_some(),
+        Modal::QnameLevelInput { .. } => match code {
+            KeyCode::Backspace | KeyCode::Enter => true,
+            KeyCode::Char(c) => c.is_ascii_digit(),
+            _ => false,
+        },
+        Modal::Workers { .. } => {
+            matches!(code, KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char('-'))
+        }
+        Modal::Help { .. } | Modal::Listeners { .. } | Modal::None => false,
+    }
+}
+
 /// Open/replace a top-level modal from any UI state (listeners, help, another picker, etc.).
 fn try_modal_launcher(modal: &mut Modal, code: KeyCode) -> Option<KeyResult> {
+    if launcher_suppressed(modal, code) {
+        return None;
+    }
     let next = match code {
         KeyCode::Char('p') => Some(Modal::PanelPicker { scroll: 0 }),
         KeyCode::Char('v') => Some(Modal::ViewPicker { scroll: 0 }),
