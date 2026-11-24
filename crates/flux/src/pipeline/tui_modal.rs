@@ -87,6 +87,13 @@ pub fn handle_key(
     }
 
     if code == KeyCode::Char('q') {
+        if modal.is_open() {
+            modal.dismiss();
+            return KeyResult {
+                quit: false,
+                force_redraw: true,
+            };
+        }
         return KeyResult {
             quit: true,
             force_redraw: true,
@@ -542,7 +549,8 @@ fn help_lines(smart_qname: bool) -> Vec<String> {
         "Other".into(),
         "  ? or h        this help".into(),
         "  Esc, Backspace  close modal (does not quit)".into(),
-        "  q, Ctrl+C     quit".into(),
+        "  q             close modal, or quit when none open".into(),
+        "  Ctrl+C        quit".into(),
     ];
     if inside_tmux() {
         lines.push("".into());
