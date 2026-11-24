@@ -103,6 +103,10 @@ pub fn handle_key(
         };
     }
 
+    if let Some(result) = try_modal_launcher(modal, code) {
+        return result;
+    }
+
     match modal.clone() {
         Modal::QnameLevelInput { buf } => handle_qname_input(modal, view, code, buf),
         Modal::ViewPicker { .. } => handle_view_picker(modal, view, code),
@@ -111,6 +115,27 @@ pub fn handle_key(
         Modal::Help { .. } | Modal::Listeners { .. } => handle_scroll_modal(modal, code),
         Modal::None => handle_main_keys(modal, view, agg, pipeline, options, code),
     }
+}
+
+/// Open/replace a top-level modal from any UI state (listeners, help, another picker, etc.).
+fn try_modal_launcher(modal: &mut Modal, code: KeyCode) -> Option<KeyResult> {
+    let next = match code {
+        KeyCode::Char('p') => Some(Modal::PanelPicker { scroll: 0 }),
+        KeyCode::Char('v') => Some(Modal::ViewPicker { scroll: 0 }),
+        KeyCode::Char('w') => Some(Modal::Workers { scroll: 0 }),
+        KeyCode::Char('l') => Some(Modal::QnameLevelInput {
+            buf: String::new(),
+        }),
+        KeyCode::Char('?') | KeyCode::Char('h') => Some(Modal::Help { scroll: 0 }),
+        _ => None,
+    };
+    next.map(|m| {
+        modal.open(m);
+        KeyResult {
+            quit: false,
+            force_redraw: true,
+        }
+    })
 }
 
 fn handle_qname_input(
@@ -310,24 +335,9 @@ fn handle_main_keys(
     code: KeyCode,
 ) -> KeyResult {
     match code {
-        KeyCode::Char('v') => {
-            modal.open(Modal::ViewPicker { scroll: 0 });
-        }
-        KeyCode::Char('p') => {
-            modal.open(Modal::PanelPicker { scroll: 0 });
-        }
-        KeyCode::Char('w') => {
-            modal.open(Modal::Workers { scroll: 0 });
-        }
-        KeyCode::Char('l') => {
-            modal.open(Modal::QnameLevelInput { buf: String::new() });
-        }
         KeyCode::Char('g') => {
             let on = !agg.smart_qname_labels;
             agg.set_smart_qname_labels(on);
-        }
-        KeyCode::Char('?') | KeyCode::Char('h') => {
-            modal.open(Modal::Help { scroll: 0 });
         }
         KeyCode::Char('+') | KeyCode::Char('=') => {
             let n = pipeline.worker_count().saturating_add(1);
