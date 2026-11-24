@@ -17,7 +17,7 @@ pub use query::{
     QueryOptions, SUPPORTED_RECORD_TYPE_NAMES, build_query, parse_record_type, record_type_name,
 };
 pub use response::{
-    DnsRecord, DnsResponse, QueryResult, Transport, parse_opcode, parse_rcode, opcode_name,
+    DnsRecord, DnsResponse, QueryResult, Transport, opcode_name, parse_opcode, parse_rcode,
     rcode_name,
 };
 pub use reverse::{ip_to_ptr_name, parse_reverse_target};
