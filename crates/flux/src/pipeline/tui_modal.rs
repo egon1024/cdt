@@ -551,11 +551,12 @@ fn panel_picker_lines() -> Vec<String> {
     ]
 }
 
-fn pipeline_diagram(capture: u32, flow: u32, parse: usize) -> Vec<String> {
-    vec![
-        format!("  capture({capture})  ->  flow({flow})  ->  parse({parse})"),
-        "         (cli)                  (cli)                 (+/-)".into(),
-    ]
+fn pipeline_diagram(capture: u32, flow: u32, parse: usize) -> String {
+    format!("  capture({capture})  ->  flow({flow})  ->  parse({parse})")
+}
+
+fn kv_line(key: &str, value: impl std::fmt::Display) -> String {
+    format!("  {key}: {value}")
 }
 
 fn pipeline_lines(
@@ -570,25 +571,20 @@ fn pipeline_lines(
         .unwrap_or_else(|| "single capture path (no fanout)".into());
     let flow = pipeline.flow_threads();
     let parse = pipeline.worker_count();
-    let mut out = pipeline_diagram(capture_threads, flow, parse);
-    out.push(String::new());
+    let mut out = vec![pipeline_diagram(capture_threads, flow, parse), String::new()];
     out.push("== Capture ==".into());
-    out.push(format!("  interface {iface}"));
-    out.push(format!(
-        "  capture threads {capture_threads} ({fanout})"
-    ));
+    out.push(kv_line("interface", iface));
+    out.push(kv_line("capture threads", capture_threads));
+    out.push(kv_line("fanout", fanout));
     out.push(String::new());
     out.push("== Flow ==".into());
-    out.push(format!(
-        "  flow threads {flow} (virtual hash buckets)"
-    ));
+    out.push(kv_line("flow threads", flow));
+    out.push("  (virtual hash buckets)".into());
     out.push(String::new());
     out.push("== Parse ==".into());
-    out.push(format!(
-        "  parse threads {parse}  busy {}%  queue depth {}",
-        pipeline.parse_busy_percent(),
-        pipeline.queue_depth()
-    ));
+    out.push(kv_line("parse threads", parse));
+    out.push(kv_line("busy", format!("{}%", pipeline.parse_busy_percent())));
+    out.push(kv_line("queue depth", pipeline.queue_depth()));
     out.push(String::new());
     out.push("== Tuning hints ==".into());
     if hint_lines.is_empty() {
@@ -613,18 +609,18 @@ fn scaling_lines(
         .unwrap_or_else(|| "no fanout".into());
     let flow = pipeline.flow_threads();
     let parse = pipeline.worker_count();
-    let mut out = pipeline_diagram(capture_threads, flow, parse);
-    out.push(String::new());
+    let mut out = vec![pipeline_diagram(capture_threads, flow, parse), String::new()];
     out.push("Adjust parse threads with + / - (live only).".into());
     out.push("Capture and flow thread counts: set at startup (CLI).".into());
     out.push(String::new());
-    out.push(format!("capture on {iface}: threads={capture_threads} ({fanout})"));
-    out.push(format!("flow threads: {flow}"));
-    out.push(format!(
-        "parse threads: {parse} (busy {}%, queue {})",
-        pipeline.parse_busy_percent(),
-        pipeline.queue_depth()
-    ));
+    out.push("== Threads ==".into());
+    out.push(kv_line("interface", iface));
+    out.push(kv_line("capture threads", capture_threads));
+    out.push(kv_line("fanout", fanout));
+    out.push(kv_line("flow threads", flow));
+    out.push(kv_line("parse threads", parse));
+    out.push(kv_line("busy", format!("{}%", pipeline.parse_busy_percent())));
+    out.push(kv_line("queue depth", pipeline.queue_depth()));
     out.push(String::new());
     out.push("== Tuning hints ==".into());
     if hint_lines.is_empty() {
