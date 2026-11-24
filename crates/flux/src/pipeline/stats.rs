@@ -243,8 +243,7 @@ impl StatusBar {
 }
 
 /// Single-line key hints for the live TUI footer (static; avoids flicker on refresh).
-pub const TUI_FOOTER_HINTS: &str =
-    "v views · p panels · u stats · w scaling · l qname · g smart · h/? help · q quit";
+pub const TUI_FOOTER_HINTS: &str = "h/? help · q quit";
 
 fn format_window(window: &WindowMode, effective_secs: Option<u64>) -> String {
     match window {
