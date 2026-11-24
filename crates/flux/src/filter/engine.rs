@@ -218,7 +218,7 @@ fn eval_field(
         FieldId::Qname => eval_qname(cond, &record.qname),
         FieldId::Qtype => eval_qtype(cond, record.qtype),
         FieldId::Rcode => eval_rcode(cond, record.rcode),
-        FieldId::Opcode => eval_string_set(cond, &format!("OP{}", record.opcode)),
+        FieldId::Opcode => eval_opcode(cond, record.opcode),
         FieldId::Qr => eval_bool(cond, record.qr),
         FieldId::Aa => eval_bool(cond, record.flags.aa),
         FieldId::Tc => eval_bool(cond, record.flags.tc),
@@ -286,6 +286,17 @@ fn eval_rcode(cond: &FieldCond, code: u8) -> bool {
         .values
         .iter()
         .any(|v| crate::rcode::rcode_token_matches(code, v));
+    match cond.op {
+        CompareOp::Ne => !matches,
+        _ => matches,
+    }
+}
+
+fn eval_opcode(cond: &FieldCond, code: u8) -> bool {
+    let matches = cond
+        .values
+        .iter()
+        .any(|v| crate::opcode::opcode_token_matches(code, v));
     match cond.op {
         CompareOp::Ne => !matches,
         _ => matches,

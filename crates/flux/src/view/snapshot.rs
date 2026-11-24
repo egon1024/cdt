@@ -279,7 +279,7 @@ pub fn counts_for_view(
         ViewId::Opcode => counts
             .opcodes
             .iter()
-            .map(|(k, v)| (format!("OP{}", k), *v))
+            .map(|(k, v)| (crate::opcode::opcode_label(*k), *v))
             .collect(),
         ViewId::QnameLevel(level) => counts
             .qname_levels

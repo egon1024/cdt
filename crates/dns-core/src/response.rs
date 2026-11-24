@@ -241,6 +241,44 @@ fn zone_label_count(zone: &DomainName) -> usize {
     trimmed.split('.').filter(|label| !label.is_empty()).count()
 }
 
+/// DNS OP CODE presentation name (`QUERY`, `NOTIFY`, `OPCODE7`, …).
+pub fn opcode_name(opcode: u8) -> String {
+    match opcode {
+        0 => "QUERY".into(),
+        1 => "IQUERY".into(),
+        2 => "STATUS".into(),
+        4 => "NOTIFY".into(),
+        5 => "UPDATE".into(),
+        6 => "DSO".into(),
+        n => format!("OPCODE{n}"),
+    }
+}
+
+/// Parse a user filter token into an OP CODE (`0`, `QUERY`, `OPCODE4`, …).
+pub fn parse_opcode(input: &str) -> Option<u8> {
+    let upper = input.trim().to_ascii_uppercase();
+    if upper.is_empty() {
+        return None;
+    }
+    if let Some(rest) = upper.strip_prefix("OPCODE") {
+        return rest.parse().ok();
+    }
+    if let Some(rest) = upper.strip_prefix("OP") {
+        if rest.chars().all(|c| c.is_ascii_digit()) {
+            return rest.parse().ok();
+        }
+    }
+    match upper.as_str() {
+        "QUERY" | "0" => Some(0),
+        "IQUERY" | "1" => Some(1),
+        "STATUS" | "2" => Some(2),
+        "NOTIFY" | "4" => Some(4),
+        "UPDATE" | "5" => Some(5),
+        "DSO" | "6" => Some(6),
+        _ => upper.parse().ok(),
+    }
+}
+
 /// DNS RCODE presentation name (`NOERROR`, `NXDOMAIN`, `RCODE9`, …).
 pub fn rcode_name(rcode: u16) -> String {
     match rcode {
@@ -547,5 +585,15 @@ mod tests {
         assert_eq!(rcode_name(3), "NXDOMAIN");
         assert_eq!(parse_rcode("NXDOMAIN"), Some(3));
         assert_eq!(parse_rcode("RCODE0"), Some(0));
+    }
+
+    #[test]
+    fn opcode_name_and_parse() {
+        assert_eq!(opcode_name(0), "QUERY");
+        assert_eq!(opcode_name(4), "NOTIFY");
+        assert_eq!(opcode_name(7), "OPCODE7");
+        assert_eq!(parse_opcode("QUERY"), Some(0));
+        assert_eq!(parse_opcode("OP0"), Some(0));
+        assert_eq!(parse_opcode("OPCODE5"), Some(5));
     }
 }

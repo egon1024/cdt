@@ -8,6 +8,7 @@ pub mod flow;
 pub mod options;
 pub mod parse;
 pub mod pipeline;
+pub mod opcode;
 pub mod qtype;
 pub mod rcode;
 pub mod scale;
