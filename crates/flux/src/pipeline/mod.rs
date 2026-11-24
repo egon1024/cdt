@@ -1,4 +1,5 @@
 mod ingest;
+mod live_ingest;
 mod replay;
 mod scaled_replay;
 mod stats;
@@ -81,7 +82,7 @@ pub fn run_watch(
         if use_tui {
             let cap = crate::capture::live::LiveCapture::open_with(iface, cap_opts)
                 .map_err(PipelineError::Live)?;
-            return run_live_tui(cap, options);
+            return run_live_tui(cap, options, listeners[0].capture_threads);
         }
         let _ = cap_opts;
         return Err(PipelineError::Config(
@@ -106,10 +107,11 @@ pub fn run_watch(
 fn run_live_tui(
     cap: crate::capture::LiveCapture,
     options: FluxOptions,
+    capture_threads: u32,
 ) -> Result<(), PipelineError> {
     #[cfg(feature = "tui")]
     {
-        tui::run_live(cap, options).map_err(|e| match e {
+        tui::run_live(cap, options, capture_threads).map_err(|e| match e {
             tui::TuiError::Live(l) => PipelineError::Live(l),
             tui::TuiError::Io(io) => PipelineError::Config(io.to_string()),
             tui::TuiError::Options(o) => PipelineError::Options(o),

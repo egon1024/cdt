@@ -12,6 +12,10 @@ pub struct StatusLine {
     pub drops: u64,
     pub parse_busy_pct: u8,
     pub queue_depth: u64,
+    /// Ethernet frames accepted on listeners (includes non-DNS).
+    pub listener_frames: u64,
+    /// Raw frames received in the last refresh interval (live TUI).
+    pub recv_frames_last_tick: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -87,12 +91,25 @@ impl StatusBar {
             parts.push(format!("elapsed {elapsed:.1}s"));
         }
 
+        if self.counters.listener_frames > 0 || self.counters.recv_frames_last_tick.is_some() {
+            let mut io = format!("frames={}", self.counters.listener_frames);
+            if let Some(n) = self.counters.recv_frames_last_tick {
+                io.push_str(&format!(" recv_last={n}"));
+            }
+            io.push_str(&format!(
+                " dns_msgs={} drops={}",
+                self.counters.packets, self.counters.drops
+            ));
+            parts.push(io);
+        } else {
+            parts.push(format!(
+                "pkts={} drops={}",
+                self.counters.packets, self.counters.drops
+            ));
+        }
         parts.push(format!(
-            "pkts={} drops={} parse_busy={}% queue={}",
-            self.counters.packets,
-            self.counters.drops,
-            self.counters.parse_busy_pct,
-            self.counters.queue_depth,
+            "parse_busy={}% queue={}",
+            self.counters.parse_busy_pct, self.counters.queue_depth
         ));
 
         let mut line = format!("--- status: {} ---", parts.join(" | "));
@@ -159,6 +176,8 @@ mod tests {
                 drops: 0,
                 parse_busy_pct: 50,
                 queue_depth: 0,
+                listener_frames: 0,
+                recv_frames_last_tick: None,
             },
             flow: FlowCounters::default(),
             pairing_enabled: true,
@@ -189,6 +208,8 @@ mod tests {
                 drops: 0,
                 parse_busy_pct: 10,
                 queue_depth: 0,
+                listener_frames: 0,
+                recv_frames_last_tick: None,
             },
             flow: FlowCounters::default(),
             pairing_enabled: true,
@@ -210,6 +231,8 @@ mod tests {
             drops: 0,
             parse_busy_pct: 50,
             queue_depth: 0,
+            listener_frames: 0,
+            recv_frames_last_tick: None,
         };
         assert!(s.packets == 10);
     }

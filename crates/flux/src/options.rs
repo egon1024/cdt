@@ -31,6 +31,8 @@ pub struct FluxOptions {
     pub qname_levels: u8,
     pub batch_views: Vec<ViewId>,
     pub batch_limit: usize,
+    /// Live TUI refresh rate (updates per second); default 1 Hz.
+    pub tui_hz: u32,
     pub events: EventsMode,
     pub filter_tokens: Vec<String>,
     pub preset: Option<String>,
@@ -138,6 +140,7 @@ impl Default for FluxOptions {
             qname_levels: 3,
             batch_views: vec![ViewId::Sources, ViewId::Qtype, ViewId::QnameLevel(2)],
             batch_limit: 50,
+            tui_hz: 1,
             events: EventsMode::Off,
             filter_tokens: Vec::new(),
             preset: None,
@@ -410,6 +413,20 @@ fn parse_plus_option(
                 detail: v.into(),
             })?;
         }
+        "tui-hz" => {
+            let v = require_value(key, value)?;
+            let hz: u32 = v.parse().map_err(|_| OptionsError::InvalidValue {
+                name: key.into(),
+                detail: v.into(),
+            })?;
+            if hz == 0 {
+                return Err(OptionsError::InvalidValue {
+                    name: key.into(),
+                    detail: "must be at least 1".into(),
+                });
+            }
+            opts.tui_hz = hz;
+        }
         "events" => match value {
             None => opts.events = EventsMode::Stdout,
             Some("") | Some("-") => opts.events = EventsMode::Stdout,
@@ -560,7 +577,7 @@ fn is_flow_option_token(rest: &str) -> bool {
         "tcp" => matches!(value, Some("off" | "simple" | "full")),
         "pairing" => matches!(value, Some("on" | "off" | "true" | "false" | "0" | "1")),
         "pair-timeout" | "pair-max" | "flow-threads" | "workers" | "port" | "queue" | "mem"
-        | "overload" | "exclude-iface" => value.is_some(),
+        | "overload" | "exclude-iface" | "tui-hz" => value.is_some(),
         "promisc" | "max-flow-threads" => true,
         _ => false,
     }

@@ -178,6 +178,8 @@ pub fn replay_file_scaled(
                 .saturating_add(workers.queue_drops),
             parse_busy_pct: parse_busy,
             queue_depth,
+            listener_frames: agg.counters.listener_packets,
+            recv_frames_last_tick: None,
         },
         flow: if use_pool {
             flow_pool.merged_counters()
