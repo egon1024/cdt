@@ -166,7 +166,7 @@ pub fn run_live(
                     options.ede_show_no_ede,
                 );
                 if !modal.is_open() {
-                    main_text.push_str("\np panels · w workers · l qname level · g smart labels · ? help · q quit\n");
+                    main_text.push_str("\nv views · p panels · w workers · l qname level · g smart labels · ? help · q quit\n");
                 }
                 f.render_widget(
                     Paragraph::new(main_text).block(Block::default().title(title).borders(Borders::ALL)),

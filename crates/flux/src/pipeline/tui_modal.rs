@@ -14,6 +14,7 @@ use super::live_ingest::LivePipeline;
 pub enum Modal {
     None,
     Help { scroll: u16 },
+    ViewPicker { scroll: u16 },
     PanelPicker { scroll: u16 },
     Listeners { scroll: u16 },
     Workers { scroll: u16 },
@@ -35,7 +36,11 @@ impl Modal {
 
     fn scroll_up(&mut self) {
         match self {
-            Modal::Help { scroll } | Modal::PanelPicker { scroll } | Modal::Listeners { scroll } | Modal::Workers { scroll } => {
+            Modal::Help { scroll }
+            | Modal::ViewPicker { scroll }
+            | Modal::PanelPicker { scroll }
+            | Modal::Listeners { scroll }
+            | Modal::Workers { scroll } => {
                 *scroll = scroll.saturating_sub(1);
             }
             _ => {}
@@ -45,6 +50,7 @@ impl Modal {
     fn scroll_down(&mut self, max: u16) {
         match self {
             Modal::Help { scroll }
+            | Modal::ViewPicker { scroll }
             | Modal::PanelPicker { scroll }
             | Modal::Listeners { scroll }
             | Modal::Workers { scroll } => {
@@ -99,7 +105,8 @@ pub fn handle_key(
 
     match modal.clone() {
         Modal::QnameLevelInput { buf } => handle_qname_input(modal, view, code, buf),
-        Modal::PanelPicker { .. } => handle_panel_picker(modal, view, code),
+        Modal::ViewPicker { .. } => handle_view_picker(modal, view, code),
+        Modal::PanelPicker { .. } => handle_panel_picker(modal, code),
         Modal::Workers { .. } => handle_workers_modal(modal, pipeline, options, code),
         Modal::Help { .. } | Modal::Listeners { .. } => handle_scroll_modal(modal, code),
         Modal::None => handle_main_keys(modal, view, agg, pipeline, options, code),
@@ -138,18 +145,17 @@ fn handle_qname_input(
     }
 }
 
-fn panel_action(code: KeyCode) -> Option<PanelAction> {
+fn view_action(code: KeyCode) -> Option<ViewId> {
     match code {
-        KeyCode::Char('s') => Some(PanelAction::View(ViewId::Sources)),
-        KeyCode::Char('d') => Some(PanelAction::View(ViewId::Destinations)),
-        KeyCode::Char('t') => Some(PanelAction::View(ViewId::Qtype)),
-        KeyCode::Char('r') => Some(PanelAction::View(ViewId::Rcode)),
-        KeyCode::Char('o') => Some(PanelAction::View(ViewId::Opcode)),
-        KeyCode::Char('l') => Some(PanelAction::Listeners),
+        KeyCode::Char('s') => Some(ViewId::Sources),
+        KeyCode::Char('d') => Some(ViewId::Destinations),
+        KeyCode::Char('t') => Some(ViewId::Qtype),
+        KeyCode::Char('r') => Some(ViewId::Rcode),
+        KeyCode::Char('o') => Some(ViewId::Opcode),
         KeyCode::Char(c) if c.is_ascii_digit() => {
             let n = c.to_digit(10)? as u8;
             if (1..=9).contains(&n) {
-                Some(PanelAction::View(ViewId::QnameLevel(n)))
+                Some(ViewId::QnameLevel(n))
             } else {
                 None
             }
@@ -159,11 +165,54 @@ fn panel_action(code: KeyCode) -> Option<PanelAction> {
 }
 
 enum PanelAction {
-    View(ViewId),
     Listeners,
+    Workers,
+    Help,
 }
 
-fn handle_panel_picker(modal: &mut Modal, view: &mut ViewId, code: KeyCode) -> KeyResult {
+fn panel_action(code: KeyCode) -> Option<PanelAction> {
+    match code {
+        KeyCode::Char('l') => Some(PanelAction::Listeners),
+        KeyCode::Char('w') => Some(PanelAction::Workers),
+        KeyCode::Char('?') | KeyCode::Char('h') => Some(PanelAction::Help),
+        _ => None,
+    }
+}
+
+fn handle_scroll_keys(modal: &mut Modal, code: KeyCode, scroll_max: u16) -> bool {
+    if matches!(code, KeyCode::Up | KeyCode::Char('k')) {
+        modal.scroll_up();
+        return true;
+    }
+    if matches!(code, KeyCode::Down | KeyCode::Char('j')) {
+        modal.scroll_down(scroll_max);
+        return true;
+    }
+    false
+}
+
+fn handle_view_picker(modal: &mut Modal, view: &mut ViewId, code: KeyCode) -> KeyResult {
+    if handle_scroll_keys(modal, code, 80) {
+        return KeyResult {
+            quit: false,
+            force_redraw: true,
+        };
+    }
+    if let Some(v) = view_action(code) {
+        *view = v;
+        modal.dismiss();
+        return KeyResult {
+            quit: false,
+            force_redraw: true,
+        };
+    }
+    KeyResult {
+        quit: false,
+        force_redraw: false,
+    }
+}
+
+fn handle_panel_picker(modal: &mut Modal, code: KeyCode) -> KeyResult {
     if matches!(code, KeyCode::Up | KeyCode::Char('k')) {
         modal.scroll_up();
         return KeyResult {
@@ -180,13 +229,9 @@ fn handle_panel_picker(modal: &mut Modal, view: &mut ViewId, code: KeyCode) -> K
     }
     if let Some(action) = panel_action(code) {
         match action {
-            PanelAction::View(v) => {
-                *view = v;
-                modal.dismiss();
-            }
-            PanelAction::Listeners => {
-                modal.open(Modal::Listeners { scroll: 0 });
-            }
+            PanelAction::Listeners => modal.open(Modal::Listeners { scroll: 0 }),
+            PanelAction::Workers => modal.open(Modal::Workers { scroll: 0 }),
+            PanelAction::Help => modal.open(Modal::Help { scroll: 0 }),
         }
         return KeyResult {
             quit: false,
@@ -265,6 +310,9 @@ fn handle_main_keys(
     code: KeyCode,
 ) -> KeyResult {
     match code {
+        KeyCode::Char('v') => {
+            modal.open(Modal::ViewPicker { scroll: 0 });
+        }
         KeyCode::Char('p') => {
             modal.open(Modal::PanelPicker { scroll: 0 });
         }
@@ -296,11 +344,8 @@ fn handle_main_keys(
             let _ = crate::filter::picker_key(&mut picker, 'f');
         }
         other => {
-            if let Some(action) = panel_action(other) {
-                match action {
-                    PanelAction::View(v) => *view = v,
-                    PanelAction::Listeners => modal.open(Modal::Listeners { scroll: 0 }),
-                }
+            if let Some(v) = view_action(other) {
+                *view = v;
             }
         }
     }
@@ -326,6 +371,7 @@ pub fn render_modal(
     let (title, lines, scroll) = match modal {
         Modal::None => return,
         Modal::Help { scroll } => ("Help", help_lines(smart_qname), *scroll),
+        Modal::ViewPicker { scroll } => ("Views", view_picker_lines(), *scroll),
         Modal::PanelPicker { scroll } => ("Panels", panel_picker_lines(), *scroll),
         Modal::Listeners { scroll } => (
             "Listeners & pipeline",
@@ -407,15 +453,18 @@ fn scrollable_text(lines: &[String], scroll: u16, visible_rows: u16) -> String {
 fn help_lines(smart_qname: bool) -> Vec<String> {
     let smart = if smart_qname { "on" } else { "off" };
     vec![
-        "Navigation".into(),
-        "  s d t r o     source, destination, qtype, rcode, opcode views".into(),
+        "Views (main table)".into(),
+        "  v             view picker (lists all view keys)".into(),
+        "  s d t r o     sources, destinations, qtype, rcode, opcode".into(),
         "  1–9           qname grouping at label level N".into(),
         "  l             set qname level (1–9) via prompt".into(),
-        "  p             panel picker modal (then pick a view key)".into(),
-        "  p → l         listeners & pipeline modal".into(),
+        "".into(),
+        "Panels (modals)".into(),
+        "  p             panel picker".into(),
+        "  p → l/w/h     listeners, workers, or help".into(),
+        "  w             workers & tuning (shortcut)".into(),
         "".into(),
         "Scaling".into(),
-        "  w             workers / thread tuning modal".into(),
         "  + / -         parse workers (also in w modal)".into(),
         "".into(),
         "Labels".into(),
@@ -429,17 +478,26 @@ fn help_lines(smart_qname: bool) -> Vec<String> {
     ]
 }
 
-fn panel_picker_lines() -> Vec<String> {
+fn view_picker_lines() -> Vec<String> {
     vec![
-        "Choose a panel (key closes picker):".into(),
+        "Choose a view (key switches main table and closes picker):".into(),
         "".into(),
         "  s   Sources".into(),
         "  d   Destinations".into(),
         "  t   Qtypes".into(),
         "  r   Rcodes".into(),
         "  o   Opcodes".into(),
-        "  1-9 QName level 1 … 9".into(),
+        "  1-9 QName label level 1 … 9".into(),
+    ]
+}
+
+fn panel_picker_lines() -> Vec<String> {
+    vec![
+        "Choose a panel (key opens it):".into(),
+        "".into(),
         "  l   Listeners & pipeline".into(),
+        "  w   Workers & tuning".into(),
+        "  h   Help".into(),
     ]
 }
 
