@@ -340,14 +340,13 @@ pub fn render_modal(
         Modal::QnameLevelInput { buf } => {
             let popup = centered_rect(50, 20, f.area());
             f.render_widget(Clear, popup);
-            let text = format!(
-                "QName view label level (1–9)\n\nLevel: {buf}_\n\nEnter confirm · Esc cancel"
-            );
+            let text = format!("QName view label level (1–9)\n\nLevel: {buf}_");
             f.render_widget(
                 Paragraph::new(text)
                     .block(
                         Block::default()
                             .title("QName level")
+                            .title_bottom(Line::from("Enter confirm · Esc dismiss"))
                             .borders(Borders::ALL),
                     )
                     .alignment(Alignment::Left),
@@ -359,20 +358,43 @@ pub fn render_modal(
 
     let popup = centered_rect(78, 60, f.area());
     f.render_widget(Clear, popup);
-    let inner_h = popup.height.saturating_sub(2);
-    let body = scrollable_text(&lines, scroll, inner_h);
-    let foot = "Esc dismiss · ↑/↓ or j/k scroll";
+    let content_h = modal_content_height(popup);
+    let footer = modal_footer(lines.len(), content_h);
+    let body = scrollable_text(&lines, scroll, content_h);
     f.render_widget(
-        Paragraph::new(format!("{body}\n{foot}"))
-            .block(Block::default().title(title).borders(Borders::ALL))
+        Paragraph::new(body)
+            .block(
+                Block::default()
+                    .title(title)
+                    .title_bottom(Line::from(footer))
+                    .borders(Borders::ALL),
+            )
             .wrap(Wrap { trim: false }),
         popup,
     );
 }
 
+/// Inner paragraph height for a titled modal block (top title + bottom footer).
+fn modal_content_height(area: Rect) -> u16 {
+    Block::default()
+        .title(" ")
+        .title_bottom(Line::from(" "))
+        .borders(Borders::ALL)
+        .inner(area)
+        .height
+}
+
+fn modal_footer(line_count: usize, content_height: u16) -> String {
+    let mut footer = "Esc dismiss".to_string();
+    if line_count > content_height as usize {
+        footer.push_str(" · ↑/↓ j/k scroll");
+    }
+    footer
+}
+
 fn scrollable_text(lines: &[String], scroll: u16, visible_rows: u16) -> String {
     let skip = scroll as usize;
-    let take = visible_rows.saturating_sub(1) as usize;
+    let take = visible_rows as usize;
     lines
         .iter()
         .skip(skip)
