@@ -17,7 +17,7 @@ pub enum Modal {
     Help { scroll: u16 },
     ViewPicker { scroll: u16 },
     PanelPicker { scroll: u16 },
-    Listeners { scroll: u16 },
+    Pipeline { scroll: u16 },
     Workers { scroll: u16 },
     Stats { scroll: u16 },
     QnameLevelInput { buf: String },
@@ -41,7 +41,7 @@ impl Modal {
             Modal::Help { scroll }
             | Modal::ViewPicker { scroll }
             | Modal::PanelPicker { scroll }
-            | Modal::Listeners { scroll }
+            | Modal::Pipeline { scroll }
             | Modal::Workers { scroll }
             | Modal::Stats { scroll } => {
                 *scroll = scroll.saturating_sub(1);
@@ -55,7 +55,7 @@ impl Modal {
             Modal::Help { scroll }
             | Modal::ViewPicker { scroll }
             | Modal::PanelPicker { scroll }
-            | Modal::Listeners { scroll }
+            | Modal::Pipeline { scroll }
             | Modal::Workers { scroll }
             | Modal::Stats { scroll } => {
                 *scroll = (*scroll + 1).min(max);
@@ -116,7 +116,7 @@ pub fn handle_key(
         Modal::ViewPicker { .. } => handle_view_picker(modal, view, code),
         Modal::PanelPicker { .. } => handle_panel_picker(modal, code),
         Modal::Workers { .. } => handle_workers_modal(modal, pipeline, options, code),
-        Modal::Help { .. } | Modal::Listeners { .. } | Modal::Stats { .. } => {
+        Modal::Help { .. } | Modal::Pipeline { .. } | Modal::Stats { .. } => {
             handle_scroll_modal(modal, code)
         }
         Modal::None => handle_main_keys(view, agg, pipeline, options, code),
@@ -132,7 +132,7 @@ fn launcher_suppressed(modal: &Modal, code: KeyCode) -> bool {
                 | KeyCode::Char('w')
                 | KeyCode::Char('h')
                 | KeyCode::Char('?')
-                | KeyCode::Char('s')
+                | KeyCode::Char('u')
         ),
         Modal::ViewPicker { .. } => view_action(code).is_some(),
         Modal::QnameLevelInput { .. } => match code {
@@ -143,7 +143,7 @@ fn launcher_suppressed(modal: &Modal, code: KeyCode) -> bool {
         Modal::Workers { .. } => {
             matches!(code, KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char('-'))
         }
-        Modal::Help { .. } | Modal::Listeners { .. } | Modal::Stats { .. } | Modal::None => false,
+        Modal::Help { .. } | Modal::Pipeline { .. } | Modal::Stats { .. } | Modal::None => false,
     }
 }
 
@@ -224,7 +224,7 @@ fn view_action(code: KeyCode) -> Option<ViewId> {
 }
 
 enum PanelAction {
-    Listeners,
+    Pipeline,
     Workers,
     Help,
     Stats,
@@ -232,10 +232,10 @@ enum PanelAction {
 
 fn panel_action(code: KeyCode) -> Option<PanelAction> {
     match code {
-        KeyCode::Char('l') => Some(PanelAction::Listeners),
+        KeyCode::Char('l') => Some(PanelAction::Pipeline),
         KeyCode::Char('w') => Some(PanelAction::Workers),
         KeyCode::Char('?') | KeyCode::Char('h') => Some(PanelAction::Help),
-        KeyCode::Char('s') => Some(PanelAction::Stats),
+        KeyCode::Char('u') => Some(PanelAction::Stats),
         _ => None,
     }
 }
@@ -290,7 +290,7 @@ fn handle_panel_picker(modal: &mut Modal, code: KeyCode) -> KeyResult {
     }
     if let Some(action) = panel_action(code) {
         match action {
-            PanelAction::Listeners => modal.open(Modal::Listeners { scroll: 0 }),
+            PanelAction::Pipeline => modal.open(Modal::Pipeline { scroll: 0 }),
             PanelAction::Workers => modal.open(Modal::Workers { scroll: 0 }),
             PanelAction::Help => modal.open(Modal::Help { scroll: 0 }),
             PanelAction::Stats => modal.open(Modal::Stats { scroll: 0 }),
@@ -420,14 +420,14 @@ pub fn render_modal(
         Modal::Help { scroll } => ("Help", help_lines(smart_qname), *scroll),
         Modal::ViewPicker { scroll } => ("Views", view_picker_lines(), *scroll),
         Modal::PanelPicker { scroll } => ("Panels", panel_picker_lines(), *scroll),
-        Modal::Listeners { scroll } => (
-            "Listeners & pipeline",
-            listeners_lines(iface, capture_threads, fanout_group, pipeline, hint_lines),
+        Modal::Pipeline { scroll } => (
+            "Pipeline",
+            pipeline_lines(iface, capture_threads, fanout_group, pipeline, hint_lines),
             *scroll,
         ),
         Modal::Workers { scroll } => (
-            "Workers & tuning",
-            workers_lines(iface, capture_threads, fanout_group, pipeline, hint_lines),
+            "Scaling",
+            scaling_lines(iface, capture_threads, fanout_group, pipeline, hint_lines),
             *scroll,
         ),
         Modal::Stats { scroll } => ("Stats", status.format_detail_lines(), *scroll),
@@ -509,12 +509,12 @@ fn help_lines(smart_qname: bool) -> Vec<String> {
         "".into(),
         "Panels (modals)".into(),
         "  p             panel picker".into(),
-        "  p → l/w/s/h   listeners, workers, stats, or help".into(),
-        "  u             session stats (shortcut)".into(),
-        "  w             workers & tuning (shortcut)".into(),
+        "  p → l/w/u/h   pipeline, scaling, stats, or help".into(),
+        "  u             stats (shortcut and in panel picker)".into(),
+        "  w             scaling — parse threads +/- (shortcut)".into(),
         "".into(),
         "Scaling".into(),
-        "  + / -         parse workers (also in w modal)".into(),
+        "  + / -         parse threads (also in w modal)".into(),
         "".into(),
         "Labels".into(),
         format!("  g             toggle smart qname aggregation ({smart})"),
@@ -544,14 +544,21 @@ fn panel_picker_lines() -> Vec<String> {
     vec![
         "Choose a panel (key opens it):".into(),
         "".into(),
-        "  l   Listeners & pipeline".into(),
-        "  w   Workers & tuning".into(),
-        "  s   Session stats".into(),
+        "  l   Pipeline".into(),
+        "  w   Scaling".into(),
+        "  u   Stats".into(),
         "  h   Help".into(),
     ]
 }
 
-fn listeners_lines(
+fn pipeline_diagram(capture: u32, flow: u32, parse: usize) -> Vec<String> {
+    vec![
+        format!("  capture({capture})  ->  flow({flow})  ->  parse({parse})"),
+        "         (cli)                  (cli)                 (+/-)".into(),
+    ]
+}
+
+fn pipeline_lines(
     iface: &str,
     capture_threads: u32,
     fanout_group: Option<u32>,
@@ -561,27 +568,29 @@ fn listeners_lines(
     let fanout = fanout_group
         .map(|g| format!("kernel PACKET_FANOUT group {g}"))
         .unwrap_or_else(|| "single capture path (no fanout)".into());
-    let mut out = vec![
-        "== Capture ==".into(),
-        format!("  interface {iface}"),
-        format!("  listener threads {capture_threads} ({fanout})"),
-        "".into(),
-        "== Flow stage ==".into(),
-        format!(
-            "  flow threads {} (virtual hash buckets)",
-            pipeline.flow_threads()
-        ),
-        "".into(),
-        "== Parse stage ==".into(),
-        format!(
-            "  workers {}  busy {}%  queue depth {}",
-            pipeline.worker_count(),
-            pipeline.parse_busy_percent(),
-            pipeline.queue_depth()
-        ),
-        "".into(),
-        "== Tuning hints ==".into(),
-    ];
+    let flow = pipeline.flow_threads();
+    let parse = pipeline.worker_count();
+    let mut out = pipeline_diagram(capture_threads, flow, parse);
+    out.push(String::new());
+    out.push("== Capture ==".into());
+    out.push(format!("  interface {iface}"));
+    out.push(format!(
+        "  capture threads {capture_threads} ({fanout})"
+    ));
+    out.push(String::new());
+    out.push("== Flow ==".into());
+    out.push(format!(
+        "  flow threads {flow} (virtual hash buckets)"
+    ));
+    out.push(String::new());
+    out.push("== Parse ==".into());
+    out.push(format!(
+        "  parse threads {parse}  busy {}%  queue depth {}",
+        pipeline.parse_busy_percent(),
+        pipeline.queue_depth()
+    ));
+    out.push(String::new());
+    out.push("== Tuning hints ==".into());
     if hint_lines.is_empty() {
         out.push("  (none)".into());
     } else {
@@ -592,7 +601,7 @@ fn listeners_lines(
     out
 }
 
-fn workers_lines(
+fn scaling_lines(
     iface: &str,
     capture_threads: u32,
     fanout_group: Option<u32>,
@@ -602,21 +611,22 @@ fn workers_lines(
     let fanout = fanout_group
         .map(|g| format!("fanout group {g}"))
         .unwrap_or_else(|| "no fanout".into());
-    let mut out = vec![
-        "Adjust parse workers with + / - (live)".into(),
-        "Capture / flow counts are set at startup (CLI).".into(),
-        "".into(),
-        format!("capture on {iface}: threads={capture_threads} ({fanout})"),
-        format!("flow threads: {}", pipeline.flow_threads()),
-        format!(
-            "parse workers: {} (busy {}%, queue {})",
-            pipeline.worker_count(),
-            pipeline.parse_busy_percent(),
-            pipeline.queue_depth()
-        ),
-        "".into(),
-        "== Tuning hints ==".into(),
-    ];
+    let flow = pipeline.flow_threads();
+    let parse = pipeline.worker_count();
+    let mut out = pipeline_diagram(capture_threads, flow, parse);
+    out.push(String::new());
+    out.push("Adjust parse threads with + / - (live only).".into());
+    out.push("Capture and flow thread counts: set at startup (CLI).".into());
+    out.push(String::new());
+    out.push(format!("capture on {iface}: threads={capture_threads} ({fanout})"));
+    out.push(format!("flow threads: {flow}"));
+    out.push(format!(
+        "parse threads: {parse} (busy {}%, queue {})",
+        pipeline.parse_busy_percent(),
+        pipeline.queue_depth()
+    ));
+    out.push(String::new());
+    out.push("== Tuning hints ==".into());
     if hint_lines.is_empty() {
         out.push("  (none)".into());
     } else {
