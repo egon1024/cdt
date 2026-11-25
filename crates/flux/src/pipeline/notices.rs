@@ -5,10 +5,12 @@ use crate::capture::{
     topology_duplicate_hints,
 };
 
-/// Text shown at session start and in the **Notices** TUI modal (`!` or panel picker **n**).
+/// Text shown at session start and in the **Notices** TUI modal (`!`, including Panels → **!**).
 #[derive(Debug, Clone, Default)]
 pub struct SessionNotices {
     lines: Vec<String>,
+    /// Parallel to `lines`; TUI-only read tracking (stderr ignores this).
+    read: Vec<bool>,
 }
 
 impl SessionNotices {
@@ -20,14 +22,54 @@ impl SessionNotices {
         self.lines.is_empty()
     }
 
+    pub fn len(&self) -> usize {
+        self.lines.len()
+    }
+
     pub fn lines(&self) -> &[String] {
         &self.lines
+    }
+
+    pub fn unread_count(&self) -> usize {
+        self.lines
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !self.read.get(*i).copied().unwrap_or(false))
+            .count()
+    }
+
+    pub fn read_count(&self) -> usize {
+        self.lines.len().saturating_sub(self.unread_count())
+    }
+
+    /// Short suffix for the live TUI footer (after main key hints).
+    pub fn tui_footer_suffix(&self) -> Option<String> {
+        if self.is_empty() {
+            return None;
+        }
+        let total = self.len();
+        let unread = self.unread_count();
+        let read = self.read_count();
+        let body = if unread == 0 {
+            format!("{total} total, all read")
+        } else {
+            format!("{total} total, {read} read, {unread} unread")
+        };
+        Some(format!("· ! notices: {body}"))
+    }
+
+    pub fn mark_all_read(&mut self) {
+        self.read.resize(self.lines.len(), false);
+        for flag in &mut self.read {
+            *flag = true;
+        }
     }
 
     pub fn push_line(&mut self, line: impl Into<String>) {
         let line = line.into();
         if !line.is_empty() {
             self.lines.push(line);
+            self.read.push(false);
         }
     }
 
@@ -57,9 +99,17 @@ impl SessionNotices {
         let mut out = vec![
             "These messages were recorded when the session started.".into(),
             "They stay available under Panels → Notices (!).".into(),
+            "Dismiss this panel (Esc/q) to mark all notices read.".into(),
+            "Unread items are prefixed with •".into(),
             String::new(),
         ];
-        out.extend(self.lines.iter().cloned());
+        for (line, read) in self.lines.iter().zip(self.read.iter()) {
+            if *read {
+                out.push(line.clone());
+            } else {
+                out.push(format!("• {line}"));
+            }
+        }
         out
     }
 }
@@ -78,5 +128,16 @@ mod tests {
         n.push_line("opened interfaces: br0, v0");
         n.push_line("hint: br0 and its member(s) v0");
         assert!(n.modal_lines().iter().any(|l| l.contains("v0")));
+    }
+
+    #[test]
+    fn read_tracking_and_footer() {
+        let mut n = SessionNotices::new();
+        n.push_line("one");
+        n.push_line("two");
+        assert_eq!(n.unread_count(), 2);
+        n.mark_all_read();
+        assert_eq!(n.unread_count(), 0);
+        assert!(n.tui_footer_suffix().unwrap().contains("all read"));
     }
 }

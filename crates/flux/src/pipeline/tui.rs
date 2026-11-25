@@ -566,10 +566,9 @@ fn draw_live_frame(
     cache.title.clone_from(&title);
     cache.main_text.clone_from(&main_text);
 
-    let footer = if pipeline.session_notices.is_empty() {
-        TUI_FOOTER_HINTS.to_string()
-    } else {
-        format!("{TUI_FOOTER_HINTS} · ! notices")
+    let footer = match pipeline.session_notices.tui_footer_suffix() {
+        Some(suffix) => format!("{TUI_FOOTER_HINTS} {suffix}"),
+        None => TUI_FOOTER_HINTS.to_string(),
     };
     let main_text_draw = main_text.clone();
     let title_draw = title.clone();

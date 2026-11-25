@@ -108,6 +108,7 @@ pub fn handle_key(
 
     if code == KeyCode::Char('q') {
         if modal.is_open() {
+            mark_notices_read_if_open(modal, pipeline);
             modal.dismiss();
             return KeyResult {
                 quit: false,
@@ -122,6 +123,7 @@ pub fn handle_key(
 
     if code == KeyCode::Esc {
         if modal.is_open() {
+            mark_notices_read_if_open(modal, pipeline);
             modal.dismiss();
             return KeyResult {
                 quit: false,
@@ -138,6 +140,7 @@ pub fn handle_key(
         && modal.is_open()
         && !matches!(modal, Modal::QnameLevelInput { .. })
     {
+        mark_notices_read_if_open(modal, pipeline);
         modal.dismiss();
         return KeyResult {
             quit: false,
@@ -172,7 +175,7 @@ fn launcher_suppressed(modal: &Modal, code: KeyCode) -> bool {
                 | KeyCode::Char('h')
                 | KeyCode::Char('?')
                 | KeyCode::Char('u')
-                | KeyCode::Char('n')
+                | KeyCode::Char('!')
         ),
         Modal::ViewPicker { .. } => view_action(code).is_some(),
         Modal::QnameLevelInput { .. } => match code {
@@ -195,6 +198,12 @@ fn launcher_suppressed(modal: &Modal, code: KeyCode) -> bool {
 }
 
 /// Open/replace a top-level modal from any UI state (listeners, help, another picker, etc.).
+fn mark_notices_read_if_open(modal: &Modal, pipeline: &mut LivePipeline) {
+    if matches!(modal, Modal::Notices { .. }) {
+        pipeline.session_notices.mark_all_read();
+    }
+}
+
 fn try_modal_launcher(
     modal: &mut Modal,
     pipeline: &LivePipeline,
@@ -289,7 +298,7 @@ fn panel_action(code: KeyCode) -> Option<PanelAction> {
         KeyCode::Char('w') => Some(PanelAction::Workers),
         KeyCode::Char('?') | KeyCode::Char('h') => Some(PanelAction::Help),
         KeyCode::Char('u') => Some(PanelAction::Stats),
-        KeyCode::Char('n') => Some(PanelAction::Notices),
+        KeyCode::Char('!') => Some(PanelAction::Notices),
         _ => None,
     }
 }
@@ -578,14 +587,14 @@ fn help_lines(smart_qname: bool) -> Vec<String> {
         "".into(),
         "Panels (modals)".into(),
         "  p             panel picker".into(),
-        "  p → l/w/u/n/h pipeline, scaling, stats, notices, help".into(),
+        "  p → l/w/u/!/h pipeline, scaling, stats, notices, help".into(),
         "  u             stats (shortcut and in panel picker)".into(),
         "  !             startup notices (topology, warnings)".into(),
         "  w             scaling — parse threads +/- (shortcut)".into(),
         "".into(),
         "Startup".into(),
         "  On live watch, config/topology warnings open in Notices".into(),
-        "  automatically; dismiss with Esc, reopen with !".into(),
+        "  automatically; Esc dismisses and marks read; footer shows counts".into(),
         "".into(),
         "Scaling".into(),
         "  + / -         parse threads (also in w modal)".into(),
@@ -639,7 +648,7 @@ fn panel_picker_lines(has_notices: bool) -> Vec<String> {
         "  u   Stats".into(),
     ];
     if has_notices {
-        lines.push("  n   Notices (startup warnings)".into());
+        lines.push("  !   Notices (startup warnings)".into());
     }
     lines.push("  h   Help".into());
     lines
