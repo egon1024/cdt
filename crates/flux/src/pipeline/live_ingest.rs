@@ -8,6 +8,7 @@ use crate::scale::flow_pool::FlowThreadPool;
 use crate::scale::workers::ParseWorkerPool;
 use crate::window::Aggregator;
 
+use super::SessionNotices;
 use super::ingest::{ingest_packet, new_flow_stage};
 
 pub struct LivePipeline {
@@ -17,10 +18,11 @@ pub struct LivePipeline {
     pub workers: ParseWorkerPool,
     pub worker: ParseWorker,
     pub hash_seed: u64,
+    pub session_notices: SessionNotices,
 }
 
 impl LivePipeline {
-    pub fn new(options: &FluxOptions) -> Self {
+    pub fn new(options: &FluxOptions, session_notices: SessionNotices) -> Self {
         let hash_seed = rand::random();
         let use_pool = options.uses_split_pipeline(1);
         Self {
@@ -30,6 +32,7 @@ impl LivePipeline {
             workers: ParseWorkerPool::new(options.workers.max(1), options.queue_policy),
             worker: ParseWorker::default(),
             hash_seed,
+            session_notices,
         }
     }
 

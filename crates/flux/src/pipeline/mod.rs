@@ -1,5 +1,6 @@
 mod ingest;
 mod live_ingest;
+mod notices;
 mod replay;
 mod scaled_replay;
 mod stats;
@@ -8,6 +9,7 @@ mod tui;
 #[cfg(all(target_os = "linux", feature = "tui"))]
 mod tui_modal;
 
+pub use notices::SessionNotices;
 pub use replay::replay_file;
 pub use stats::{StatusBar, StatusLine, WatchInput};
 
@@ -65,12 +67,8 @@ pub fn run_watch(
                 "flux watch: no eligible capture interfaces".into(),
             ));
         }
-        eprintln!("{}", crate::capture::opened_interfaces_message(&listeners));
-        let names: Vec<_> = listeners.iter().map(|l| l.iface.clone()).collect();
-        let topo = crate::capture::discover_topology(&crate::capture::LinuxSysTopology, &names);
-        for hint in crate::capture::topology_duplicate_hints(&names, &topo) {
-            eprintln!("{hint}");
-        }
+        let session_notices = SessionNotices::for_live_listeners(&listeners);
+        session_notices.emit_stderr();
         if listeners.iter().any(|s| s.capture_threads > 1) {
             if let Some(detail) = crate::capture::live::fanout_probe_error() {
                 return Err(PipelineError::Config(format!(
@@ -89,7 +87,7 @@ pub fn run_watch(
         if use_tui {
             let cap = crate::capture::live::LiveCapture::open_with(iface, cap_opts)
                 .map_err(PipelineError::Live)?;
-            return run_live_tui(cap, options, listeners[0].capture_threads);
+            return run_live_tui(cap, options, listeners[0].capture_threads, session_notices);
         }
         let _ = cap_opts;
         Err(PipelineError::Config(
@@ -115,10 +113,11 @@ fn run_live_tui(
     cap: crate::capture::LiveCapture,
     options: FluxOptions,
     capture_threads: u32,
+    session_notices: SessionNotices,
 ) -> Result<(), PipelineError> {
     #[cfg(feature = "tui")]
     {
-        tui::run_live(cap, options, capture_threads).map_err(|e| match e {
+        tui::run_live(cap, options, capture_threads, session_notices).map_err(|e| match e {
             tui::TuiError::Live(l) => PipelineError::Live(l),
             tui::TuiError::Io(io) => PipelineError::Config(io.to_string()),
             tui::TuiError::Options(o) => PipelineError::Options(o),

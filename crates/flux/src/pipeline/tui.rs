@@ -28,6 +28,7 @@ use crate::view::format_batch_tables;
 use crate::window::Aggregator;
 
 use super::live_ingest::LivePipeline;
+use super::notices::SessionNotices;
 use super::stats::{StatusBar, StatusLine, TUI_FOOTER_HINTS, WatchInput};
 use crate::scale::priority::{ThreadRole, apply_thread_priority};
 
@@ -104,6 +105,7 @@ pub fn run_live(
     cap: LiveCapture,
     mut options: FluxOptions,
     capture_threads: u32,
+    session_notices: SessionNotices,
 ) -> Result<(), TuiError> {
     apply_thread_priority(ThreadRole::Tui);
     cap.set_nonblocking()?;
@@ -118,9 +120,10 @@ pub fn run_live(
         filter,
         eval_ctx,
     );
-    let mut pipeline = LivePipeline::new(&options);
+    let mut pipeline = LivePipeline::new(&options, session_notices);
     let hint_engine = HintEngine::new();
     let refresh = Duration::from_secs_f64(1.0 / options.tui_hz.max(1) as f64);
+    let has_notices = !pipeline.session_notices.is_empty();
 
     let mut stdout = io::stdout();
     enable_raw_mode()?;
@@ -136,7 +139,11 @@ pub fn run_live(
     let backend = CrosstermBackend::new(stdout);
     let mut term = Terminal::new(backend)?;
     let mut view = ViewId::Sources;
-    let mut modal = Modal::None;
+    let mut modal = if has_notices {
+        Modal::Notices { scroll: 0 }
+    } else {
+        Modal::None
+    };
     let start = Instant::now();
     let mut last_draw = Instant::now();
     let mut frames_since_draw: u64 = 0;
@@ -559,14 +566,20 @@ fn draw_live_frame(
     cache.title.clone_from(&title);
     cache.main_text.clone_from(&main_text);
 
+    let footer = if pipeline.session_notices.is_empty() {
+        TUI_FOOTER_HINTS.to_string()
+    } else {
+        format!("{TUI_FOOTER_HINTS} · ! notices")
+    };
     let main_text_draw = main_text.clone();
     let title_draw = title.clone();
+    let footer_draw = footer.clone();
     term.draw(|f| {
         f.render_widget(
             Paragraph::new(main_text_draw).block(
                 Block::default()
                     .title(title_draw)
-                    .title_bottom(Line::from(TUI_FOOTER_HINTS))
+                    .title_bottom(Line::from(footer_draw))
                     .borders(Borders::ALL),
             ),
             f.area(),

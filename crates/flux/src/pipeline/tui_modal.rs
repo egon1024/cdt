@@ -14,13 +14,31 @@ use super::stats::StatusBar;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Modal {
     None,
-    Help { scroll: u16 },
-    ViewPicker { scroll: u16 },
-    PanelPicker { scroll: u16 },
-    Pipeline { scroll: u16 },
-    Workers { scroll: u16 },
-    Stats { scroll: u16 },
-    QnameLevelInput { buf: String },
+    Help {
+        scroll: u16,
+    },
+    ViewPicker {
+        scroll: u16,
+    },
+    PanelPicker {
+        scroll: u16,
+    },
+    Pipeline {
+        scroll: u16,
+    },
+    Workers {
+        scroll: u16,
+    },
+    Stats {
+        scroll: u16,
+    },
+    /// Startup and session notices (topology, config); auto-opens when non-empty.
+    Notices {
+        scroll: u16,
+    },
+    QnameLevelInput {
+        buf: String,
+    },
 }
 
 impl Modal {
@@ -43,7 +61,8 @@ impl Modal {
             | Modal::PanelPicker { scroll }
             | Modal::Pipeline { scroll }
             | Modal::Workers { scroll }
-            | Modal::Stats { scroll } => {
+            | Modal::Stats { scroll }
+            | Modal::Notices { scroll } => {
                 *scroll = scroll.saturating_sub(1);
             }
             _ => {}
@@ -57,7 +76,8 @@ impl Modal {
             | Modal::PanelPicker { scroll }
             | Modal::Pipeline { scroll }
             | Modal::Workers { scroll }
-            | Modal::Stats { scroll } => {
+            | Modal::Stats { scroll }
+            | Modal::Notices { scroll } => {
                 *scroll = (*scroll + 1).min(max);
             }
             _ => {}
@@ -125,18 +145,19 @@ pub fn handle_key(
         };
     }
 
-    if let Some(result) = try_modal_launcher(modal, code) {
+    if let Some(result) = try_modal_launcher(modal, pipeline, code) {
         return result;
     }
 
     match modal.clone() {
         Modal::QnameLevelInput { buf } => handle_qname_input(modal, view, code, buf),
         Modal::ViewPicker { .. } => handle_view_picker(modal, view, code),
-        Modal::PanelPicker { .. } => handle_panel_picker(modal, code),
+        Modal::PanelPicker { .. } => handle_panel_picker(modal, pipeline, code),
         Modal::Workers { .. } => handle_workers_modal(modal, pipeline, options, code),
-        Modal::Help { .. } | Modal::Pipeline { .. } | Modal::Stats { .. } => {
-            handle_scroll_modal(modal, code)
-        }
+        Modal::Help { .. }
+        | Modal::Pipeline { .. }
+        | Modal::Stats { .. }
+        | Modal::Notices { .. } => handle_scroll_modal(modal, code),
         Modal::None => handle_main_keys(view, agg, pipeline, options, code),
     }
 }
@@ -151,6 +172,7 @@ fn launcher_suppressed(modal: &Modal, code: KeyCode) -> bool {
                 | KeyCode::Char('h')
                 | KeyCode::Char('?')
                 | KeyCode::Char('u')
+                | KeyCode::Char('n')
         ),
         Modal::ViewPicker { .. } => view_action(code).is_some(),
         Modal::QnameLevelInput { .. } => match code {
@@ -164,12 +186,20 @@ fn launcher_suppressed(modal: &Modal, code: KeyCode) -> bool {
                 KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char('-')
             )
         }
-        Modal::Help { .. } | Modal::Pipeline { .. } | Modal::Stats { .. } | Modal::None => false,
+        Modal::Help { .. }
+        | Modal::Pipeline { .. }
+        | Modal::Stats { .. }
+        | Modal::Notices { .. }
+        | Modal::None => false,
     }
 }
 
 /// Open/replace a top-level modal from any UI state (listeners, help, another picker, etc.).
-fn try_modal_launcher(modal: &mut Modal, code: KeyCode) -> Option<KeyResult> {
+fn try_modal_launcher(
+    modal: &mut Modal,
+    pipeline: &LivePipeline,
+    code: KeyCode,
+) -> Option<KeyResult> {
     if launcher_suppressed(modal, code) {
         return None;
     }
@@ -180,6 +210,9 @@ fn try_modal_launcher(modal: &mut Modal, code: KeyCode) -> Option<KeyResult> {
         KeyCode::Char('l') => Some(Modal::QnameLevelInput { buf: String::new() }),
         KeyCode::Char('?') | KeyCode::Char('h') => Some(Modal::Help { scroll: 0 }),
         KeyCode::Char('u') => Some(Modal::Stats { scroll: 0 }),
+        KeyCode::Char('!') if !pipeline.session_notices.is_empty() => {
+            Some(Modal::Notices { scroll: 0 })
+        }
         _ => None,
     };
     next.map(|m| {
@@ -247,6 +280,7 @@ enum PanelAction {
     Workers,
     Help,
     Stats,
+    Notices,
 }
 
 fn panel_action(code: KeyCode) -> Option<PanelAction> {
@@ -255,6 +289,7 @@ fn panel_action(code: KeyCode) -> Option<PanelAction> {
         KeyCode::Char('w') => Some(PanelAction::Workers),
         KeyCode::Char('?') | KeyCode::Char('h') => Some(PanelAction::Help),
         KeyCode::Char('u') => Some(PanelAction::Stats),
+        KeyCode::Char('n') => Some(PanelAction::Notices),
         _ => None,
     }
 }
@@ -292,7 +327,7 @@ fn handle_view_picker(modal: &mut Modal, view: &mut ViewId, code: KeyCode) -> Ke
     }
 }
 
-fn handle_panel_picker(modal: &mut Modal, code: KeyCode) -> KeyResult {
+fn handle_panel_picker(modal: &mut Modal, _pipeline: &LivePipeline, code: KeyCode) -> KeyResult {
     if matches!(code, KeyCode::Up | KeyCode::Char('k')) {
         modal.scroll_up();
         return KeyResult {
@@ -313,6 +348,7 @@ fn handle_panel_picker(modal: &mut Modal, code: KeyCode) -> KeyResult {
             PanelAction::Workers => modal.open(Modal::Workers { scroll: 0 }),
             PanelAction::Help => modal.open(Modal::Help { scroll: 0 }),
             PanelAction::Stats => modal.open(Modal::Stats { scroll: 0 }),
+            PanelAction::Notices => modal.open(Modal::Notices { scroll: 0 }),
         }
         return KeyResult {
             quit: false,
@@ -439,7 +475,11 @@ pub fn render_modal(
         Modal::None => return,
         Modal::Help { scroll } => ("Help", help_lines(smart_qname), *scroll),
         Modal::ViewPicker { scroll } => ("Views", view_picker_lines(), *scroll),
-        Modal::PanelPicker { scroll } => ("Panels", panel_picker_lines(), *scroll),
+        Modal::PanelPicker { scroll } => (
+            "Panels",
+            panel_picker_lines(!pipeline.session_notices.is_empty()),
+            *scroll,
+        ),
         Modal::Pipeline { scroll } => (
             "Pipeline",
             pipeline_lines(iface, capture_threads, fanout_group, pipeline, hint_lines),
@@ -451,6 +491,7 @@ pub fn render_modal(
             *scroll,
         ),
         Modal::Stats { scroll } => ("Stats", status.format_detail_lines(), *scroll),
+        Modal::Notices { scroll } => ("Notices", pipeline.session_notices.modal_lines(), *scroll),
         Modal::QnameLevelInput { buf } => {
             let popup = centered_rect(50, 20, f.area());
             f.render_widget(Clear, popup);
@@ -537,9 +578,14 @@ fn help_lines(smart_qname: bool) -> Vec<String> {
         "".into(),
         "Panels (modals)".into(),
         "  p             panel picker".into(),
-        "  p → l/w/u/h   pipeline, scaling, stats, or help".into(),
+        "  p → l/w/u/n/h pipeline, scaling, stats, notices, help".into(),
         "  u             stats (shortcut and in panel picker)".into(),
+        "  !             startup notices (topology, warnings)".into(),
         "  w             scaling — parse threads +/- (shortcut)".into(),
+        "".into(),
+        "Startup".into(),
+        "  On live watch, config/topology warnings open in Notices".into(),
+        "  automatically; dismiss with Esc, reopen with !".into(),
         "".into(),
         "Scaling".into(),
         "  + / -         parse threads (also in w modal)".into(),
@@ -584,15 +630,19 @@ fn view_picker_lines() -> Vec<String> {
     ]
 }
 
-fn panel_picker_lines() -> Vec<String> {
-    vec![
+fn panel_picker_lines(has_notices: bool) -> Vec<String> {
+    let mut lines = vec![
         "Choose a panel (key opens it):".into(),
         "".into(),
         "  l   Pipeline".into(),
         "  w   Scaling".into(),
         "  u   Stats".into(),
-        "  h   Help".into(),
-    ]
+    ];
+    if has_notices {
+        lines.push("  n   Notices (startup warnings)".into());
+    }
+    lines.push("  h   Help".into());
+    lines
 }
 
 fn pipeline_diagram(capture: u32, flow: u32, parse: usize) -> String {
