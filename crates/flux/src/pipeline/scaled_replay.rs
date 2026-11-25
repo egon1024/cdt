@@ -10,7 +10,7 @@ use crate::scale::flow_pool::FlowThreadPool;
 use crate::scale::memory::{MemoryBudget, MemoryCounters};
 use crate::scale::overload::{OverloadPolicy, OverloadState, scale_estimate_count};
 use crate::scale::workers::ParseWorkerPool;
-use crate::view::format_batch_tables;
+use crate::view::{TableDisplay, format_batch_tables};
 use crate::window::Aggregator;
 
 use super::PipelineError;
@@ -22,6 +22,7 @@ pub fn replay_file_scaled(
     path: &str,
     options: &FluxOptions,
 ) -> Result<ReplayOutcome, PipelineError> {
+    let replay_started = std::time::Instant::now();
     let filter = options.compile_filter(&NoopResolver)?;
     let eval_ctx = options.build_eval_context(&NoopResolver);
     let mut source = open_packet_source(Some(path))?;
@@ -143,6 +144,18 @@ pub fn replay_file_scaled(
     } else {
         snap.total_messages
     };
+    let display = TableDisplay {
+        rate_mode: options.rate_mode,
+        view_sort: options.view_sort,
+        window: options.window.clone(),
+        effective_window_secs: overload
+            .effective_window_secs
+            .or(snap.effective_window_secs),
+        counted_span_secs: snap.counted_span_secs,
+        tick_prev: None,
+        tick_interval_secs: 1.0,
+        replay_wall_secs: Some(replay_started.elapsed().as_secs_f64().max(0.001)),
+    };
     let mut body = format_batch_tables(
         &snap.counts,
         &options.batch_views,
@@ -151,6 +164,7 @@ pub fn replay_file_scaled(
         options.key_cap,
         options.ede_show_no_ede,
         None,
+        &display,
     );
     if overload.estimate_marker {
         body = format!("~ estimates at 1/{}\n{body}", overload.sample_every);

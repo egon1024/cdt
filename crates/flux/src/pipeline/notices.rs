@@ -57,9 +57,7 @@ impl SessionNotices {
 
     pub fn mark_all_read(&mut self) {
         self.read.resize(self.lines.len(), false);
-        for flag in &mut self.read {
-            *flag = true;
-        }
+        self.read.fill(true);
     }
 
     pub fn push_line(&mut self, line: impl Into<String>) {

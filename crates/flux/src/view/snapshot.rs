@@ -282,13 +282,8 @@ fn accumulate_record(
     }
 }
 
-pub fn counts_for_view(
-    counts: &ViewCounts,
-    view: ViewId,
-    key_cap: usize,
-    show_no_ede: bool,
-) -> Vec<(String, u64)> {
-    let mut rows: Vec<(String, u64)> = match view {
+pub fn rows_for_view(counts: &ViewCounts, view: ViewId, show_no_ede: bool) -> Vec<(String, u64)> {
+    match view {
         ViewId::Sources => counts
             .sources
             .iter()
@@ -353,13 +348,22 @@ pub fn counts_for_view(
             .map(|(k, v)| (k.clone(), *v))
             .collect(),
         ViewId::LatencyDst | ViewId::LatencySrc | ViewId::LatencyQtype => Vec::new(),
-    };
+    }
+}
+
+pub fn counts_for_view(
+    counts: &ViewCounts,
+    view: ViewId,
+    key_cap: usize,
+    show_no_ede: bool,
+) -> Vec<(String, u64)> {
+    let mut rows = rows_for_view(counts, view, show_no_ede);
     rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     apply_key_cap(&mut rows, key_cap);
     rows
 }
 
-fn apply_key_cap(rows: &mut Vec<(String, u64)>, key_cap: usize) {
+pub fn apply_key_cap(rows: &mut Vec<(String, u64)>, key_cap: usize) {
     if key_cap == 0 || rows.len() <= key_cap {
         return;
     }

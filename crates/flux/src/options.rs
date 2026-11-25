@@ -63,6 +63,22 @@ pub struct FluxOptions {
     pub pair_max: usize,
     pub dedup: bool,
     pub dedup_window: Duration,
+    pub rate_mode: RateMode,
+    pub view_sort: ViewSort,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum RateMode {
+    #[default]
+    Window,
+    Tick,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ViewSort {
+    #[default]
+    Count,
+    Rate,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,6 +190,8 @@ impl Default for FluxOptions {
             pair_max: 10_000,
             dedup: false,
             dedup_window: Duration::from_millis(5),
+            rate_mode: RateMode::Window,
+            view_sort: ViewSort::Count,
         }
     }
 }
@@ -589,6 +607,32 @@ fn parse_plus_option(
                 })?
             };
             opts.dedup_window = Duration::from_millis(ms);
+        }
+        "rate" => {
+            let v = require_value(key, value)?;
+            opts.rate_mode = match v {
+                "window" => RateMode::Window,
+                "tick" => RateMode::Tick,
+                _ => {
+                    return Err(OptionsError::InvalidValue {
+                        name: key.into(),
+                        detail: "expected window or tick".into(),
+                    });
+                }
+            };
+        }
+        "sort" => {
+            let v = require_value(key, value)?;
+            opts.view_sort = match v {
+                "count" => ViewSort::Count,
+                "rate" => ViewSort::Rate,
+                _ => {
+                    return Err(OptionsError::InvalidValue {
+                        name: key.into(),
+                        detail: "expected count or rate".into(),
+                    });
+                }
+            };
         }
         _ if filter_field_key(key) || key.starts_with("no") => {}
         _ if key.is_empty() && matches!(value, None | Some("") | Some("-")) => {

@@ -22,9 +22,9 @@ use thiserror::Error;
 
 use crate::capture::{ListenerSpec, LiveCapture};
 use crate::filter::NoopResolver;
-use crate::options::{FluxOptions, ViewId};
+use crate::options::{FluxOptions, RateMode, ViewId, ViewSort};
 use crate::scale::hints::{HintEngine, ListenerMeasurements};
-use crate::view::format_batch_tables;
+use crate::view::{TableDisplay, format_batch_tables, rows_for_view};
 use crate::window::Aggregator;
 
 use super::live_ingest::LivePipeline;
@@ -66,6 +66,51 @@ struct ViewFormatKey {
     packets: u64,
     filter_generation: u64,
     smart: bool,
+    rate_mode: RateMode,
+    view_sort: ViewSort,
+    tick_frame: u64,
+}
+
+/// Per-view counts from the previous TUI refresh (tick QPS).
+struct TickRateTracker {
+    view: ViewId,
+    prev: HashMap<String, u64>,
+    frame: u64,
+}
+
+impl Default for TickRateTracker {
+    fn default() -> Self {
+        Self {
+            view: ViewId::Sources,
+            prev: HashMap::new(),
+            frame: 0,
+        }
+    }
+}
+
+impl TickRateTracker {
+    fn prev_for(
+        &mut self,
+        view: ViewId,
+        total_packets: u64,
+        show_no_ede: bool,
+        counts: &crate::view::ViewCounts,
+    ) -> Option<HashMap<String, u64>> {
+        if self.view != view || self.prev.is_empty() {
+            self.view = view;
+            self.prev = rows_for_view(counts, view, show_no_ede)
+                .into_iter()
+                .collect();
+            self.frame = total_packets;
+            return None;
+        }
+        let prior = self.prev.clone();
+        self.prev = rows_for_view(counts, view, show_no_ede)
+            .into_iter()
+            .collect();
+        self.frame = total_packets;
+        Some(prior)
+    }
 }
 
 impl ViewFormatCache {
@@ -155,6 +200,7 @@ pub fn run_live(
     let mut force_redraw = true;
     let mut draw_cache = DrawCache::default();
     let mut view_format_cache = ViewFormatCache::default();
+    let mut tick_rate = TickRateTracker::default();
     let mut overlay_dismiss_redraw = false;
 
     'live: loop {
@@ -188,6 +234,7 @@ pub fn run_live(
             &mut last_draw,
             &mut draw_cache,
             &mut view_format_cache,
+            &mut tick_rate,
         )? {
             force_redraw = false;
             overlay_dismiss_redraw = false;
@@ -232,6 +279,7 @@ pub fn run_live(
                 &mut last_draw,
                 &mut draw_cache,
                 &mut view_format_cache,
+                &mut tick_rate,
             )? {
                 force_redraw = false;
                 overlay_dismiss_redraw = false;
@@ -275,6 +323,7 @@ pub fn run_live(
             &mut last_draw,
             &mut draw_cache,
             &mut view_format_cache,
+            &mut tick_rate,
         )? {
             force_redraw = false;
             overlay_dismiss_redraw = false;
@@ -297,6 +346,7 @@ pub fn run_live(
                 &mut frames_since_draw,
                 &mut draw_cache,
                 &mut view_format_cache,
+                &mut tick_rate,
             )?;
             last_draw = Instant::now();
         }
@@ -338,6 +388,7 @@ pub fn run_live(
             &mut last_draw,
             &mut draw_cache,
             &mut view_format_cache,
+            &mut tick_rate,
         )? {
             force_redraw = false;
         }
@@ -435,6 +486,7 @@ fn maybe_redraw(
     last_draw: &mut Instant,
     cache: &mut DrawCache,
     view_format_cache: &mut ViewFormatCache,
+    tick_rate: &mut TickRateTracker,
 ) -> Result<bool, TuiError> {
     if !force_redraw {
         return Ok(false);
@@ -458,6 +510,7 @@ fn maybe_redraw(
             frames_since_draw,
             cache,
             view_format_cache,
+            tick_rate,
         )?;
     }
     *last_draw = Instant::now();
@@ -506,6 +559,7 @@ fn draw_live_frame(
     frames_since_draw: &mut u64,
     cache: &mut DrawCache,
     view_format_cache: &mut ViewFormatCache,
+    tick_rate: &mut TickRateTracker,
 ) -> Result<(), TuiError> {
     let recv_last = *frames_since_draw;
     *frames_since_draw = 0;
@@ -555,12 +609,35 @@ fn draw_live_frame(
     };
 
     let table_width = term.size()?.width.saturating_sub(4).max(32);
+    let tick_prev = if options.rate_mode == RateMode::Tick {
+        tick_rate.prev_for(
+            *view,
+            agg.counters.packets,
+            options.ede_show_no_ede,
+            &agg.window_totals,
+        )
+    } else {
+        None
+    };
     let format_key = ViewFormatKey {
         view: *view,
         width: table_width,
         packets: agg.counters.packets,
         filter_generation: agg.filter_generation,
         smart,
+        rate_mode: options.rate_mode,
+        view_sort: options.view_sort,
+        tick_frame: tick_rate.frame,
+    };
+    let display = TableDisplay {
+        rate_mode: options.rate_mode,
+        view_sort: options.view_sort,
+        window: options.window.clone(),
+        effective_window_secs: effective_window_secs(&agg.window),
+        counted_span_secs: agg.counted_slice_span(),
+        tick_prev,
+        tick_interval_secs: refresh.as_secs_f64(),
+        replay_wall_secs: None,
     };
     let main_text = view_format_cache.format(format_key, || {
         format_batch_tables(
@@ -571,6 +648,7 @@ fn draw_live_frame(
             options.key_cap,
             options.ede_show_no_ede,
             Some(table_width),
+            &display,
         )
     });
     cache.title.clone_from(&title);

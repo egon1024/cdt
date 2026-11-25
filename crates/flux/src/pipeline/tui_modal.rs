@@ -466,6 +466,18 @@ fn handle_main_keys(
             let mut picker = crate::filter::PickerState::Closed;
             let _ = crate::filter::picker_key(&mut picker, 'f');
         }
+        KeyCode::Char('R') => {
+            options.rate_mode = match options.rate_mode {
+                crate::options::RateMode::Window => crate::options::RateMode::Tick,
+                crate::options::RateMode::Tick => crate::options::RateMode::Window,
+            };
+        }
+        KeyCode::Char('S') => {
+            options.view_sort = match options.view_sort {
+                crate::options::ViewSort::Count => crate::options::ViewSort::Rate,
+                crate::options::ViewSort::Rate => crate::options::ViewSort::Count,
+            };
+        }
         other => {
             if let Some(v) = view_action(other) {
                 *view = v;
@@ -496,7 +508,7 @@ pub fn render_modal(
     }
     let (title, lines, scroll) = match modal {
         Modal::None => return,
-        Modal::Help { scroll } => ("Help", help_lines(smart_qname), *scroll),
+        Modal::Help { scroll } => ("Help", help_lines(smart_qname, options), *scroll),
         Modal::ViewPicker { scroll } => ("Views", view_picker_lines(), *scroll),
         Modal::PanelPicker { scroll } => (
             "Panels",
@@ -602,7 +614,7 @@ fn scrollable_text(lines: &[String], scroll: u16, visible_rows: u16) -> String {
         .join("\n")
 }
 
-fn help_lines(smart_qname: bool) -> Vec<String> {
+fn help_lines(smart_qname: bool, options: &crate::options::FluxOptions) -> Vec<String> {
     let smart = if smart_qname { "on" } else { "off" };
     let mut lines = vec![
         "Views (main table)".into(),
@@ -628,6 +640,20 @@ fn help_lines(smart_qname: bool) -> Vec<String> {
         "Labels".into(),
         format!("  g             toggle smart qname aggregation ({smart})"),
         "                (PSL-aware: e.g. example.co.uk at level 2)".into(),
+        "".into(),
+        "Rate and sort".into(),
+        format!(
+            "  R             toggle rate: {} (window vs tick QPS)",
+            crate::view::rate_mode_label(options.rate_mode)
+        ),
+        format!(
+            "  S             toggle sort: {} (count vs rate)",
+            match options.view_sort {
+                crate::options::ViewSort::Count => "count",
+                crate::options::ViewSort::Rate => "rate",
+            }
+        ),
+        "  +rate= / +sort=  CLI overrides".into(),
         "".into(),
         "Other".into(),
         "  ? or h        this help".into(),

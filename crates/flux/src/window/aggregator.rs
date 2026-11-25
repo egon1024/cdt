@@ -22,6 +22,8 @@ pub struct WindowTotals {
     pub total_messages: u64,
     pub match_stats: MatchStats,
     pub effective_window_secs: Option<u64>,
+    /// Inclusive span of slice seconds represented in `counts` (`max - min + 1`).
+    pub counted_span_secs: Option<u64>,
 }
 
 pub struct Aggregator {
@@ -195,6 +197,25 @@ impl Aggregator {
                 WindowMode::All => None,
                 WindowMode::Seconds(s) => Some(s),
             },
+            counted_span_secs: Self::slice_span(&self.slices),
+        }
+    }
+
+    pub fn counted_slice_span(&self) -> Option<u64> {
+        Self::slice_span(&self.slices)
+    }
+
+    fn slice_span(slices: &HashMap<SliceId, TimeSlice>) -> Option<u64> {
+        let mut min = None::<u64>;
+        let mut max = None::<u64>;
+        for id in slices.keys() {
+            let sec = id.0;
+            min = Some(min.map_or(sec, |m| m.min(sec)));
+            max = Some(max.map_or(sec, |m| m.max(sec)));
+        }
+        match (min, max) {
+            (Some(lo), Some(hi)) => Some(hi.saturating_sub(lo).saturating_add(1)),
+            _ => None,
         }
     }
 
