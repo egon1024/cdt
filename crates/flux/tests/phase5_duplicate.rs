@@ -115,7 +115,7 @@ fn vlan_view_and_filter() {
     ]);
     assert!(all.status.success());
     let text = String::from_utf8_lossy(&all.stdout);
-    assert!(text.contains("100"), "{text}");
+    assert!(text.contains("100") && text.contains("200"), "{text}");
     let filtered = flux_run(&[
         "watch",
         "-r",
@@ -128,6 +128,34 @@ fn vlan_view_and_filter() {
     assert!(filtered.status.success());
     let ftxt = String::from_utf8_lossy(&filtered.stdout);
     assert!(ftxt.contains("counted 1"), "{ftxt}");
+    assert!(ftxt.contains("1 of 2 (50.0%)"), "{ftxt}");
+    let wrong_vlan = flux_run(&[
+        "watch",
+        "-r",
+        pcap.to_str().unwrap(),
+        "+vlan=99",
+        "+views=src",
+        "+pairing=off",
+        "+window=all",
+    ]);
+    assert!(wrong_vlan.status.success());
+    let wrong = String::from_utf8_lossy(&wrong_vlan.stdout);
+    assert!(
+        wrong.contains("0 of 2 (0.0%)") || wrong.contains("counted 0"),
+        "{wrong}"
+    );
+    let vlan200 = flux_run(&[
+        "watch",
+        "-r",
+        pcap.to_str().unwrap(),
+        "+vlan=200",
+        "+views=src",
+        "+pairing=off",
+        "+window=all",
+    ]);
+    assert!(vlan200.status.success());
+    let v200 = String::from_utf8_lossy(&vlan200.stdout);
+    assert!(v200.contains("counted 1"), "{v200}");
 }
 
 #[test]

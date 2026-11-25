@@ -205,15 +205,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let vlan_opts = QueryOptions::new(DomainName::parse("vlan100.example.com.")?, RecordType::A);
     let vlan_wire = fix_query_id(build_query(&vlan_opts)?, 0x6100);
+    let vlan200_opts = QueryOptions::new(DomainName::parse("vlan200.example.com.")?, RecordType::A);
+    let vlan200_wire = fix_query_id(build_query(&vlan200_opts)?, 0x6200);
     write_pcap_file(
         &dir.join("vlan.pcap"),
-        &[ether_udp_dns_vlan_frame(
-            &clients[0],
-            &server,
-            49_000,
-            vlan_wire,
-            100,
-        )],
+        &[
+            ether_udp_dns_vlan_frame(&clients[0], &server, 49_000, vlan_wire, 100),
+            ether_udp_dns_vlan_frame(&clients[0], &server, 49_001, vlan200_wire, 200),
+        ],
     )?;
 
     Ok(())
