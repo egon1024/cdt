@@ -8,6 +8,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use crate::options::ViewId;
 use crate::window::Aggregator;
 
+use super::config_panel::format_config_lines;
 use super::live_ingest::LivePipeline;
 use super::stats::StatusBar;
 
@@ -32,7 +33,10 @@ pub enum Modal {
     Stats {
         scroll: u16,
     },
-    /// Startup and session notices (topology, config); auto-opens when non-empty.
+    Config {
+        scroll: u16,
+    },
+    /// Warnings (e.g. topology); auto-opens when non-empty.
     Notices {
         scroll: u16,
     },
@@ -62,6 +66,7 @@ impl Modal {
             | Modal::Pipeline { scroll }
             | Modal::Workers { scroll }
             | Modal::Stats { scroll }
+            | Modal::Config { scroll }
             | Modal::Notices { scroll } => {
                 *scroll = scroll.saturating_sub(1);
             }
@@ -77,6 +82,7 @@ impl Modal {
             | Modal::Pipeline { scroll }
             | Modal::Workers { scroll }
             | Modal::Stats { scroll }
+            | Modal::Config { scroll }
             | Modal::Notices { scroll } => {
                 *scroll = (*scroll + 1).min(max);
             }
@@ -160,6 +166,7 @@ pub fn handle_key(
         Modal::Help { .. }
         | Modal::Pipeline { .. }
         | Modal::Stats { .. }
+        | Modal::Config { .. }
         | Modal::Notices { .. } => handle_scroll_modal(modal, code),
         Modal::None => handle_main_keys(view, agg, pipeline, options, code),
     }
@@ -175,6 +182,7 @@ fn launcher_suppressed(modal: &Modal, code: KeyCode) -> bool {
                 | KeyCode::Char('h')
                 | KeyCode::Char('?')
                 | KeyCode::Char('u')
+                | KeyCode::Char('c')
                 | KeyCode::Char('!')
         ),
         Modal::ViewPicker { .. } => view_action(code).is_some(),
@@ -192,6 +200,7 @@ fn launcher_suppressed(modal: &Modal, code: KeyCode) -> bool {
         Modal::Help { .. }
         | Modal::Pipeline { .. }
         | Modal::Stats { .. }
+        | Modal::Config { .. }
         | Modal::Notices { .. }
         | Modal::None => false,
     }
@@ -219,6 +228,7 @@ fn try_modal_launcher(
         KeyCode::Char('l') => Some(Modal::QnameLevelInput { buf: String::new() }),
         KeyCode::Char('?') | KeyCode::Char('h') => Some(Modal::Help { scroll: 0 }),
         KeyCode::Char('u') => Some(Modal::Stats { scroll: 0 }),
+        KeyCode::Char('c') => Some(Modal::Config { scroll: 0 }),
         KeyCode::Char('!') if !pipeline.session_notices.is_empty() => {
             Some(Modal::Notices { scroll: 0 })
         }
@@ -289,6 +299,7 @@ enum PanelAction {
     Workers,
     Help,
     Stats,
+    Config,
     Notices,
 }
 
@@ -298,6 +309,7 @@ fn panel_action(code: KeyCode) -> Option<PanelAction> {
         KeyCode::Char('w') => Some(PanelAction::Workers),
         KeyCode::Char('?') | KeyCode::Char('h') => Some(PanelAction::Help),
         KeyCode::Char('u') => Some(PanelAction::Stats),
+        KeyCode::Char('c') => Some(PanelAction::Config),
         KeyCode::Char('!') => Some(PanelAction::Notices),
         _ => None,
     }
@@ -357,6 +369,7 @@ fn handle_panel_picker(modal: &mut Modal, _pipeline: &LivePipeline, code: KeyCod
             PanelAction::Workers => modal.open(Modal::Workers { scroll: 0 }),
             PanelAction::Help => modal.open(Modal::Help { scroll: 0 }),
             PanelAction::Stats => modal.open(Modal::Stats { scroll: 0 }),
+            PanelAction::Config => modal.open(Modal::Config { scroll: 0 }),
             PanelAction::Notices => modal.open(Modal::Notices { scroll: 0 }),
         }
         return KeyResult {
@@ -473,6 +486,7 @@ pub fn render_modal(
     capture_threads: u32,
     fanout_group: Option<u32>,
     pipeline: &LivePipeline,
+    options: &crate::options::FluxOptions,
     hint_lines: &[String],
     smart_qname: bool,
     status: &StatusBar,
@@ -500,6 +514,18 @@ pub fn render_modal(
             *scroll,
         ),
         Modal::Stats { scroll } => ("Stats", status.format_detail_lines(), *scroll),
+        Modal::Config { scroll } => (
+            "Config",
+            format_config_lines(
+                options,
+                &pipeline.listeners,
+                iface,
+                fanout_group,
+                status.effective_window_secs,
+                pipeline,
+            ),
+            *scroll,
+        ),
         Modal::Notices { scroll } => ("Notices", pipeline.session_notices.modal_lines(), *scroll),
         Modal::QnameLevelInput { buf } => {
             let popup = centered_rect(50, 20, f.area());
@@ -587,14 +613,14 @@ fn help_lines(smart_qname: bool) -> Vec<String> {
         "".into(),
         "Panels (modals)".into(),
         "  p             panel picker".into(),
-        "  p → l/w/u/!/h pipeline, scaling, stats, notices, help".into(),
-        "  u             stats (shortcut and in panel picker)".into(),
-        "  !             startup notices (topology, warnings)".into(),
+        "  p → l/w/u/c/!/h pipeline, scaling, stats, config, notices, help".into(),
+        "  u             stats (live counters)".into(),
+        "  c             session config (interfaces, options)".into(),
+        "  !             warnings (topology, etc.)".into(),
         "  w             scaling — parse threads +/- (shortcut)".into(),
         "".into(),
         "Startup".into(),
-        "  On live watch, config/topology warnings open in Notices".into(),
-        "  automatically; Esc dismisses and marks read; footer shows counts".into(),
+        "  Topology warnings auto-open Notices; Esc marks read; footer counts".into(),
         "".into(),
         "Scaling".into(),
         "  + / -         parse threads (also in w modal)".into(),
@@ -646,9 +672,10 @@ fn panel_picker_lines(has_notices: bool) -> Vec<String> {
         "  l   Pipeline".into(),
         "  w   Scaling".into(),
         "  u   Stats".into(),
+        "  c   Config".into(),
     ];
     if has_notices {
-        lines.push("  !   Notices (startup warnings)".into());
+        lines.push("  !   Notices (warnings)".into());
     }
     lines.push("  h   Help".into());
     lines

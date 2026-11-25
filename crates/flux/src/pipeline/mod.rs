@@ -1,3 +1,5 @@
+#[cfg(all(target_os = "linux", feature = "tui"))]
+mod config_panel;
 mod ingest;
 mod live_ingest;
 mod notices;
@@ -67,6 +69,7 @@ pub fn run_watch(
                 "flux watch: no eligible capture interfaces".into(),
             ));
         }
+        eprintln!("{}", crate::capture::opened_interfaces_message(&listeners));
         let session_notices = SessionNotices::for_live_listeners(&listeners);
         session_notices.emit_stderr();
         if listeners.iter().any(|s| s.capture_threads > 1) {
@@ -87,7 +90,7 @@ pub fn run_watch(
         if use_tui {
             let cap = crate::capture::live::LiveCapture::open_with(iface, cap_opts)
                 .map_err(PipelineError::Live)?;
-            return run_live_tui(cap, options, listeners[0].capture_threads, session_notices);
+            return run_live_tui(cap, options, listeners, session_notices);
         }
         let _ = cap_opts;
         Err(PipelineError::Config(
@@ -112,12 +115,12 @@ pub fn run_watch(
 fn run_live_tui(
     cap: crate::capture::LiveCapture,
     options: FluxOptions,
-    capture_threads: u32,
+    listeners: Vec<crate::capture::ListenerSpec>,
     session_notices: SessionNotices,
 ) -> Result<(), PipelineError> {
     #[cfg(feature = "tui")]
     {
-        tui::run_live(cap, options, capture_threads, session_notices).map_err(|e| match e {
+        tui::run_live(cap, options, listeners, session_notices).map_err(|e| match e {
             tui::TuiError::Live(l) => PipelineError::Live(l),
             tui::TuiError::Io(io) => PipelineError::Config(io.to_string()),
             tui::TuiError::Options(o) => PipelineError::Options(o),

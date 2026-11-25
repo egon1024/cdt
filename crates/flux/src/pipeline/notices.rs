@@ -1,9 +1,6 @@
 //! Session-scoped operator notices (startup config, topology, etc.) for live TUI and stderr.
 
-use crate::capture::{
-    LinuxSysTopology, ListenerSpec, discover_topology, opened_interfaces_message,
-    topology_duplicate_hints,
-};
+use crate::capture::{LinuxSysTopology, ListenerSpec, discover_topology, topology_duplicate_hints};
 
 /// Text shown at session start and in the **Notices** TUI modal (`!`, including Panels → **!**).
 #[derive(Debug, Clone, Default)]
@@ -73,11 +70,10 @@ impl SessionNotices {
         }
     }
 
-    /// Build notices for a live capture session (topology, opened interfaces).
+    /// Build warnings for a live capture session (e.g. topology duplicate capture).
     pub fn for_live_listeners(listeners: &[ListenerSpec]) -> Self {
         let names: Vec<_> = listeners.iter().map(|l| l.iface.clone()).collect();
         let mut notices = Self::new();
-        notices.push_line(strip_flux_prefix(&opened_interfaces_message(listeners)));
         let topo = discover_topology(&LinuxSysTopology, &names);
         for hint in topology_duplicate_hints(&names, &topo) {
             notices.push_line(strip_flux_prefix(&hint));
@@ -94,23 +90,19 @@ impl SessionNotices {
 
     pub fn modal_lines(&self) -> Vec<String> {
         if self.lines.is_empty() {
-            return vec!["No startup notices for this session.".into()];
+            return vec!["No notices.".into()];
         }
-        let mut out = vec![
-            "These messages were recorded when the session started.".into(),
-            "They stay available under Panels → Notices (!).".into(),
-            "Dismiss this panel (Esc/q) to mark all notices read.".into(),
-            "Unread items are prefixed with •".into(),
-            String::new(),
-        ];
-        for (line, read) in self.lines.iter().zip(self.read.iter()) {
-            if *read {
-                out.push(line.clone());
-            } else {
-                out.push(format!("• {line}"));
-            }
-        }
-        out
+        self.lines
+            .iter()
+            .zip(self.read.iter())
+            .map(|(line, read)| {
+                if *read {
+                    line.clone()
+                } else {
+                    format!("• {line}")
+                }
+            })
+            .collect()
     }
 }
 
@@ -125,8 +117,7 @@ mod tests {
     #[test]
     fn modal_lines_preserve_content() {
         let mut n = SessionNotices::new();
-        n.push_line("opened interfaces: br0, v0");
-        n.push_line("hint: br0 and its member(s) v0");
+        n.push_line("hint: br0 and its member(s) v0 are both selected");
         assert!(n.modal_lines().iter().any(|l| l.contains("v0")));
     }
 

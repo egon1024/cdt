@@ -20,7 +20,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph};
 use thiserror::Error;
 
-use crate::capture::LiveCapture;
+use crate::capture::{ListenerSpec, LiveCapture};
 use crate::filter::NoopResolver;
 use crate::options::{FluxOptions, ViewId};
 use crate::scale::hints::{HintEngine, ListenerMeasurements};
@@ -104,12 +104,17 @@ pub enum TuiError {
 pub fn run_live(
     cap: LiveCapture,
     mut options: FluxOptions,
-    capture_threads: u32,
+    listeners: Vec<ListenerSpec>,
     session_notices: SessionNotices,
 ) -> Result<(), TuiError> {
     apply_thread_priority(ThreadRole::Tui);
     cap.set_nonblocking()?;
     let iface = cap.iface().to_string();
+    let capture_threads = listeners
+        .iter()
+        .find(|l| l.iface == iface)
+        .map(|l| l.capture_threads)
+        .unwrap_or(1);
     let fanout_group = cap.fanout_group;
     let filter = options.compile_filter(&NoopResolver)?;
     let eval_ctx = options.build_eval_context(&NoopResolver);
@@ -120,7 +125,7 @@ pub fn run_live(
         filter,
         eval_ctx,
     );
-    let mut pipeline = LivePipeline::new(&options, session_notices);
+    let mut pipeline = LivePipeline::new(&options, session_notices, &listeners);
     let hint_engine = HintEngine::new();
     let refresh = Duration::from_secs_f64(1.0 / options.tui_hz.max(1) as f64);
     let has_notices = !pipeline.session_notices.is_empty();
@@ -596,6 +601,7 @@ fn draw_live_frame(
             capture_threads,
             fanout_group,
             pipeline,
+            options,
             &hint_lines,
             smart,
             &status,

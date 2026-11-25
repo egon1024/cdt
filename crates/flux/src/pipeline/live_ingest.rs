@@ -1,6 +1,6 @@
 //! Shared live-replay packet path for scaled capture (flow threads + parse workers).
 
-use crate::capture::RawPacket;
+use crate::capture::{ListenerSpec, RawPacket};
 use crate::flow::{FlowKey, FlowStage, hash_to_bucket, parse_flow_message};
 use crate::options::FluxOptions;
 use crate::parse::ParseWorker;
@@ -19,12 +19,18 @@ pub struct LivePipeline {
     pub worker: ParseWorker,
     pub hash_seed: u64,
     pub session_notices: SessionNotices,
+    pub listeners: Vec<ListenerSpec>,
 }
 
 impl LivePipeline {
-    pub fn new(options: &FluxOptions, session_notices: SessionNotices) -> Self {
+    pub fn new(
+        options: &FluxOptions,
+        session_notices: SessionNotices,
+        listeners: &[ListenerSpec],
+    ) -> Self {
         let hash_seed = rand::random();
-        let use_pool = options.uses_split_pipeline(1);
+        let listener_count = listeners.len().max(1);
+        let use_pool = options.uses_split_pipeline(listener_count);
         Self {
             use_pool,
             flow: new_flow_stage(options),
@@ -33,6 +39,7 @@ impl LivePipeline {
             worker: ParseWorker::default(),
             hash_seed,
             session_notices,
+            listeners: listeners.to_vec(),
         }
     }
 
