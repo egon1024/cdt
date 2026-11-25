@@ -435,7 +435,7 @@ fn maybe_redraw(
         return Ok(false);
     }
     if overlay_dismiss && !modal.is_open() && cache.is_valid() {
-        draw_cached_main_frame(term, cache)?;
+        draw_cached_main_frame(term, cache, pipeline)?;
     } else {
         draw_live_frame(
             term,
@@ -462,15 +462,20 @@ fn maybe_redraw(
 fn draw_cached_main_frame(
     term: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     cache: &DrawCache,
+    pipeline: &LivePipeline,
 ) -> Result<(), TuiError> {
     let main_text = cache.main_text.clone();
     let title = cache.title.clone();
+    let footer = match pipeline.session_notices.tui_footer_suffix() {
+        Some(suffix) => format!("{TUI_FOOTER_HINTS} {suffix}"),
+        None => TUI_FOOTER_HINTS.to_string(),
+    };
     term.draw(|f| {
         f.render_widget(
             Paragraph::new(main_text).block(
                 Block::default()
                     .title(title)
-                    .title_bottom(Line::from(TUI_FOOTER_HINTS))
+                    .title_bottom(Line::from(footer))
                     .borders(Borders::ALL),
             ),
             f.area(),
