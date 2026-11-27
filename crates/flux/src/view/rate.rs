@@ -23,7 +23,11 @@ pub fn window_divisor_secs(ctx: &RateContext<'_>) -> f64 {
     match ctx.window {
         WindowMode::All => ctx.counted_span_secs.unwrap_or(1).max(1) as f64,
         WindowMode::Seconds(configured) => {
-            ctx.effective_window_secs.unwrap_or(*configured).max(1) as f64
+            let cfg = ctx.effective_window_secs.unwrap_or(*configured).max(1);
+            match ctx.counted_span_secs {
+                Some(span) => cfg.min(span.max(1)) as f64,
+                None => cfg as f64,
+            }
         }
     }
 }
@@ -128,6 +132,22 @@ mod tests {
             replay_wall_secs: None,
         };
         assert!((rate_for_row(50, "a", &ctx) - 5.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn window_divisor_uses_slice_span_when_shorter_than_configured() {
+        let window = WindowMode::Seconds(15);
+        let ctx = RateContext {
+            rate_mode: RateMode::Window,
+            view_sort: ViewSort::Count,
+            window: &window,
+            effective_window_secs: Some(15),
+            counted_span_secs: Some(9),
+            tick_prev: None,
+            tick_interval_secs: 1.0,
+            replay_wall_secs: None,
+        };
+        assert!((window_divisor_secs(&ctx) - 9.0).abs() < f64::EPSILON);
     }
 
     #[test]

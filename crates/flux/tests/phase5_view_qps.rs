@@ -43,6 +43,74 @@ fn batch_rate_window_and_tick_differ() {
 }
 
 #[test]
+fn replay_window_15s_pairing_off_matches_steady_qps() {
+    let dir = tempdir().unwrap();
+    regenerate_fixtures(dir.path());
+    let pcap = dir.path().join("large.pcap");
+    let p = pcap.to_str().unwrap();
+    let out = flux_run(&[
+        "watch",
+        "-r",
+        p,
+        "+pairing=off",
+        "+window=15s",
+        "+rate=window",
+        "+views=src",
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    let counted = extract_counted(&text);
+    assert_eq!(
+        counted, 15,
+        "expected last 15 seconds of 1 q/s pcap: {text}"
+    );
+    let row = text
+        .lines()
+        .find(|l| l.contains("192.0.2.10"))
+        .expect("source row");
+    assert!(
+        row.contains("0.33"),
+        "steady 1 q/s / 3 sources => ~0.33/s per source: {row}"
+    );
+
+    let all = flux_run(&[
+        "watch",
+        "-r",
+        p,
+        "+pairing=off",
+        "+rate=window",
+        "+views=src",
+    ]);
+    assert!(all.status.success());
+    let all_text = String::from_utf8_lossy(&all.stdout);
+    let row_all = all_text
+        .lines()
+        .find(|l| l.contains("192.0.2.10"))
+        .expect("source row all");
+    assert!(
+        row_all.contains("0.33"),
+        "window-all steady rate: {row_all}"
+    );
+}
+
+fn extract_counted(text: &str) -> u64 {
+    for line in text.lines() {
+        if let Some(idx) = line.find("counted ") {
+            let rest = &line[idx + "counted ".len()..];
+            let n: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(v) = n.parse() {
+                return v;
+            }
+        }
+    }
+    0
+}
+
+#[test]
 fn options_rate_and_sort_parse() {
     let opts = flux::options::FluxOptions::parse(&[
         "+rate=tick".into(),

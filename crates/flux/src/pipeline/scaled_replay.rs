@@ -118,25 +118,15 @@ pub fn replay_file_scaled(
         apply_shrink_overload(&mut agg, &mut overload, options, &mem, &mem_budget);
     }
 
-    let max_sec = agg.slices.keys().map(|s| s.0).max().unwrap_or(0);
-    let pair_deadline = max_sec.saturating_add(options.pair_timeout.as_secs().saturating_add(1));
-    agg.tick(max_sec + 1);
-
-    if use_pool {
-        let synthetics = flow_pool.stages[0].drain_pairing_timeouts(pair_deadline);
-        for parsed in synthetics {
-            workers.push_record(parsed.record.clone(), 0);
-            agg.ingest(parsed);
-        }
-    } else {
-        drain_flow_timeouts(
-            &mut agg,
-            &mut single_worker,
-            &mut single_flow,
-            pair_deadline,
-        );
-    }
-    agg.catch_up_stall(pair_deadline + 1);
+    finalize_replay_clock(
+        &mut agg,
+        options,
+        use_pool,
+        &mut flow_pool,
+        &mut single_worker,
+        &mut single_flow,
+        &mut workers,
+    );
 
     let snap = agg.snapshot();
     let estimated_total = if overload.estimate_marker {
@@ -272,6 +262,39 @@ fn should_skip_overload(
         }
     }
     false
+}
+
+/// Seal and expire slices after a pcap replay. When pairing is off, keep the rolling window
+/// anchored at the last packet timestamp instead of `pair_timeout` past the capture.
+#[allow(clippy::too_many_arguments)]
+fn finalize_replay_clock(
+    agg: &mut Aggregator,
+    options: &FluxOptions,
+    use_pool: bool,
+    flow_pool: &mut FlowThreadPool,
+    single_worker: &mut ParseWorker,
+    single_flow: &mut FlowStage,
+    workers: &mut ParseWorkerPool,
+) {
+    let max_sec = agg.slices.keys().map(|s| s.0).max().unwrap_or(0);
+    agg.tick(max_sec + 1);
+
+    if options.pairing {
+        let pair_deadline =
+            max_sec.saturating_add(options.pair_timeout.as_secs().saturating_add(1));
+        if use_pool {
+            let synthetics = flow_pool.stages[0].drain_pairing_timeouts(pair_deadline);
+            for parsed in synthetics {
+                let _ = workers.push_record(parsed.record.clone(), 0);
+                agg.ingest(parsed);
+            }
+        } else {
+            drain_flow_timeouts(agg, single_worker, single_flow, pair_deadline);
+        }
+        agg.catch_up_stall(pair_deadline + 1);
+    } else {
+        agg.catch_up_stall(max_sec + 1);
+    }
 }
 
 fn account_memory(mem: &mut MemoryCounters, workers: &ParseWorkerPool, agg: &Aggregator) {
