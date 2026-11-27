@@ -1,0 +1,710 @@
+#![cfg(all(target_os = "linux", feature = "tui"))]
+
+use std::collections::HashMap;
+use std::io::{self, Write};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use crate::options::WindowMode;
+
+use crossterm::ExecutableCommand;
+use crossterm::event::{
+    self, Event, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
+};
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    supports_keyboard_enhancement,
+};
+use ratatui::prelude::*;
+use ratatui::text::Line;
+use ratatui::widgets::{Block, Borders, Paragraph};
+use thiserror::Error;
+
+use crate::capture::{ListenerSpec, LiveCapture};
+use crate::filter::NoopResolver;
+use crate::options::{FluxOptions, RateMode, ViewId, ViewSort};
+use crate::scale::hints::{HintEngine, ListenerMeasurements};
+use crate::view::{TableDisplay, format_batch_tables, rows_for_view};
+use crate::window::Aggregator;
+
+use super::live_ingest::LivePipeline;
+use super::notices::SessionNotices;
+use super::stats::{StatusBar, StatusLine, TUI_FOOTER_HINTS, WatchInput};
+use crate::scale::priority::{ThreadRole, apply_thread_priority};
+
+use super::tui_modal::{Modal, handle_key, render_modal};
+
+/// Per-loop packet budget; drained in smaller chunks so keys are handled between batches.
+const CAPTURE_DRAIN_BUDGET: u64 = 8_192;
+const CAPTURE_DRAIN_CHUNK: u64 = 16;
+/// Block waiting for input; kept short so Esc feels immediate (especially with a modal open).
+const EVENT_WAIT_BUSY_MS: u64 = 4;
+const EVENT_WAIT_IDLE_MS: u64 = 12;
+
+#[derive(Default)]
+struct DrawCache {
+    main_text: String,
+    title: String,
+}
+
+impl DrawCache {
+    fn is_valid(&self) -> bool {
+        !self.main_text.is_empty()
+    }
+}
+
+/// Cached `format_batch_tables` output so view/level keys (1–9, s, d, …) repaint without refiltering.
+#[derive(Default)]
+struct ViewFormatCache {
+    entries: HashMap<ViewFormatKey, String>,
+}
+
+#[derive(Hash, PartialEq, Eq)]
+struct ViewFormatKey {
+    view: ViewId,
+    width: u16,
+    packets: u64,
+    filter_generation: u64,
+    smart: bool,
+    rate_mode: RateMode,
+    view_sort: ViewSort,
+    tick_frame: u64,
+}
+
+/// Per-view counts from the previous TUI refresh (tick QPS).
+struct TickRateTracker {
+    view: ViewId,
+    prev: HashMap<String, u64>,
+    frame: u64,
+}
+
+impl Default for TickRateTracker {
+    fn default() -> Self {
+        Self {
+            view: ViewId::Sources,
+            prev: HashMap::new(),
+            frame: 0,
+        }
+    }
+}
+
+impl TickRateTracker {
+    fn prev_for(
+        &mut self,
+        view: ViewId,
+        total_packets: u64,
+        show_no_ede: bool,
+        counts: &crate::view::ViewCounts,
+    ) -> Option<HashMap<String, u64>> {
+        if self.view != view || self.prev.is_empty() {
+            self.view = view;
+            self.prev = rows_for_view(counts, view, show_no_ede)
+                .into_iter()
+                .collect();
+            self.frame = total_packets;
+            return None;
+        }
+        let prior = self.prev.clone();
+        self.prev = rows_for_view(counts, view, show_no_ede)
+            .into_iter()
+            .collect();
+        self.frame = total_packets;
+        Some(prior)
+    }
+}
+
+impl ViewFormatCache {
+    fn format(&mut self, key: ViewFormatKey, build: impl FnOnce() -> String) -> String {
+        if let Some(hit) = self.entries.get(&key) {
+            return hit.clone();
+        }
+        let text = build();
+        if self.entries.len() > 24 {
+            self.entries.clear();
+        }
+        self.entries.insert(key, text.clone());
+        text
+    }
+}
+
+fn effective_window_secs(window: &WindowMode) -> Option<u64> {
+    match window {
+        WindowMode::All => None,
+        WindowMode::Seconds(s) => Some(*s),
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum TuiError {
+    #[error(transparent)]
+    Io(#[from] io::Error),
+
+    #[error(transparent)]
+    Live(#[from] crate::capture::LiveCaptureError),
+
+    #[error(transparent)]
+    Options(#[from] crate::options::OptionsError),
+}
+
+pub fn run_live(
+    cap: LiveCapture,
+    mut options: FluxOptions,
+    listeners: Vec<ListenerSpec>,
+    session_notices: SessionNotices,
+) -> Result<(), TuiError> {
+    apply_thread_priority(ThreadRole::Tui);
+    cap.set_nonblocking()?;
+    let iface = cap.iface().to_string();
+    let capture_threads = listeners
+        .iter()
+        .find(|l| l.iface == iface)
+        .map(|l| l.capture_threads)
+        .unwrap_or(1);
+    let fanout_group = cap.fanout_group;
+    let filter = options.compile_filter(&NoopResolver)?;
+    let eval_ctx = options.build_eval_context(&NoopResolver);
+    let mut agg = Aggregator::new(
+        options.window.clone(),
+        options.late_grace,
+        options.late_policy,
+        filter,
+        eval_ctx,
+    );
+    let mut pipeline = LivePipeline::new(&options, session_notices, &listeners);
+    let hint_engine = HintEngine::new();
+    let refresh = Duration::from_secs_f64(1.0 / options.tui_hz.max(1) as f64);
+    let has_notices = !pipeline.session_notices.is_empty();
+
+    let mut stdout = io::stdout();
+    enable_raw_mode()?;
+    // Lone Esc shares bytes with arrow/alt CSI sequences; the kitty keyboard protocol reports
+    // Esc without the terminal's disambiguation wait (see crossterm PR / Kitty docs).
+    let keyboard_enhanced = matches!(supports_keyboard_enhancement(), Ok(true));
+    if keyboard_enhanced {
+        stdout.execute(PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
+        ))?;
+    }
+    stdout.execute(EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut term = Terminal::new(backend)?;
+    let mut view = ViewId::Sources;
+    let mut modal = if has_notices {
+        Modal::Notices { scroll: 0 }
+    } else {
+        Modal::None
+    };
+    let start = Instant::now();
+    let mut last_draw = Instant::now();
+    let mut frames_since_draw: u64 = 0;
+    let mut force_redraw = true;
+    let mut draw_cache = DrawCache::default();
+    let mut view_format_cache = ViewFormatCache::default();
+    let mut tick_rate = TickRateTracker::default();
+    let mut overlay_dismiss_redraw = false;
+
+    'live: loop {
+        if drain_events(
+            &mut modal,
+            &mut view,
+            &mut agg,
+            &mut pipeline,
+            &mut options,
+            &mut force_redraw,
+            &mut overlay_dismiss_redraw,
+        )? {
+            break 'live;
+        }
+        if maybe_redraw(
+            force_redraw,
+            overlay_dismiss_redraw,
+            &mut term,
+            &iface,
+            capture_threads,
+            fanout_group,
+            &agg,
+            &pipeline,
+            &options,
+            &hint_engine,
+            &view,
+            &modal,
+            start,
+            refresh,
+            &mut frames_since_draw,
+            &mut last_draw,
+            &mut draw_cache,
+            &mut view_format_cache,
+            &mut tick_rate,
+        )? {
+            force_redraw = false;
+            overlay_dismiss_redraw = false;
+        }
+
+        let mut drained_this_turn = 0u64;
+        while drained_this_turn < CAPTURE_DRAIN_BUDGET {
+            let chunk = drain_capture(&cap, &mut agg, &mut pipeline, &options, CAPTURE_DRAIN_CHUNK);
+            if chunk == 0 {
+                break;
+            }
+            drained_this_turn += chunk;
+            frames_since_draw += chunk;
+
+            if drain_events(
+                &mut modal,
+                &mut view,
+                &mut agg,
+                &mut pipeline,
+                &mut options,
+                &mut force_redraw,
+                &mut overlay_dismiss_redraw,
+            )? {
+                break 'live;
+            }
+            if maybe_redraw(
+                force_redraw,
+                overlay_dismiss_redraw,
+                &mut term,
+                &iface,
+                capture_threads,
+                fanout_group,
+                &agg,
+                &pipeline,
+                &options,
+                &hint_engine,
+                &view,
+                &modal,
+                start,
+                refresh,
+                &mut frames_since_draw,
+                &mut last_draw,
+                &mut draw_cache,
+                &mut view_format_cache,
+                &mut tick_rate,
+            )? {
+                force_redraw = false;
+                overlay_dismiss_redraw = false;
+            }
+        }
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        agg.tick(now);
+        pipeline.drain_flow_timeouts(&mut agg, now);
+
+        if drain_events(
+            &mut modal,
+            &mut view,
+            &mut agg,
+            &mut pipeline,
+            &mut options,
+            &mut force_redraw,
+            &mut overlay_dismiss_redraw,
+        )? {
+            break 'live;
+        }
+        if maybe_redraw(
+            force_redraw,
+            overlay_dismiss_redraw,
+            &mut term,
+            &iface,
+            capture_threads,
+            fanout_group,
+            &agg,
+            &pipeline,
+            &options,
+            &hint_engine,
+            &view,
+            &modal,
+            start,
+            refresh,
+            &mut frames_since_draw,
+            &mut last_draw,
+            &mut draw_cache,
+            &mut view_format_cache,
+            &mut tick_rate,
+        )? {
+            force_redraw = false;
+            overlay_dismiss_redraw = false;
+        }
+
+        if last_draw.elapsed() >= refresh {
+            draw_live_frame(
+                &mut term,
+                &iface,
+                capture_threads,
+                fanout_group,
+                &agg,
+                &pipeline,
+                &options,
+                &hint_engine,
+                &view,
+                &modal,
+                start,
+                refresh,
+                &mut frames_since_draw,
+                &mut draw_cache,
+                &mut view_format_cache,
+                &mut tick_rate,
+            )?;
+            last_draw = Instant::now();
+        }
+
+        let wait_ms = if modal.is_open() || drained_this_turn == 0 {
+            EVENT_WAIT_BUSY_MS
+        } else {
+            EVENT_WAIT_IDLE_MS
+        };
+        if wait_for_event(Duration::from_millis(wait_ms))?
+            && drain_events(
+                &mut modal,
+                &mut view,
+                &mut agg,
+                &mut pipeline,
+                &mut options,
+                &mut force_redraw,
+                &mut overlay_dismiss_redraw,
+            )?
+        {
+            break 'live;
+        }
+        if maybe_redraw(
+            force_redraw,
+            overlay_dismiss_redraw,
+            &mut term,
+            &iface,
+            capture_threads,
+            fanout_group,
+            &agg,
+            &pipeline,
+            &options,
+            &hint_engine,
+            &view,
+            &modal,
+            start,
+            refresh,
+            &mut frames_since_draw,
+            &mut last_draw,
+            &mut draw_cache,
+            &mut view_format_cache,
+            &mut tick_rate,
+        )? {
+            force_redraw = false;
+        }
+    }
+    if keyboard_enhanced {
+        let _ = term.backend_mut().execute(PopKeyboardEnhancementFlags);
+    }
+    disable_raw_mode()?;
+    term.backend_mut().execute(LeaveAlternateScreen)?;
+    Ok(())
+}
+
+fn wait_for_event(block: Duration) -> Result<bool, TuiError> {
+    Ok(event::poll(block)?)
+}
+
+/// Non-blocking: drain every pending event from the terminal.
+fn drain_events(
+    modal: &mut Modal,
+    view: &mut ViewId,
+    agg: &mut Aggregator,
+    pipeline: &mut LivePipeline,
+    options: &mut FluxOptions,
+    force_redraw: &mut bool,
+    overlay_dismiss: &mut bool,
+) -> Result<bool, TuiError> {
+    while event::poll(Duration::ZERO)? {
+        if handle_one_event(
+            modal,
+            view,
+            agg,
+            pipeline,
+            options,
+            force_redraw,
+            overlay_dismiss,
+        )? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn handle_one_event(
+    modal: &mut Modal,
+    view: &mut ViewId,
+    agg: &mut Aggregator,
+    pipeline: &mut LivePipeline,
+    options: &mut FluxOptions,
+    force_redraw: &mut bool,
+    overlay_dismiss: &mut bool,
+) -> Result<bool, TuiError> {
+    match event::read()? {
+        Event::Resize(_, _) => {
+            *force_redraw = true;
+            Ok(false)
+        }
+        Event::Key(key) => {
+            let had_overlay = modal.is_open();
+            let outcome = handle_key(modal, view, agg, pipeline, options, key.code, key.modifiers);
+            if outcome.quit {
+                return Ok(true);
+            }
+            if had_overlay && !modal.is_open() && outcome.force_redraw {
+                *overlay_dismiss = true;
+            }
+            *force_redraw |= outcome.force_redraw;
+            Ok(false)
+        }
+        _ => Ok(false),
+    }
+}
+
+fn flush_frame(term: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Result<(), TuiError> {
+    Write::flush(term.backend_mut())?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn maybe_redraw(
+    force_redraw: bool,
+    overlay_dismiss: bool,
+    term: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    iface: &str,
+    capture_threads: u32,
+    fanout_group: Option<u32>,
+    agg: &Aggregator,
+    pipeline: &LivePipeline,
+    options: &FluxOptions,
+    hint_engine: &HintEngine,
+    view: &ViewId,
+    modal: &Modal,
+    start: Instant,
+    refresh: Duration,
+    frames_since_draw: &mut u64,
+    last_draw: &mut Instant,
+    cache: &mut DrawCache,
+    view_format_cache: &mut ViewFormatCache,
+    tick_rate: &mut TickRateTracker,
+) -> Result<bool, TuiError> {
+    if !force_redraw {
+        return Ok(false);
+    }
+    if overlay_dismiss && !modal.is_open() && cache.is_valid() {
+        draw_cached_main_frame(term, cache, pipeline)?;
+    } else {
+        draw_live_frame(
+            term,
+            iface,
+            capture_threads,
+            fanout_group,
+            agg,
+            pipeline,
+            options,
+            hint_engine,
+            view,
+            modal,
+            start,
+            refresh,
+            frames_since_draw,
+            cache,
+            view_format_cache,
+            tick_rate,
+        )?;
+    }
+    *last_draw = Instant::now();
+    Ok(true)
+}
+
+fn draw_cached_main_frame(
+    term: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    cache: &DrawCache,
+    pipeline: &LivePipeline,
+) -> Result<(), TuiError> {
+    let main_text = cache.main_text.clone();
+    let title = cache.title.clone();
+    let footer = match pipeline.session_notices.tui_footer_suffix() {
+        Some(suffix) => format!("{TUI_FOOTER_HINTS} {suffix}"),
+        None => TUI_FOOTER_HINTS.to_string(),
+    };
+    term.draw(|f| {
+        f.render_widget(
+            Paragraph::new(main_text).block(
+                Block::default()
+                    .title(title)
+                    .title_bottom(Line::from(footer))
+                    .borders(Borders::ALL),
+            ),
+            f.area(),
+        );
+    })?;
+    flush_frame(term)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_live_frame(
+    term: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    iface: &str,
+    capture_threads: u32,
+    fanout_group: Option<u32>,
+    agg: &Aggregator,
+    pipeline: &LivePipeline,
+    options: &FluxOptions,
+    hint_engine: &HintEngine,
+    view: &ViewId,
+    modal: &Modal,
+    start: Instant,
+    refresh: Duration,
+    frames_since_draw: &mut u64,
+    cache: &mut DrawCache,
+    view_format_cache: &mut ViewFormatCache,
+    tick_rate: &mut TickRateTracker,
+) -> Result<(), TuiError> {
+    let recv_last = *frames_since_draw;
+    *frames_since_draw = 0;
+    let hints = hint_engine.evaluate(
+        &[ListenerMeasurements {
+            iface: iface.to_string(),
+            rate_pps: recv_last as f64 / refresh.as_secs_f64().max(0.001),
+            drops: agg.counters.capture_drops,
+            capture_threads,
+            capture_busy_pct: 0,
+            capture_queue: 0,
+        }],
+        &pipeline.parse_measurements(),
+        0,
+        None,
+    );
+    let hint_lines = HintEngine::format_hints(&hints);
+
+    let total = agg.total_in_window;
+    let smart = agg.smart_qname_labels;
+    let smart_tag = if smart { " smart-qname" } else { "" };
+    let title = format!("flux watch {iface}{smart_tag}");
+
+    let status = StatusBar {
+        input: WatchInput::Live {
+            interfaces: vec![iface.to_string()],
+        },
+        window: options.window.clone(),
+        effective_window_secs: effective_window_secs(&agg.window),
+        filter: agg.filter.header.clone(),
+        match_stats: agg.match_stats,
+        counted_in_window: total,
+        counters: StatusLine {
+            packets: agg.counters.packets,
+            drops: agg.counters.capture_drops,
+            parse_busy_pct: pipeline.parse_busy_percent(),
+            queue_depth: pipeline.queue_depth(),
+            listener_frames: agg.counters.listener_packets,
+            recv_frames_last_tick: Some(recv_last),
+        },
+        flow: pipeline.flow_counters(),
+        pairing_enabled: options.pairing,
+        elapsed_secs: Some(start.elapsed().as_secs_f32()),
+        overload: None,
+        listener_stats: Vec::new(),
+        hints: Vec::new(),
+    };
+
+    let table_width = term.size()?.width.saturating_sub(4).max(32);
+    let tick_prev = if options.rate_mode == RateMode::Tick {
+        tick_rate.prev_for(
+            *view,
+            agg.counters.packets,
+            options.ede_show_no_ede,
+            &agg.window_totals,
+        )
+    } else {
+        None
+    };
+    let format_key = ViewFormatKey {
+        view: *view,
+        width: table_width,
+        packets: agg.counters.packets,
+        filter_generation: agg.filter_generation,
+        smart,
+        rate_mode: options.rate_mode,
+        view_sort: options.view_sort,
+        tick_frame: tick_rate.frame,
+    };
+    let display = TableDisplay {
+        rate_mode: options.rate_mode,
+        view_sort: options.view_sort,
+        window: options.window.clone(),
+        effective_window_secs: effective_window_secs(&agg.window),
+        counted_span_secs: agg.counted_slice_span(),
+        tick_prev,
+        tick_interval_secs: refresh.as_secs_f64(),
+        replay_wall_secs: None,
+    };
+    let main_text = view_format_cache.format(format_key, || {
+        format_batch_tables(
+            &agg.window_totals,
+            &[*view],
+            options.batch_limit,
+            total,
+            options.key_cap,
+            options.ede_show_no_ede,
+            Some(table_width),
+            &display,
+        )
+    });
+    cache.title.clone_from(&title);
+    cache.main_text.clone_from(&main_text);
+
+    let footer = match pipeline.session_notices.tui_footer_suffix() {
+        Some(suffix) => format!("{TUI_FOOTER_HINTS} {suffix}"),
+        None => TUI_FOOTER_HINTS.to_string(),
+    };
+    let main_text_draw = main_text.clone();
+    let title_draw = title.clone();
+    let footer_draw = footer.clone();
+    term.draw(|f| {
+        f.render_widget(
+            Paragraph::new(main_text_draw).block(
+                Block::default()
+                    .title(title_draw)
+                    .title_bottom(Line::from(footer_draw))
+                    .borders(Borders::ALL),
+            ),
+            f.area(),
+        );
+
+        render_modal(
+            f,
+            modal,
+            iface,
+            capture_threads,
+            fanout_group,
+            pipeline,
+            options,
+            &hint_lines,
+            smart,
+            &status,
+        );
+    })?;
+    flush_frame(term)
+}
+
+fn drain_capture(
+    cap: &LiveCapture,
+    agg: &mut Aggregator,
+    pipeline: &mut LivePipeline,
+    options: &FluxOptions,
+    max_packets: u64,
+) -> u64 {
+    let mut n = 0u64;
+    while n < max_packets {
+        match cap.try_recv_packet() {
+            Ok(Some(pkt)) => {
+                pipeline.process_packet(agg, &pkt, options);
+                n += 1;
+            }
+            Ok(None) => break,
+            Err(_) => break,
+        }
+    }
+    n
+}

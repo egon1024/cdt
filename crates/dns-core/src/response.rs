@@ -70,7 +70,7 @@ impl DnsResponse {
         Self {
             id: message.metadata.id,
             rcode,
-            rcode_text: rcode_to_text(rcode),
+            rcode_text: rcode_name(rcode),
             authoritative: message.metadata.authoritative,
             truncated: message.metadata.truncation,
             recursion_desired: message.metadata.recursion_desired,
@@ -241,7 +241,46 @@ fn zone_label_count(zone: &DomainName) -> usize {
     trimmed.split('.').filter(|label| !label.is_empty()).count()
 }
 
-fn rcode_to_text(rcode: u16) -> String {
+/// DNS OP CODE presentation name (`QUERY`, `NOTIFY`, `OPCODE7`, …).
+pub fn opcode_name(opcode: u8) -> String {
+    match opcode {
+        0 => "QUERY".into(),
+        1 => "IQUERY".into(),
+        2 => "STATUS".into(),
+        4 => "NOTIFY".into(),
+        5 => "UPDATE".into(),
+        6 => "DSO".into(),
+        n => format!("OPCODE{n}"),
+    }
+}
+
+/// Parse a user filter token into an OP CODE (`0`, `QUERY`, `OPCODE4`, …).
+pub fn parse_opcode(input: &str) -> Option<u8> {
+    let upper = input.trim().to_ascii_uppercase();
+    if upper.is_empty() {
+        return None;
+    }
+    if let Some(rest) = upper.strip_prefix("OPCODE") {
+        return rest.parse().ok();
+    }
+    if let Some(rest) = upper.strip_prefix("OP") {
+        if rest.chars().all(|c| c.is_ascii_digit()) {
+            return rest.parse().ok();
+        }
+    }
+    match upper.as_str() {
+        "QUERY" | "0" => Some(0),
+        "IQUERY" | "1" => Some(1),
+        "STATUS" | "2" => Some(2),
+        "NOTIFY" | "4" => Some(4),
+        "UPDATE" | "5" => Some(5),
+        "DSO" | "6" => Some(6),
+        _ => upper.parse().ok(),
+    }
+}
+
+/// DNS RCODE presentation name (`NOERROR`, `NXDOMAIN`, `RCODE9`, …).
+pub fn rcode_name(rcode: u16) -> String {
     match rcode {
         0 => "NOERROR".into(),
         1 => "FORMERR".into(),
@@ -250,6 +289,26 @@ fn rcode_to_text(rcode: u16) -> String {
         4 => "NOTIMP".into(),
         5 => "REFUSED".into(),
         _ => format!("RCODE{rcode}"),
+    }
+}
+
+/// Parse a user filter token into an RCODE (`3`, `NXDOMAIN`, `RCODE3`, …).
+pub fn parse_rcode(input: &str) -> Option<u16> {
+    let upper = input.trim().to_ascii_uppercase();
+    if upper.is_empty() {
+        return None;
+    }
+    if let Some(rest) = upper.strip_prefix("RCODE") {
+        return rest.parse().ok();
+    }
+    match upper.as_str() {
+        "NOERROR" | "0" => Some(0),
+        "FORMERR" | "1" => Some(1),
+        "SERVFAIL" | "2" => Some(2),
+        "NXDOMAIN" | "3" => Some(3),
+        "NOTIMP" | "4" => Some(4),
+        "REFUSED" | "5" => Some(5),
+        _ => upper.parse().ok(),
     }
 }
 
@@ -518,5 +577,23 @@ mod tests {
                 .map(|name| name.to_string()),
             Some("www.newexample.net.".into())
         );
+    }
+
+    #[test]
+    fn rcode_name_and_parse() {
+        assert_eq!(rcode_name(0), "NOERROR");
+        assert_eq!(rcode_name(3), "NXDOMAIN");
+        assert_eq!(parse_rcode("NXDOMAIN"), Some(3));
+        assert_eq!(parse_rcode("RCODE0"), Some(0));
+    }
+
+    #[test]
+    fn opcode_name_and_parse() {
+        assert_eq!(opcode_name(0), "QUERY");
+        assert_eq!(opcode_name(4), "NOTIFY");
+        assert_eq!(opcode_name(7), "OPCODE7");
+        assert_eq!(parse_opcode("QUERY"), Some(0));
+        assert_eq!(parse_opcode("OP0"), Some(0));
+        assert_eq!(parse_opcode("OPCODE5"), Some(5));
     }
 }

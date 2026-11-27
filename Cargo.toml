@@ -19,6 +19,12 @@ thiserror = "2.0"
 time = { version = "0.3", features = ["formatting", "parsing", "serde", "macros"] }
 serde_yaml = "0.9"
 ulid = "1.1"
+crossbeam-channel = "0.5"
+mimalloc = { version = "0.1", default-features = false }
+pcap-file = "2.0"
+etherparse = "0.16"
+ahash = "0.8"
+rand = "0.8"
 
 [profile.release]
 lto = true
